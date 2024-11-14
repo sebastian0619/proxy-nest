@@ -148,7 +148,7 @@ var (
 	mu              sync.Mutex
 )
 
-// 初始化上游服务器列表，从环境变量加载
+// 初始化上游服���器列表，从环境变量加载
 func initUpstreamServers() {
 	upstreamEnv := os.Getenv("UPSTREAM_SERVERS")
 	if upstreamEnv == "" {
@@ -473,19 +473,25 @@ func main() {
 	// 从环境变量加载上游服务器
 	initUpstreamServers()
 	
-	// 启动健康检查
-	updateBaseWeights()
+	// 启动健康检查定时任务
+	go func() {
+		updateBaseWeights()
+		ticker := time.NewTicker(WeightUpdateInterval)
+		for range ticker.C {
+			updateBaseWeights()
+		}
+	}()
 	
-	// 启动HTTP服务
-	http.HandleFunc("/", handleProxyRequest)
-	port := getEnv("PORT", "6637")
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
-	
-	// 添加定期清理非图片缓存的任务
+	// 启动清理缓存的定时任务
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		for range ticker.C {
 			cleanNonImageCache()
 		}
 	}()
+	
+	// 启动HTTP服务
+	port := getEnv("PORT", "6637")
+	logInfo(fmt.Sprintf("服务器启动在端口 %s", port))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
