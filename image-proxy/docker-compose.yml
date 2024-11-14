@@ -1,0 +1,61 @@
+services:
+
+  redis:
+    image: redis:alpine
+    container_name: tmdb-cache-redis
+    volumes:
+      - ./data:/data
+    command: redis-server --appendonly yes
+    environment:
+      - TZ=Asia/Shanghai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+
+  go-proxy-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      mode: replicated
+      replicas: 3
+    ports:
+      - 6637-6639:6637
+    environment:
+      # 基础配置
+      - PORT=6637
+      - TZ=Asia/Shanghai
+      - DEBUG_MODE=true
+      
+      # Redis配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      
+      # 权重和性能配置
+      - WEIGHT_UPDATE_INTERVAL_MINUTES=15
+      - BASE_WEIGHT_MULTIPLIER=50
+      - DYNAMIC_WEIGHT_MULTIPLIER=50
+      - ALPHA_INITIAL=0.5
+      - ALPHA_ADJUSTMENT_STEP=0.05
+      - RECENT_REQUEST_LIMIT=10
+      
+      # 超时和缓存配置
+      - REQUEST_TIMEOUT_MINUTES=1
+      - CACHE_TTL_MINUTES=10080
+      
+      # 上游服务器配置
+      - UPSTREAM_SERVERS=http://141.147.151.154:3005,http://168.138.9.163:3000,http://129.153.54.140:3000,http://150.230.24.153:3000,https://image.tmdb.org,https://static-mdb.v.geilijiasu.com
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+    depends_on:
+      - redis
