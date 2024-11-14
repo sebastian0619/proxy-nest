@@ -28,6 +28,11 @@ const (
 	ColorMagenta = "\033[35m"
 	ColorCyan   = "\033[36m"
 	ColorReset  = "\033[0m"
+	LocalCacheSize = 50 * 1024 * 1024  // API响应通常小于图片
+	LocalCacheExpiration = 5 * time.Minute
+	MaxRetryAttempts = 3  // API可以少一些重试次数
+	HealthCheckPrefix = "health:"
+	HealthDataTTL    = 5 * time.Minute
 )
 
 var (
@@ -39,8 +44,6 @@ var (
 	AlphaAdjustmentStep   = getFloat64Env("ALPHA_ADJUSTMENT_STEP", 0.05)
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
-	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 10) * time.Minute
-	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 100) * 1024 * 1024
 )
 
 // Redis客户端
@@ -98,7 +101,7 @@ func initRedis() {
 
 // 新增：验证JSON格式
 func isValidJSON(data []byte) bool {
-	var js interface{}
+	var js json.RawMessage
 	return json.Unmarshal(data, &js) == nil
 }
 
@@ -133,14 +136,22 @@ func addToCache(uri string, data []byte) {
 		return
 	}
 	
+	// 更新本地缓存（如果启用）
+	if useLocalCache && localCache != nil {
+		if err := localCache.Set(uri, data); err != nil {
+			logError(fmt.Sprintf("本地缓存更新失败: %v", err))
+		}
+	}
+	
+	// 更新Redis缓存
 	ctx := context.Background()
 	err := redisClient.Set(ctx, uri, data, CacheTTL).Err()
 	if err != nil {
-		logError(fmt.Sprintf("缓存数据失败 %s: %v", uri, err))
+		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", uri, err))
 		return
 	}
 	
-	logInfo(fmt.Sprintf("成功缓存JSON数据，URI: %s, 数据大小: %d bytes", uri, len(data)))
+	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", uri, len(data)))
 }
 
 // 新增：清理非JSON缓存的函数
@@ -185,7 +196,8 @@ type Server struct {
 	DynamicWeight  int
 	Alpha          float64
 	ResponseTimes  []time.Duration
-	RetryCount     int
+	RetryCount     int32           // 添加重试计数器
+	circuitBreaker *CircuitBreaker
 	mutex          sync.RWMutex
 }
 
@@ -198,144 +210,132 @@ var (
 func initUpstreamServers() {
 	upstreamEnv := os.Getenv("UPSTREAM_SERVERS")
 	if upstreamEnv == "" {
-		log.Fatal("UPSTREAM_SERVERS 环境变量未设置。")
+		log.Fatal(ColorRed + "错误: UPSTREAM_SERVERS 环境变量未设置" + ColorReset)
 	}
+	
 	servers := strings.Split(upstreamEnv, ",")
+	upstreamServers = make([]Server, 0, len(servers))  // 预分配切片容量
+	
 	for _, serverURL := range servers {
-		upstreamServers = append(upstreamServers, Server{
-			URL:        strings.TrimSpace(serverURL),
-			Alpha:      AlphaInitial,
-			Healthy:    true,
-			BaseWeight: 50,
-		})
+		server := NewServer(strings.TrimSpace(serverURL))
+		upstreamServers = append(upstreamServers, server)
 	}
-	logInfo("Loaded upstream servers")
+	
+	logInfo(fmt.Sprintf("已加载 %d 个上游服务器", len(upstreamServers)))
 }
 
 // 权重更新和健康检查
 func updateBaseWeights() {
-	logInfo("Starting periodic server health check and weight update...")
+	logInfo("开始定期服务器健康检查和权重更新...")
+	
+	// 首先尝试加载共享的健康检查数据
+	if err := loadHealthData(); err != nil {
+		logError(fmt.Sprintf("加载共享健康数据失败: %v", err))
+		// 继续执行，不要中断健康检查
+	}
+	
 	var wg sync.WaitGroup
 	for i := range upstreamServers {
 		wg.Add(1)
 		go func(server *Server) {
 			defer wg.Done()
-			client := &http.Client{Timeout: RequestTimeout}
+			
 			start := time.Now()
-			resp, err := client.Get(server.URL + "/3/movie/latest?api_key=59ef6336a19540cd1e254cae0565906e")
+			healthy, healthErr := checkServerHealth(server)
 			responseTime := time.Since(start)
 			
-			if err != nil {
-				server.mutex.Lock()
-				server.Healthy = false
-				server.BaseWeight = 0
-				server.mutex.Unlock()
-				logError(fmt.Sprintf("[Health Check] Failed to reach %s: %v", server.URL, err))
-				return
-			}
-			defer resp.Body.Close()
-			
-			// 读取响应体并验证JSON格式
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				server.mutex.Lock()
-				server.Healthy = false
-				server.BaseWeight = 0
-				server.mutex.Unlock()
-				logError(fmt.Sprintf("[Health Check] Failed to read response from %s: %v", server.URL, err))
-				return
-			}
-			
-			// 验证JSON格式
-			if !isValidJSON(body) {
-				server.mutex.Lock()
-				server.Healthy = false
-				server.BaseWeight = 0
-				logError(fmt.Sprintf("[Health Check] Server %s returned invalid JSON response", server.URL))
-				server.mutex.Unlock()
-				return
-			}
-			
-			// 健康检查通过
-			if resp.StatusCode == http.StatusOK {
-				server.mutex.Lock()
+			server.mutex.Lock()
+			server.Healthy = healthy
+			if healthy {
 				server.ResponseTimes = append(server.ResponseTimes, responseTime)
 				if len(server.ResponseTimes) > RecentRequestLimit {
 					server.ResponseTimes = server.ResponseTimes[1:]
 				}
 				server.BaseWeight = calculateBaseWeightEWMA(server)
 				server.DynamicWeight = calculateDynamicWeight(server)
-				server.Healthy = true
-				server.RetryCount = 0  // 健康检查通过时重置重试计数器
-				server.mutex.Unlock()
-				
-				logInfo(fmt.Sprintf("[Health Check] Server %s is healthy with response time %v ms, base weight %d, alpha %.6f",
-					server.URL, responseTime.Milliseconds(), server.BaseWeight, server.Alpha))
 			} else {
-				server.mutex.Lock()
-				server.Healthy = false
 				server.BaseWeight = 0
-				server.mutex.Unlock()
-				logError(fmt.Sprintf("[Health Check] Server %s returned status code %d", server.URL, resp.StatusCode))
+				server.DynamicWeight = 0
+				if healthErr != nil {
+					logError(fmt.Sprintf("服务器 %s 健康检查失败: %v", server.URL, healthErr))
+				}
+			}
+			server.mutex.Unlock()
+			
+			// 保存健康检查数据到 Redis
+			if err := saveHealthData(server, responseTime); err != nil {
+				logError(fmt.Sprintf("保存健康检查数据失败: %v", err))
 			}
 		}(&upstreamServers[i])
 	}
+	
 	wg.Wait()
-	logWeightDistribution()
+	reportHealthStatus()
 }
 
-// 计算基础权重的指数加权移动平均 (EWMA)
+// 计基础权重的指数加权移动平均 (EWMA)
 func calculateBaseWeightEWMA(server *Server) int {
 	if len(server.ResponseTimes) == 0 {
-		return 50 // 默认权重
+		return server.BaseWeight
 	}
 	
-	smoothingFactor := 0.2
-	ewmaResponseTime := float64(server.ResponseTimes[0].Milliseconds())
-	
-	for i := 1; i < len(server.ResponseTimes); i++ {
-		rt := float64(server.ResponseTimes[i].Milliseconds())
-		ewmaResponseTime = (smoothingFactor * rt) + (1-smoothingFactor)*ewmaResponseTime
+	// 计算平均响应时间
+	var total time.Duration
+	for _, rt := range server.ResponseTimes {
+		total += rt
 	}
+	avgResponseTime := total / time.Duration(len(server.ResponseTimes))
 	
-	// 基准响应时间设为500ms
-	baselineResponseTime := 500.0
-	// 计算权重：基准时间/实际时间 * multiplier，响应越快权重越高
-	weight := int((baselineResponseTime / ewmaResponseTime) * float64(BaseWeightMultiplier))
+	// 使用 EWMA 计算权重
+	weight := float64(server.BaseWeight)
+	target := float64(BaseWeightMultiplier) / float64(avgResponseTime.Milliseconds())
 	
-	// 限制权重在1-100之间
-	return min(100, max(1, weight))
+	return int(weight*0.7 + target*0.3) // 平滑权重调整
 }
 
 // 计算动态权重
 func calculateDynamicWeight(server *Server) int {
-	if len(server.ResponseTimes) == 0 {
-		return 50 // 默认权重
+	if len(server.ResponseTimes) < 2 {
+		return server.DynamicWeight
 	}
 	
-	avgResponseTime := float64(averageDuration(server.ResponseTimes).Milliseconds())
-	// 基准响应时间设为500ms
-	baselineResponseTime := 500.0
-	// 计算权重：基准时间/实际时间 * multiplier，响应越快权重越高
-	weight := int((baselineResponseTime / avgResponseTime) * float64(DynamicWeightMultiplier))
+	// 使用最近的响应时间计算动态权重
+	latestRT := server.ResponseTimes[len(server.ResponseTimes)-1]
+	weight := float64(DynamicWeightMultiplier) / float64(latestRT.Milliseconds())
 	
-	// 限制权重在1-100之间
-	return min(100, max(1, weight))
+	// 限制权重范围
+	if weight < 1 {
+		weight = 1
+	} else if weight > 100 {
+		weight = 100
+	}
+	
+	return int(weight)
 }
 
 // 计算综合权重
 func calculateCombinedWeight(server *Server) int {
-	if !server.Healthy {
+	if server == nil {
 		return 0
 	}
 	
-	baseWeight := float64(server.BaseWeight)
-	dynamicWeight := float64(server.DynamicWeight)
+	server.mutex.RLock()
+	defer server.mutex.RUnlock()
 	
-	// 使用 Alpha 进行加权平均
-	combinedWeight := int(server.Alpha*dynamicWeight + (1-server.Alpha)*baseWeight)
+	// 基础权重和动态权重的组合
+	weight := server.BaseWeight
+	if server.DynamicWeight > 0 {
+		weight = (weight + server.DynamicWeight) / 2
+	}
 	
-	return min(100, max(1, combinedWeight))
+	// 确保权重在合理范围内
+	if weight < 1 {
+		weight = 1
+	} else if weight > 100 {
+		weight = 100
+	}
+	
+	return weight
 }
 
 // 平均响应时间计算
@@ -451,118 +451,170 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 // 修改：handleProxyRequest 中处理非JSON响应的部分
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
+	requestID := generateRequestID()
 	uri := r.RequestURI
 
+	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
+	
 	// 检查缓存
 	if data, found := checkCaches(uri); found {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
-		logInfo(fmt.Sprintf("%s[命中缓存]%s - %s", ColorGreen, ColorReset, uri))
 		w.Write(data)
+		logInfo(fmt.Sprintf("[%s] 缓存命中", requestID))
 		return
 	}
-	logInfo(fmt.Sprintf("%s[未命中缓存]%s - %s", ColorYellow, ColorReset, uri))
-
-	// 获取健康的上游服务器
-	server := getWeightedRandomServer()
-	if server == nil {
-		http.Error(w, "无可用的上游服务器", http.StatusBadGateway)
+	
+	// 获取可用服务器
+	availableServers := getHealthyServers()
+	if len(availableServers) == 0 {
+		metrics.ErrorCount.Add(1)
+		http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
+		logError(fmt.Sprintf("[%s] 没有可用的服务器", requestID))
 		return
 	}
+	
+	// 尝试请求
+	var lastErr error
+	for _, server := range availableServers {
+		if server == nil {
+			continue
+		}
+		
+		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
+		resp, err := tryRequest(server, r)
+		if err != nil {
+			lastErr = err
+			if server.circuitBreaker != nil {
+				server.circuitBreaker.Record(err)
+			}
+			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
+			continue
+		}
+		
+		// 处理成功响应
+		handleSuccessResponse(w, resp, requestID)
+		return
+	}
+	
+	// 所有服务器都失败
+	metrics.ErrorCount.Add(1)
+	http.Error(w, fmt.Sprintf("所有可用服务器都失败: %v", lastErr), http.StatusBadGateway)
+	logError(fmt.Sprintf("[%s] 所有服务器请求失败", requestID))
+}
 
+// 获取健康服务器列表
+func getHealthyServers() []*Server {
+	var servers []*Server
+	totalWeight := 0
+	
+	for i := range upstreamServers {
+		server := &upstreamServers[i]
+		
+		// 确保 CircuitBreaker 已初始化
+		if server.circuitBreaker == nil {
+			server.circuitBreaker = &CircuitBreaker{
+				threshold:    5,
+				resetTimeout: time.Minute * 1,
+			}
+		}
+		
+		// 检查服务器状态
+		if server.Healthy && !server.circuitBreaker.IsOpen() {
+			weight := calculateCombinedWeight(server)
+			if weight <= 0 {
+				weight = 1 // 确保至少有最小权重
+			}
+			totalWeight += weight
+			
+			// 根据权重添加服务器
+			for j := 0; j < weight; j++ {
+				servers = append(servers, server)
+			}
+		}
+	}
+	
+	// 如果没有健康的服务器，使用所有可用的服务器
+	if len(servers) == 0 {
+		logWarning("没有健康的服务器可用，使用所有配置的服务器")
+		for i := range upstreamServers {
+			servers = append(servers, &upstreamServers[i])
+		}
+	}
+	
+	// 随机打乱服务器顺序
+	if len(servers) > 1 {
+		rand.Shuffle(len(servers), func(i, j int) {
+			servers[i], servers[j] = servers[j], servers[i]
+		})
+	}
+	
+	return servers
+}
+
+// 尝试请求函数
+func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	client := &http.Client{Timeout: RequestTimeout}
-	url := server.URL + uri
+	url := server.URL + r.RequestURI
+	
 	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
-		// 请求创建失败，尝试其他上游
-		if resp, body := tryOtherUpstreams(uri, r, server.URL); resp != nil {
-			handleSuccessResponse(w, resp, body, uri)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	req.Header = r.Header
-
-	// 发请求并处理响应
+	
+	// 复制原始请求头
+	req.Header = make(http.Header)
+	for k, v := range r.Header {
+		req.Header[k] = v
+	}
+	
 	start := time.Now()
 	resp, err := client.Do(req)
 	responseTime := time.Since(start)
 	
 	if err != nil {
-		logError(fmt.Sprintf("请求上游服务器 %s 失败: %v", server.URL, err))
-		// 连接失败，立即尝试其他上游
-		if resp, body := tryOtherUpstreams(uri, r, server.URL); resp != nil {
-			handleSuccessResponse(w, resp, body, uri)
-			return
-		}
-		http.Error(w, "所有上游服务器均无响应", http.StatusBadGateway)
-		return
+		return nil, err
 	}
-	defer resp.Body.Close()
+	
+	// 记录响应时间
+	server.mutex.Lock()
+	server.ResponseTimes = append(server.ResponseTimes, responseTime)
+	if len(server.ResponseTimes) > RecentRequestLimit {
+		server.ResponseTimes = server.ResponseTimes[1:]
+	}
+	server.mutex.Unlock()
+	
+	return resp, nil
+}
 
+// 处理成功响应
+func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
+	defer resp.Body.Close()
+	
 	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logError(fmt.Sprintf("读取响应体失败: %v", err))
-		// 读取失败，尝试其他上游
-		if resp, body := tryOtherUpstreams(uri, r, server.URL); resp != nil {
-			handleSuccessResponse(w, resp, body, uri)
-			return
-		}
 		http.Error(w, "读取响应失败", http.StatusInternalServerError)
 		return
 	}
-
-	// 验证响应是否为有效的JSON
-	if !isValidJSON(body) {
-		logError(fmt.Sprintf("上游服务器 %s 返回非JSON格式响应", server.URL))
-		server.mutex.Lock()
-		server.RetryCount++
-		if server.RetryCount >= 5 {
-			server.Healthy = false
-			logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非JSON响应，标记为不健康", 
-				server.URL, server.RetryCount))
-		}
-		server.mutex.Unlock()
-
-		// 非JSON响应，尝试其他上游
-		if resp, body := tryOtherUpstreams(uri, r, server.URL); resp != nil {
-			handleSuccessResponse(w, resp, body, uri)
-			return
-		}
-		http.Error(w, "所有上游服务器均返回非JSON响应", http.StatusBadGateway)
-		return
-	}
-
-	// 处理成功响应
-	handleSuccessResponse(w, resp, body, uri)
 	
-	logInfo(fmt.Sprintf("%s[已选择上游]%s %s - 响应时间: %v ms - 基础权重: %d - 动态权重: %d - 综合权重: %d",
-		ColorCyan, ColorReset,
-		server.URL, 
-		responseTime.Milliseconds(), 
-		server.BaseWeight, 
-		server.DynamicWeight, 
-		calculateCombinedWeight(server)))
-}
-
-// 新增：处理成功响应的辅助函数
-func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, body []byte, uri string) {
-	// 设置响应头
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
+	// 复制响应头
+	for k, v := range resp.Header {
+		w.Header()[k] = v
 	}
 	
-	// 只有成功的请求才缓存
-	if resp.StatusCode == http.StatusOK {
-		addToCache(uri, body)
-	}
-	
+	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
+	
+	// 写入响应体
 	w.Write(body)
+	
+	// 如果是缓存的响应，添加到缓存
+	if resp.StatusCode == http.StatusOK {
+		addToCache(requestID, body)
+	}
+	
+	logInfo(fmt.Sprintf("[%s] 请求成功完成", requestID))
 }
 
 func min(a, b int) int {
@@ -621,6 +673,7 @@ func findServerByURL(url string) *Server {
 var (
 	metrics     = &Metrics{}
 	localCache  *bigcache.BigCache
+	useLocalCache bool  // 新增：标记是否使用本地缓存
 	bufferPool  = sync.Pool{
 		New: func() interface{} {
 			return make([]byte, 32*1024)
@@ -637,6 +690,7 @@ type Metrics struct {
 	CacheMisses    atomic.Int64
 	LocalCacheHits atomic.Int64
 	RedisCacheHits atomic.Int64
+	APIErrors      sync.Map    // URL -> error types count
 }
 
 // 初始化本地缓存
@@ -657,11 +711,13 @@ func initCache() error {
 
 // 修改缓存检查逻辑
 func checkCaches(uri string) ([]byte, bool) {
-	// 1. 先检查本地缓存
-	if data, err := localCache.Get(uri); err == nil {
-		if isValidJSON(data) {
-			metrics.LocalCacheHits.Add(1)
-			return data, true
+	// 1. 检查本地缓存（如果启用）
+	if useLocalCache && localCache != nil {
+		if data, err := localCache.Get(uri); err == nil {
+			if isValidJSON(data) {
+				metrics.LocalCacheHits.Add(1)
+				return data, true
+			}
 		}
 	}
 
@@ -669,9 +725,11 @@ func checkCaches(uri string) ([]byte, bool) {
 	if data, found := checkCache(uri); found {
 		if isValidJSON(data) {
 			metrics.RedisCacheHits.Add(1)
-			// 更新本地缓存
-			if err := localCache.Set(uri, data); err != nil {
-				logError(fmt.Sprintf("更新本地缓存失败: %v", err))
+			// 只在本地缓存可用时更新
+			if useLocalCache && localCache != nil {
+				if err := localCache.Set(uri, data); err != nil {
+					logError(fmt.Sprintf("更新本地缓存失败: %v", err))
+				}
 			}
 			return data, true
 		}
@@ -770,40 +828,378 @@ type ExponentialSmoothing struct {
 	alpha float64
 }
 
+// 添加请求追踪
+func generateRequestID() string {
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
+}
+
+// 添加定期健康状态报告函数
+func startHealthStatusReporting() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)  // 每分钟报告一次
+		for range ticker.C {
+			reportHealthStatus()
+		}
+	}()
+}
+
+// 健康状态报告函数
+func reportHealthStatus() {
+	var unhealthyServers []string
+	var healthyCount int
+	var totalServers = len(upstreamServers)
+	
+	// 收集不健康的服务器
+	for _, server := range upstreamServers {
+		if !server.Healthy {
+			unhealthyServers = append(unhealthyServers, server.URL)
+		} else {
+			healthyCount++
+		}
+	}
+	
+	// 构建状态消息
+	if len(unhealthyServers) > 0 {
+		logError(fmt.Sprintf(
+			"服务器健康状态报告 - 总计: %d, 健康: %d, 不健康: %d\n不健康服务器列表:\n%s",
+			totalServers,
+			healthyCount,
+			len(unhealthyServers),
+			strings.Join(unhealthyServers, "\n"),
+		))
+	} else {
+		logInfo(fmt.Sprintf(
+			"服务器健康状态报告 - 所有服务器运行正常 (总计: %d)",
+			totalServers,
+		))
+	}
+	
+	// 额外报告熔断器状态
+	reportCircuitBreakerStatus()
+}
+
+// 熔断器状态报告
+func reportCircuitBreakerStatus() {
+	var breakerOpenServers []string
+	
+	for _, server := range upstreamServers {
+		if server.circuitBreaker.IsOpen() {
+			breakerOpenServers = append(breakerOpenServers, fmt.Sprintf(
+				"%s (失败次数: %d, 最后失败时间: %s)",
+				server.URL,
+				server.circuitBreaker.failures,
+				server.circuitBreaker.lastFailure.Format("15:04:05"),
+			))
+		}
+	}
+	
+	if len(breakerOpenServers) > 0 {
+		logError(fmt.Sprintf(
+			"熔断器状态报告 - 以下服务器熔断器已触发:\n%s",
+			strings.Join(breakerOpenServers, "\n"),
+		))
+	}
+}
+
 func main() {
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
 	
-	// 初始化Redis
+	// 1. 初始化 Redis
 	initRedis()
+	logInfo("Redis 初始化完成")
 	
-	// 从环境变量加载上游服务器
+	// 2. 初始化本地缓存
+	if err := initCache(); err != nil {
+		log.Printf("警告: 本地缓存初始化失败: %v", err)
+		useLocalCache = false
+	} else {
+		useLocalCache = true
+		startCacheCleanup()
+	}
+	logInfo("本地缓存初始化完成")
+	
+	// 3. 从环境变量加载上游服务器
 	initUpstreamServers()
+	logInfo("上游服务器加载完成")
 	
-	// 启动健康检查
-	updateBaseWeights()
-	
-	// 启动HTTP服务
-	http.HandleFunc("/", handleProxyRequest)
-	port := getEnv("PORT", "6637")
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
-	
-	// 添加定时清理非JSON缓存的任务
+	// 4. 启动健康检查（包括加载共享健康数据）
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
+		// 首次健康检查
+		updateBaseWeights()
+		
+		// 定期健康检查
+		ticker := time.NewTicker(WeightUpdateInterval)
 		for range ticker.C {
-			cleanInvalidCache()
+			updateBaseWeights()
 		}
 	}()
 	
-	// 初始化缓存
-	if err := initCache(); err != nil {
-		log.Printf("警告: 本地缓存初始化失败: %v", err)
-	}
+	// 5. 启动健康状态报告
+	startHealthStatusReporting()
 	
-	// 启动指标收集
+	// 6. 启动指标收集
 	go collectMetrics()
 	
-	// 添加指标接口
+	// 7. 启动 HTTP 服务
+	port := getEnv("PORT", "6637")
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%s", port),
+		ReadTimeout:  RequestTimeout,
+		WriteTimeout: RequestTimeout,
+	}
+	
+	// 注册路由
+	http.HandleFunc("/", handleProxyRequest)
 	http.HandleFunc("/metrics", handleMetrics)
+	
+	logInfo(fmt.Sprintf("HTTP 服务启动在端口 %s", port))
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// 修改缓存清理函数，增加安全检查
+func startCacheCleanup() {
+	if !useLocalCache || localCache == nil {
+		return
+	}
+	
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		for range ticker.C {
+			if localCache != nil {  // 再次检查以确保安全
+				before := localCache.Len()
+				localCache.Reset()
+				after := localCache.Len()
+				logInfo(fmt.Sprintf("本地缓存清理完成: 清理前 %d 项, 清理后 %d 项", before, after))
+			}
+		}
+	}()
+}
+
+// 定义健康检查数据结构
+type ServerHealth struct {
+	URL            string    `json:"url"`
+	Healthy        bool      `json:"healthy"`
+	LastCheck      time.Time `json:"last_check"`
+	ResponseTime   int64     `json:"response_time_ms"` // 毫秒
+	BaseWeight     int       `json:"base_weight"`
+	DynamicWeight  int       `json:"dynamic_weight"`
+	ErrorCount     int       `json:"error_count"`
+}
+
+// 添加健康数据共享函数
+func saveHealthData(server *Server, responseTime time.Duration) error {
+	if server == nil {
+		return fmt.Errorf("服务器对象为空")
+	}
+
+	// 确保 CircuitBreaker 已初始化
+	if server.circuitBreaker == nil {
+		server.circuitBreaker = &CircuitBreaker{
+			threshold:    5,
+			resetTimeout: time.Minute * 1,
+		}
+	}
+
+	health := ServerHealth{
+		URL:           server.URL,
+		Healthy:       server.Healthy,
+		LastCheck:     time.Now(),
+		ResponseTime:  responseTime.Milliseconds(),
+		BaseWeight:    server.BaseWeight,
+		DynamicWeight: server.DynamicWeight,
+		ErrorCount:    int(atomic.LoadInt32(&server.circuitBreaker.failures)),
+	}
+	
+	data, err := json.Marshal(health)
+	if err != nil {
+		return fmt.Errorf("序列化健康数据失败: %v", err)
+	}
+	
+	if redisClient == nil {
+		return fmt.Errorf("Redis 客户端未初始化")
+	}
+	
+	ctx := context.Background()
+	key := HealthCheckPrefix + server.URL
+	err = redisClient.Set(ctx, key, data, HealthDataTTL).Err()
+	if err != nil {
+		return fmt.Errorf("保存健康数据到 Redis 失败: %v", err)
+	}
+	
+	logDebug(fmt.Sprintf("已保存服务器 %s 的健康数据", server.URL))
+	return nil
+}
+
+// 添加健康数据读取函数
+func loadHealthData() error {
+	if redisClient == nil {
+		return fmt.Errorf("Redis 客户端未初始化")
+	}
+
+	ctx := context.Background()
+	iter := redisClient.Scan(ctx, 0, HealthCheckPrefix+"*", 0).Iterator()
+	
+	for iter.Next(ctx) {
+		key := iter.Val()
+		data, err := redisClient.Get(ctx, key).Bytes()
+		if err != nil {
+			logError(fmt.Sprintf("从Redis加载健康数据失败 [%s]: %v", key, err))
+			continue
+		}
+		
+		var health ServerHealth
+		if err := json.Unmarshal(data, &health); err != nil {
+			logError(fmt.Sprintf("解析健康数据失败 [%s]: %v", key, err))
+			continue
+		}
+		
+		// 更新服务器状态
+		for i := range upstreamServers {
+			if upstreamServers[i].URL == health.URL {
+				upstreamServers[i].mutex.Lock()
+				upstreamServers[i].Healthy = health.Healthy
+				upstreamServers[i].BaseWeight = health.BaseWeight
+				
+				upstreamServers[i].DynamicWeight = health.DynamicWeight
+				if upstreamServers[i].circuitBreaker != nil {
+					atomic.StoreInt32(&upstreamServers[i].circuitBreaker.failures, int32(health.ErrorCount))
+				}
+				upstreamServers[i].mutex.Unlock()
+				break
+			}
+		}
+	}
+	
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("遍历Redis健康数据时出错: %v", err)
+	}
+	
+	return nil
+}
+
+// 添加健康检查函数
+func checkServerHealth(server *Server) (bool, error) {
+	client := &http.Client{Timeout: RequestTimeout}
+	
+	// 使用 TMDB API 的一个轻量级接口作为健康检查
+	healthCheckURL := server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
+	req, err := http.NewRequest("GET", healthCheckURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("创建健康检查请求失败: %v", err)
+	}
+	
+	// 添加必要的请求头
+	req.Header.Set("Accept", "application/json")
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("健康检查请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	
+	// 检查响应状态码
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("健康检查返回非200状态码: %d", resp.StatusCode)
+	}
+	
+	// 验证响应是否为有效的 JSON
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("读取健康检查响应失败: %v", err)
+	}
+	
+	if !isValidJSON(body) {
+		return false, fmt.Errorf("健康检查返回无效的 JSON 响应")
+	}
+	
+	return true, nil
+}
+
+// 添加警告日志函数
+func logWarning(message string) {
+	hostname, _ := os.Hostname()
+	log.Printf("%s[警告]%s [%s] %s", ColorYellow, ColorReset, hostname, message)
+}
+
+// 添加 Server 结构体的初始化方法
+func NewServer(url string) Server {
+	return Server{
+		URL:           url,
+		Alpha:         AlphaInitial,
+		Healthy:       true,
+		BaseWeight:    50,
+		RetryCount:    0,          // 初始化重试计数器
+		circuitBreaker: &CircuitBreaker{
+			threshold:    5,
+			resetTimeout: time.Minute * 1,
+		},
+		mutex:         sync.RWMutex{},
+	}
+}
+
+// 修改重试相关的函数，使用原子操作处理 RetryCount
+func incrementRetryCount(s *Server) {
+	atomic.AddInt32(&s.RetryCount, 1)
+}
+
+func resetRetryCount(s *Server) {
+	atomic.StoreInt32(&s.RetryCount, 0)
+}
+
+func getRetryCount(s *Server) int32 {
+	return atomic.LoadInt32(&s.RetryCount)
+}
+
+// 修改使用 RetryCount 的地方，使用上述辅助函数
+func shouldRetry(s *Server, err error) bool {
+	currentRetries := getRetryCount(s)
+	if currentRetries >= MaxRetryAttempts {
+		logError(fmt.Sprintf("服务器 %s 达到最大重试次数 %d", s.URL, MaxRetryAttempts))
+		return false
+	}
+	
+	// 检查错误类型是否可重试
+	if isRetryableError(err) {
+		incrementRetryCount(s)
+		return true
+	}
+	
+	return false
+}
+
+// 添加错误类型判断函数
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	
+	// 检查是否为超时错误
+	if os.IsTimeout(err) {
+		return true
+	}
+	
+	// 检查是否为临时网络错误
+	if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+		return true
+	}
+	
+	// 检查特定的错误字符串
+	errStr := err.Error()
+	retryableErrors := []string{
+		"connection reset by peer",
+		"broken pipe",
+		"no such host",
+		"too many open files",
+	}
+	
+	for _, retryableErr := range retryableErrors {
+		if strings.Contains(strings.ToLower(errStr), retryableErr) {
+			return true
+		}
+	}
+	
+	return false
 }
