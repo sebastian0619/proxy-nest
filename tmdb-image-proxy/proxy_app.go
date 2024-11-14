@@ -36,6 +36,8 @@ const (
 	HealthDataTTL    = 5 * time.Minute
 	ImageCacheSize = 500 * 1024 * 1024  // 图片缓存大小设置为500MB
 	ImageCacheExpiration = 24 * time.Hour  // 图片缓存过期时间设为24小时
+	MaxConcurrentRequests = 100  // 最大并发请求数
+	RequestQueueSize = 1000      // 请求队列大小
 )
 
 var (
@@ -218,7 +220,7 @@ type Server struct {
 
 var (
 	upstreamServers []Server
-	mu              sync.Mutex
+	mu              sync.RWMutex
 )
 
 // 初始化上游服务器列表，从环境变量加载
@@ -314,7 +316,7 @@ func calculateDynamicWeight(server *Server) int {
 		return server.DynamicWeight
 	}
 	
-	// 使用最近的响应时间计算动态权重
+	// 使用最近的响应时间计算动态权
 	latestRT := server.ResponseTimes[len(server.ResponseTimes)-1]
 	weight := float64(DynamicWeightMultiplier) / float64(latestRT.Milliseconds())
 	
@@ -364,39 +366,52 @@ func averageDuration(durations []time.Duration) time.Duration {
 
 // 选择健康的上游服务器
 func getWeightedRandomServer() *Server {
-	healthyServers := make([]Server, 0)
-	totalWeight := 0
+	var (
+		totalWeight     int
+		healthyServers  = make([]*Server, 0)
+		serverWeights   = make([]int, 0)
+	)
 
-	for _, server := range upstreamServers {
-		if server.Healthy {
-			combinedWeight := calculateCombinedWeight(&server)
-			totalWeight += combinedWeight
-			for i := 0; i < combinedWeight; i++ {
+	// 使用读锁获取健康服务器列表
+	mu.RLock()
+	for i := range upstreamServers {
+		server := &upstreamServers[i]
+		if server.Healthy && !server.circuitBreaker.IsOpen() {
+			weight := calculateCombinedWeight(server)
+			if weight > 0 {
 				healthyServers = append(healthyServers, server)
+				serverWeights = append(serverWeights, weight)
+				totalWeight += weight
 			}
 		}
 	}
+	mu.RUnlock()
 
 	if len(healthyServers) == 0 {
 		return nil
 	}
 
-	return &healthyServers[rand.Intn(len(healthyServers))]
+	// 使用权重随机选择
+	r := rand.Intn(totalWeight)
+	currentWeight := 0
+	for i, server := range healthyServers {
+		currentWeight += serverWeights[i]
+		if r < currentWeight {
+			return server
+		}
+	}
+
+	return healthyServers[0]
 }
 
 // 修改：尝试其他上游服务器
-func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Response, []byte) {
+func tryOtherUpstreams(uri string, r *http.Request, failedURL string) *http.Response {
 	var wg sync.WaitGroup
-	responses := make(chan struct {
-		resp *http.Response
-		body []byte
-		url  string
-	}, len(upstreamServers))
+	responses := make(chan *http.Response, len(upstreamServers))
 
-	// 遍历所有健康的上游服务器（除了刚刚失败的那个）
+	// 并发请求所有健康的上游服务器
 	for i := range upstreamServers {
 		server := &upstreamServers[i]
-		// 跳过不健康的服务器和刚刚失败的服务器
 		if !server.Healthy || server.URL == failedURL {
 			continue
 		}
@@ -420,98 +435,101 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 			}
 			defer resp.Body.Close()
 
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				logError(fmt.Sprintf("读取响应体失败: %v", err))
-				return
-			}
-
-			if isValidImage(body) {
-				responses <- struct {
-					resp *http.Response
-					body []byte
-					url  string
-				}{resp, body, s.URL}
-				logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取图片响应", s.URL))
-			} else {
-				s.mutex.Lock()
-				s.RetryCount++
-				if s.RetryCount >= 5 {
-					s.Healthy = false
-					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非图片响应，标记为不健康", 
-						s.URL, s.RetryCount))
-				} else {
-					logError(fmt.Sprintf("上游服务器 %s 返回非图片格式响应 (重试次数: %d/5)", 
-						s.URL, s.RetryCount))
-				}
-				s.mutex.Unlock()
-			}
+			responses <- resp
 		}(server)
 	}
 
-	// 等待所有请求完成或者收到第一个成功的响应
+	// 等待所有请求完成或获取第一个成功的响应
 	go func() {
 		wg.Wait()
 		close(responses)
 	}()
 
 	// 获取第一个成功的响应
-	for resp := range responses {
-		return resp.resp, resp.body
+	select {
+	case resp := <-responses:
+		return resp
+	case <-time.After(RequestTimeout):
+		return nil
 	}
-
-	return nil, nil
 }
 
-// 修改：handleProxyRequest 中处理非JSON响应的部分
+// 修改：handleProxyRequest 函数
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
 	requestID := generateRequestID()
 	uri := r.RequestURI
 
-	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
-	
-	// 检查缓存
+	// 检查缓存（这部分可以快速返回）
 	if data, found := checkCaches(uri); found {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", http.DetectContentType(data))
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
 		logInfo(fmt.Sprintf("[%s] 缓存命中", requestID))
 		return
 	}
-	
-	// 获取可用服务器
-	availableServers := getHealthyServers()
-	if len(availableServers) == 0 {
-		metrics.ErrorCount.Add(1)
-		http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
-		logError(fmt.Sprintf("[%s] 没有可用的服务器", requestID))
-		return
-	}
-	
-	// 尝试请求
-	var lastErr error
-	for _, server := range availableServers {
-		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
-		resp, err := tryRequest(server, r)
-		if err != nil {
-			lastErr = err
-			server.circuitBreaker.Record(err)
-			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
-			continue
+
+	// 非阻塞方式获取信号量
+	select {
+	case requestController.semaphore <- struct{}{}:
+		// 获取到信号量，继续处理
+		defer func() { <-requestController.semaphore }()
+	default:
+		// 如果无法立即获取信号量，将请求加入队列
+		select {
+		case requestController.queue <- r:
+			// 请求已加入队列
+			logInfo(fmt.Sprintf("[%s] 请求已加入队列", requestID))
+		default:
+			// 队列已满，返回服务繁忙
+			http.Error(w, "服务器繁忙，请稍后重试", http.StatusServiceUnavailable)
+			metrics.ErrorCount.Add(1)
+			return
 		}
-		
-		// 处理成功响应
-		handleSuccessResponse(w, resp, requestID)
-		// 重置该服务器的重试计数
-		resetRetryCount(server)
-		return
 	}
-	
-	// 所有服务器都失败
-	metrics.ErrorCount.Add(1)
-	http.Error(w, fmt.Sprintf("所有可用服务器都失败: %v", lastErr), http.StatusBadGateway)
-	logError(fmt.Sprintf("[%s] 所有���务器请求失败", requestID))
+
+	// 并发处理请求
+	go func() {
+		// 获取可用服务器（使用权重选择）
+		server := getWeightedRandomServer()
+		if server == nil {
+			http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
+			metrics.ErrorCount.Add(1)
+			return
+		}
+
+		// 创建错误通道
+		errChan := make(chan error, 1)
+		respChan := make(chan *http.Response, 1)
+
+		// 启动请求处理
+		go func() {
+			resp, err := tryRequest(server, r)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			respChan <- resp
+		}()
+
+		// 等待响应或超时
+		select {
+		case resp := <-respChan:
+			handleSuccessResponse(w, resp, requestID)
+			resetRetryCount(server)
+		case err := <-errChan:
+			// 处理错误，尝试其他服务器
+			if resp := tryOtherUpstreams(uri, r, server.URL); resp != nil {  // 只返回 resp
+				handleSuccessResponse(w, resp, requestID)
+			} else {
+				http.Error(w, fmt.Sprintf("请求失败: %v", err), http.StatusBadGateway)
+				metrics.ErrorCount.Add(1)
+			}
+		case <-time.After(RequestTimeout):
+			http.Error(w, "请求超时", http.StatusGatewayTimeout)
+			metrics.ErrorCount.Add(1)
+		}
+	}()
 }
 
 // 获取健康服务器列表
@@ -764,7 +782,7 @@ type Metrics struct {
 func initCache() error {
 	config := bigcache.DefaultConfig(LocalCacheExpiration)
 	config.MaxEntriesInWindow = 10000
-	config.MaxEntrySize = 5 * 1024 * 1024  // 单个图片最大5MB
+	config.MaxEntrySize = 10 * 1024 * 1024  // 单个图片最大5MB
 	config.HardMaxCacheSize = LocalCacheSize / 1024 / 1024  // BigCache需要MB为单位
 	config.Verbose = false
 	
@@ -1267,3 +1285,19 @@ func isRetryableError(err error) bool {
 	
 	return false
 }
+
+// 添加并控制结构
+type RequestController struct {
+	semaphore chan struct{}
+	queue     chan *http.Request
+}
+
+// 初始化请求控制器
+func NewRequestController() *RequestController {
+	return &RequestController{
+		semaphore: make(chan struct{}, MaxConcurrentRequests),
+		queue:     make(chan *http.Request, RequestQueueSize),
+	}
+}
+
+var requestController = NewRequestController()
