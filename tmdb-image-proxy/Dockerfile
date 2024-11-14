@@ -4,7 +4,7 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 COPY . .
 
-# 安装 color 包
+
 RUN go mod init proxy-app && go mod tidy
 RUN go build -o /proxy-app
 
