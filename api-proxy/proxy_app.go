@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -477,23 +478,19 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 尝试请求
 	var lastErr error
 	for _, server := range availableServers {
-		if server == nil {
-			continue
-		}
-		
 		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			if server.circuitBreaker != nil {
-				server.circuitBreaker.Record(err)
-			}
+			server.circuitBreaker.Record(err)
 			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
 			continue
 		}
 		
 		// 处理成功响应
 		handleSuccessResponse(w, resp, requestID)
+		// 重置该服务器的重试计数
+		resetRetryCount(server)
 		return
 	}
 	
@@ -506,8 +503,10 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 // 获取健康服务器列表
 func getHealthyServers() []*Server {
 	var servers []*Server
+	var healthyServers []*Server
 	totalWeight := 0
 	
+	// 首先只选择健康的服务器
 	for i := range upstreamServers {
 		server := &upstreamServers[i]
 		
@@ -519,11 +518,12 @@ func getHealthyServers() []*Server {
 			}
 		}
 		
-		// 检查服务器状态
+		// 只选择健康且熔断器未触发的服务器
 		if server.Healthy && !server.circuitBreaker.IsOpen() {
+			healthyServers = append(healthyServers, server)
 			weight := calculateCombinedWeight(server)
 			if weight <= 0 {
-				weight = 1 // 确保至少有最小权重
+				weight = 1
 			}
 			totalWeight += weight
 			
@@ -534,22 +534,71 @@ func getHealthyServers() []*Server {
 		}
 	}
 	
-	// 如果没有健康的服务器，使用所有可用的服务器
-	if len(servers) == 0 {
-		logWarning("没有健康的服务器可用，使用所有配置的服务器")
-		for i := range upstreamServers {
-			servers = append(servers, &upstreamServers[i])
+	// 如果有健康的服务器，直接返回
+	if len(servers) > 0 {
+		// 随机打乱服务器顺序
+		if len(servers) > 1 {
+			rand.Shuffle(len(servers), func(i, j int) {
+				servers[i], servers[j] = servers[j], servers[i]
+			})
+		}
+		return servers
+	}
+	
+	// 如果没有健康的服务器，记录警告
+	logWarning(fmt.Sprintf("没有健康的服务器可用！健康服务器数: %d, 总服务器数: %d", 
+		len(healthyServers), 
+		len(upstreamServers)))
+	
+	// 输出当前所有服务器的状态
+	for _, s := range upstreamServers {
+		status := "健康"
+		if !s.Healthy {
+			status = "不健康"
+		}
+		if s.circuitBreaker.IsOpen() {
+			status += "(熔断器开启)"
+		}
+		logInfo(fmt.Sprintf("服务器 %s 状态: %s", s.URL, status))
+	}
+	
+	// 在没有健康服务器的情况下，尝试使用响应时间最好的不健康服务器
+	var bestServer *Server
+	var bestResponseTime time.Duration = time.Hour
+	
+	for i := range upstreamServers {
+		server := &upstreamServers[i]
+		if len(server.ResponseTimes) > 0 {
+			avgTime := calculateAverageResponseTime(server)
+			if avgTime < bestResponseTime {
+				bestResponseTime = avgTime
+				bestServer = server
+			}
 		}
 	}
 	
-	// 随机打乱服务器顺序
-	if len(servers) > 1 {
-		rand.Shuffle(len(servers), func(i, j int) {
-			servers[i], servers[j] = servers[j], servers[i]
-		})
+	if bestServer != nil {
+		logWarning(fmt.Sprintf("使用备选服务器: %s (平均响应时间: %v)", 
+			bestServer.URL, 
+			bestResponseTime))
+		return []*Server{bestServer}
 	}
 	
-	return servers
+	// 如果实在没有可用服务器，返回空切片
+	return nil
+}
+
+// 添加计算平均响应时间的辅助函数
+func calculateAverageResponseTime(server *Server) time.Duration {
+	if len(server.ResponseTimes) == 0 {
+		return time.Hour
+	}
+	
+	var total time.Duration
+	for _, rt := range server.ResponseTimes {
+		total += rt
+	}
+	return total / time.Duration(len(server.ResponseTimes))
 }
 
 // 尝试请求函数
