@@ -29,7 +29,6 @@ services:
       - PORT=6637
       - TZ=Asia/Shanghai
       - DEBUG_MODE=true
-      - TMDB_API_KEY=your_api_key_here
       
       # Redis配置
       - REDIS_HOST=redis

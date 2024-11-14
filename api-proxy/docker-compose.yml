@@ -29,6 +29,7 @@ services:
       - PORT=6637
       - TZ=Asia/Shanghai
       - DEBUG_MODE=true
+      - TMDB_API_KEY=your_api_key_here
       
       # Redis配置
       - REDIS_HOST=redis
@@ -49,7 +50,7 @@ services:
       - CACHE_TTL_MINUTES=1440
       
       # 上游服务器配置
-      - UPSTREAM_SERVERS=http://141.147.151.154:3333,http://130.162.144.130:3333,http://168.138.9.163:3333,http://129.153.54.140:3333,http://150.230.24.153:3333,https://tmdb.voyka-yuri.workers.dev,https://api.themoviedb.org,https://api.tmdb.org,https://tmdb.movie-pilot.org
+      - UPSTREAM_SERVERS=your_own_tmdb_api_server_url
     
     logging:
       driver: "json-file"
