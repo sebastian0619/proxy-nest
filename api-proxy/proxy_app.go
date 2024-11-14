@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	
 	"github.com/redis/go-redis/v9"
+	"github.com/allegro/bigcache/v3"
+	"sync/atomic"
 )
 
 // 配置常量
@@ -37,6 +39,8 @@ var (
 	AlphaAdjustmentStep   = getFloat64Env("ALPHA_ADJUSTMENT_STEP", 0.05)
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
+	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 10) * time.Minute
+	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 100) * 1024 * 1024
 )
 
 // Redis客户端
@@ -446,10 +450,11 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 
 // 修改：handleProxyRequest 中处理非JSON响应的部分
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
+	metrics.RequestCount.Add(1)
 	uri := r.RequestURI
 
 	// 检查缓存
-	if data, found := checkCache(uri); found {
+	if data, found := checkCaches(uri); found {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		logInfo(fmt.Sprintf("%s[命中缓存]%s - %s", ColorGreen, ColorReset, uri))
@@ -612,6 +617,159 @@ func findServerByURL(url string) *Server {
 	return nil
 }
 
+// 添加新的全局变量
+var (
+	metrics     = &Metrics{}
+	localCache  *bigcache.BigCache
+	bufferPool  = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 32*1024)
+		},
+	}
+)
+
+// 新增 Metrics 结构体
+type Metrics struct {
+	RequestCount   atomic.Int64
+	ErrorCount     atomic.Int64
+	ResponseTimes  sync.Map  // URL -> []time.Duration
+	CacheHits      atomic.Int64
+	CacheMisses    atomic.Int64
+	LocalCacheHits atomic.Int64
+	RedisCacheHits atomic.Int64
+}
+
+// 初始化本地缓存
+func initCache() error {
+	config := bigcache.DefaultConfig(LocalCacheExpiration)
+	config.MaxEntriesInWindow = 10000
+	config.MaxEntrySize = 1 * 1024 * 1024  // API响应通常小于1MB
+	config.HardMaxCacheSize = LocalCacheSize
+	config.Verbose = false
+	
+	var err error
+	localCache, err = bigcache.NewBigCache(config)
+	if err != nil {
+		return fmt.Errorf("初始化本地缓存失败: %v", err)
+	}
+	return nil
+}
+
+// 修改缓存检查逻辑
+func checkCaches(uri string) ([]byte, bool) {
+	// 1. 先检查本地缓存
+	if data, err := localCache.Get(uri); err == nil {
+		if isValidJSON(data) {
+			metrics.LocalCacheHits.Add(1)
+			return data, true
+		}
+	}
+
+	// 2. 检查 Redis 缓存
+	if data, found := checkCache(uri); found {
+		if isValidJSON(data) {
+			metrics.RedisCacheHits.Add(1)
+			// 更新本地缓存
+			if err := localCache.Set(uri, data); err != nil {
+				logError(fmt.Sprintf("更新本地缓存失败: %v", err))
+			}
+			return data, true
+		}
+	}
+
+	metrics.CacheMisses.Add(1)
+	return nil, false
+}
+
+// 添加指标收集
+func collectMetrics() {
+	ticker := time.NewTicker(1 * time.Minute)
+	for range ticker.C {
+		logInfo(fmt.Sprintf(
+			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
+			metrics.RequestCount.Load(),
+			metrics.ErrorCount.Load(),
+			metrics.CacheHits.Load(),
+			metrics.LocalCacheHits.Load(),
+			metrics.RedisCacheHits.Load(),
+			metrics.CacheMisses.Load(),
+		))
+	}
+}
+
+// 添加指标接口
+func handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"requests":      metrics.RequestCount.Load(),
+		"errors":        metrics.ErrorCount.Load(),
+		"cache_hits":    metrics.CacheHits.Load(),
+		"local_hits":    metrics.LocalCacheHits.Load(),
+		"redis_hits":    metrics.RedisCacheHits.Load(),
+		"cache_misses": metrics.CacheMisses.Load(),
+	})
+}
+
+// HealthStats 结构体定义
+type HealthStats struct {
+	windowSize int
+	requests   []bool
+	index      int
+	mu         sync.RWMutex
+}
+
+// 新增 NewHealthStats 函数
+func NewHealthStats(windowSize int) *HealthStats {
+	return &HealthStats{
+		windowSize: windowSize,
+		requests:   make([]bool, windowSize),
+	}
+}
+
+// CircuitBreaker 结构体定义 (删除重复定义，只保留一处)
+type CircuitBreaker struct {
+	failures     int32
+	lastFailure  time.Time
+	threshold    int32
+	resetTimeout time.Duration
+	mu          sync.RWMutex
+}
+
+func (cb *CircuitBreaker) Record(err error) {
+	if err != nil {
+		cb.mu.Lock()
+		defer cb.mu.Unlock()
+		atomic.AddInt32(&cb.failures, 1)
+		cb.lastFailure = time.Now()
+	}
+}
+
+func (cb *CircuitBreaker) IsOpen() bool {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+	if atomic.LoadInt32(&cb.failures) >= cb.threshold {
+		// 如果超过重置时间，重置失败计数
+		if time.Since(cb.lastFailure) > cb.resetTimeout {
+			atomic.StoreInt32(&cb.failures, 0)
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func (cb *CircuitBreaker) Reset() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	atomic.StoreInt32(&cb.failures, 0)
+}
+
+// ExponentialSmoothing 结构体定义
+type ExponentialSmoothing struct {
+	value float64
+	alpha float64
+}
+
 func main() {
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
@@ -637,4 +795,15 @@ func main() {
 			cleanInvalidCache()
 		}
 	}()
+	
+	// 初始化缓存
+	if err := initCache(); err != nil {
+		log.Printf("警告: 本地缓存初始化失败: %v", err)
+	}
+	
+	// 启动指标收集
+	go collectMetrics()
+	
+	// 添加指标接口
+	http.HandleFunc("/metrics", handleMetrics)
 }
