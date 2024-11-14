@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -12,11 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	
 	"github.com/redis/go-redis/v9"
-	"github.com/allegro/bigcache/v3"
 )
 
 // 配置常量
@@ -27,8 +24,6 @@ const (
 	ColorBlue   = "\033[34m"
 	ColorReset  = "\033[0m"
 	MaxRetryAttempts = 5
-	LocalCacheSize        = 100 * 1024 * 1024  // 100MB
-	LocalCacheExpiration = 5 * time.Minute     // 本地缓存过期时间
 )
 
 var (
@@ -146,9 +141,6 @@ type Server struct {
 	Alpha          float64
 	ResponseTimes  []time.Duration
 	mutex          sync.RWMutex
-	healthStats    *HealthStats
-	circuitBreaker *CircuitBreaker
-	smoothing      *ExponentialSmoothing
 }
 
 var (
@@ -165,22 +157,10 @@ func initUpstreamServers() {
 	servers := strings.Split(upstreamEnv, ",")
 	for _, serverURL := range servers {
 		upstreamServers = append(upstreamServers, Server{
-			URL:            strings.TrimSpace(serverURL),
-			Alpha:          AlphaInitial,
-			Healthy:        true,
-			BaseWeight:     50,
-			// 初始化熔断器
-			circuitBreaker: &CircuitBreaker{
-				threshold:    5,               // 5次失败后触发熔断
-				resetTimeout: time.Minute * 1, // 1分钟后重试
-			},
-			// 初始化健康检查统计
-			healthStats: NewHealthStats(100),  // 保存最近100次请求的状态
-			// 初始化平滑计算
-			smoothing: &ExponentialSmoothing{
-				alpha: 0.2,
-				value: 50.0,
-			},
+			URL:        strings.TrimSpace(serverURL),
+			Alpha:      AlphaInitial,
+			Healthy:    true,
+			BaseWeight: 50,
 		})
 	}
 	logInfo("已加载上游服务器列表")
@@ -324,56 +304,47 @@ type fetchResult struct {
 
 // 修改代理请求处理函数
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
-	metrics.RequestCount.Add(1)
 	uri := r.RequestURI
 
 	// 检查缓存
-	if data, contentType, found := checkCaches(uri); found {
-		logInfo(fmt.Sprintf("缓存命中: %s", uri))
-		w.Header().Set("Content-Type", contentType)
-		w.Write(data)
-		return
+	if data, found := checkCache(uri); found {
+		contentType := http.DetectContentType(data)
+		if isImageContentType(contentType) {
+			logInfo(fmt.Sprintf("命中缓存: %s", uri))
+			w.Header().Set("Content-Type", contentType)
+			w.Write(data)
+			return
+		}
 	}
+	logDebug(fmt.Sprintf("未命中缓存: %s", uri))
 
-	metrics.CacheMisses.Add(1)
-	logDebug(fmt.Sprintf("缓存未命中: %s", uri))
-
-	// 使用熔断器和重试逻辑获取图片
+	// 尝试获取图片，最多重试5次
 	var lastErr error
 	attemptedServers := make(map[string]bool)
 	
 	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
 		server := getWeightedRandomServer()
 		if server == nil {
-			metrics.ErrorCount.Add(1)
 			http.Error(w, "没有可用的健康上游服务器", http.StatusBadGateway)
 			return
 		}
 
+		// 检查是否已经尝试过这个服务器
 		if attemptedServers[server.URL] {
 			continue
 		}
 		attemptedServers[server.URL] = true
 
-		// 检查熔断器状态
-		if server.circuitBreaker.IsOpen() {
-			logError(fmt.Sprintf("服务器 %s 熔断器开启，跳过", server.URL))
-			continue
-		}
-
 		logInfo(fmt.Sprintf("尝试第 %d 次请求，使用服务器: %s", attempt+1, server.URL))
 		body, contentType, statusCode, err := tryFetchImage(server, r)
 		
 		if err != nil {
-			server.circuitBreaker.Record(err)
 			lastErr = err
-			metrics.ErrorCount.Add(1)
 			logError(fmt.Sprintf("请求失败: %s - %v", server.URL, err))
 			continue
 		}
 
 		if !isImageContentType(contentType) {
-			server.circuitBreaker.Record(fmt.Errorf("非图片响应"))
 			logError(fmt.Sprintf("服务器 %s 返回非图片格式: %s", server.URL, contentType))
 			markServerUnhealthy(server)
 			continue
@@ -381,26 +352,18 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 
 		// 成功获取图片
 		logInfo(fmt.Sprintf("成功获取图片: %s", server.URL))
-		
-		// 更新缓存
-		localCache.Set(uri, body)
 		addToCache(uri, body, contentType)
-		
 		w.Header().Set("Content-Type", contentType)
 		w.WriteHeader(statusCode)
-		
-		// 使用缓冲池复制响应
-		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
 		w.Write(body)
 		return
 	}
 
-	metrics.ErrorCount.Add(1)
-	http.Error(w, fmt.Sprintf("经过 %d 次尝试后仍未能���取图片: %v", MaxRetryAttempts, lastErr), http.StatusBadGateway)
+	// 所有尝试都失败
+	http.Error(w, fmt.Sprintf("经过 %d 次尝试后仍未能获取图片: %v", MaxRetryAttempts, lastErr), http.StatusBadGateway)
 }
 
-// 添加尝试获图片的函数
+// 添加尝试获取图片的函数
 func tryFetchImage(server *Server, r *http.Request) ([]byte, string, int, error) {
 	client := &http.Client{Timeout: RequestTimeout}
 	url := server.URL + r.RequestURI
@@ -500,112 +463,9 @@ func max(a, b int) int {
 	return b
 }
 
-// 新增结构体定义
-type Metrics struct {
-    RequestCount   atomic.Int64
-    ErrorCount     atomic.Int64
-    ResponseTimes  sync.Map  // URL -> []time.Duration
-    CacheHits      atomic.Int64
-    CacheMisses    atomic.Int64
-    LocalCacheHits atomic.Int64
-    RedisCacheHits atomic.Int64
-}
-
-type CircuitBreaker struct {
-    failures     int32
-    lastFailure  time.Time
-    threshold    int32
-    resetTimeout time.Duration
-    mu          sync.RWMutex
-}
-
-type HealthStats struct {
-    windowSize int
-    requests   []bool
-    index      int
-    mu         sync.RWMutex
-}
-
-type ExponentialSmoothing struct {
-    value float64
-    alpha float64
-}
-
-// 全局变量
-var (
-    metrics     = &Metrics{}
-    localCache  *bigcache.BigCache
-    bufferPool  = sync.Pool{
-        New: func() interface{} {
-            return make([]byte, 32*1024)
-        },
-    }
-    httpClient = &http.Client{
-        Transport: &http.Transport{
-            MaxIdleConns:        100,
-            MaxIdleConnsPerHost: 100,
-            IdleConnTimeout:     90 * time.Second,
-            DisableCompression:  true,
-        },
-        Timeout: RequestTimeout,
-    }
-)
-
-// 初始化本地缓存
-func initCache() error {
-    config := bigcache.DefaultConfig(LocalCacheExpiration)
-    config.MaxEntriesInWindow = 10000 // 根据实际需求调整
-    config.MaxEntrySize = 5 * 1024 * 1024 // 单个图片最大 5MB
-    config.HardMaxCacheSize = LocalCacheSize // 最大缓存大小
-    config.Verbose = false // 生产环境建议关闭详细日志
-    
-    var err error
-    localCache, err = bigcache.NewBigCache(config)
-    if err != nil {
-        return fmt.Errorf("初始化本地缓存失败: %v", err)
-    }
-    return nil
-}
-
-// 修改缓存检查逻辑
-func checkCaches(uri string) ([]byte, string, bool) {
-    // 1. 先检查本地缓存
-    if data, err := localCache.Get(uri); err == nil {
-        contentType := http.DetectContentType(data)
-        if isImageContentType(contentType) {
-            metrics.LocalCacheHits.Add(1)
-            return data, contentType, true
-        }
-    }
-
-    // 2. 检查 Redis 缓存
-    if data, found := checkCache(uri); found {
-        contentType := http.DetectContentType(data)
-        if isImageContentType(contentType) {
-            metrics.RedisCacheHits.Add(1)
-            // 更新本地缓存
-            if err := localCache.Set(uri, data); err != nil {
-                logError(fmt.Sprintf("更新本地缓存失败: %v", err))
-            }
-            return data, contentType, true
-        }
-    }
-
-    metrics.CacheMisses.Add(1)
-    return nil, "", false
-}
-
 func main() {
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
-	
-	// 初始化缓存
-	if err := initCache(); err != nil {
-		log.Printf("警告: 本地缓存初始化失败: %v", err)
-		// 继续运行，仅使用 Redis 缓存
-	} else {
-		startCacheCleanup()
-	}
 	
 	// 初始化Redis
 	initRedis()
@@ -616,89 +476,16 @@ func main() {
 	// 启动健康检查
 	updateBaseWeights()
 	
-	// 启动指标收集
-	go collectMetrics()
-	
 	// 启动HTTP服务
 	http.HandleFunc("/", handleProxyRequest)
-	http.HandleFunc("/metrics", handleMetrics) // 添加指标接口
-	
 	port := getEnv("PORT", "6637")
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
-}
-
-// 收集指标
-func collectMetrics() {
-	ticker := time.NewTicker(1 * time.Minute)
-	for range ticker.C {
-		logInfo(fmt.Sprintf(
-			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d, 缓存未命中: %d",
-			metrics.RequestCount.Load(),
-			metrics.ErrorCount.Load(),
-			metrics.CacheHits.Load(),
-			metrics.CacheMisses.Load(),
-		))
-	}
-}
-
-// 指标接口
-func handleMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"requests":     metrics.RequestCount.Load(),
-		"errors":       metrics.ErrorCount.Load(),
-		"cache_hits":   metrics.CacheHits.Load(),
-		"cache_misses": metrics.CacheMisses.Load(),
-	})
-}
-
-// 定期清理过期本地缓存
-func startCacheCleanup() {
-    go func() {
-        ticker := time.NewTicker(10 * time.Minute)
-        for range ticker.C {
-            before := localCache.Len()
-            localCache.Reset()
-            after := localCache.Len()
-            logInfo(fmt.Sprintf("本地缓存清理完成: 清理前 %d 项, 清理后 %d 项", before, after))
-        }
-    }()
-}
-
-// CircuitBreaker 结构体及其方法
-type CircuitBreaker struct {
-    failures     int32
-    lastFailure  time.Time
-    threshold    int32
-    resetTimeout time.Duration
-    mu          sync.RWMutex
-}
-
-func (cb *CircuitBreaker) Record(err error) {
-    if err != nil {
-        cb.mu.Lock()
-        defer cb.mu.Unlock()
-        atomic.AddInt32(&cb.failures, 1)
-        cb.lastFailure = time.Now()
-    }
-}
-
-func (cb *CircuitBreaker) IsOpen() bool {
-    cb.mu.RLock()
-    defer cb.mu.RUnlock()
-    if atomic.LoadInt32(&cb.failures) >= cb.threshold {
-        // 如果超过重置时间，重置失败计数
-        if time.Since(cb.lastFailure) > cb.resetTimeout {
-            atomic.StoreInt32(&cb.failures, 0)
-            return false
-        }
-        return true
-    }
-    return false
-}
-
-func (cb *CircuitBreaker) Reset() {
-    cb.mu.Lock()
-    defer cb.mu.Unlock()
-    atomic.StoreInt32(&cb.failures, 0)
+	
+	// 添加定期清理非图片缓存的任务
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		for range ticker.C {
+			cleanNonImageCache()
+		}
+	}()
 }
