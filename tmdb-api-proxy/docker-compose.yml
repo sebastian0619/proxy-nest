@@ -19,6 +19,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    #image: ghcr.io/sebastian0619/tmdb-go-proxy-nest/tmdb-api-proxy:latest
     deploy:
       mode: replicated
       replicas: 3
