@@ -532,7 +532,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 	// 遍历所有健康的上游服务器（除了刚刚失败的那个）
 	for i := range upstreamServers {
 		server := &upstreamServers[i]
-		// 跳过不健康的服务和刚刚失败的服务
+		// 跳过不健康的服务刚刚失败的服务
 		if !server.Healthy || server.URL == failedURL {
 			continue
 		}
@@ -655,7 +655,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 处理成功响应
-		handleSuccessResponse(w, resp, requestID)
+		handleSuccessResponse(w, resp, requestID, r)
 		resetRetryCount(server)
 		return
 	}
@@ -805,7 +805,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 }
 
 // 处理成功响应
-func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
+func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID string, r *http.Request) {
 	defer resp.Body.Close()
 	
 	// 读取响应体
@@ -1231,7 +1231,7 @@ func loadHealthData() error {
 		key := iter.Val()
 		data, err := redisClient.Get(ctx, key).Bytes()
 		if err != nil {
-			logError(fmt.Sprintf("从Redis加载健康数��失败 [%s]: %v", key, err))
+			logError(fmt.Sprintf("从Redis加载健康数失败 [%s]: %v", key, err))
 			continue
 		}
 		
