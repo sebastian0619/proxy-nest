@@ -336,7 +336,7 @@ type Server struct {
 }
 
 var (
-	upstreamServers []Server
+	upstreamServers []*Server
 	mu              sync.Mutex
 )
 
@@ -348,7 +348,7 @@ func initUpstreamServers() {
 	}
 	
 	servers := strings.Split(upstreamEnv, ",")
-	upstreamServers = make([]Server, 0, len(servers))  // 预分配切片容量
+	upstreamServers = make([]*Server, 0, len(servers))  // 预分配切片容量
 	
 	for _, serverURL := range servers {
 		server := NewServer(strings.TrimSpace(serverURL))
@@ -1369,8 +1369,8 @@ func logWarning(message string) {
 }
 
 // 添加 Server 结构体的初始化方法
-func NewServer(url string) Server {
-	return Server{
+func NewServer(url string) *Server {
+	return &Server{
 		URL:           url,
 		Alpha:         AlphaInitial,
 		Healthy:       true,
