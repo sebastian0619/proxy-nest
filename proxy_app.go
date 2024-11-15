@@ -424,19 +424,25 @@ func calculateBaseWeightEWMA(server *Server) int {
 // 计算动态权重
 func calculateDynamicWeight(server *Server) int {
 	if len(server.ResponseTimes) < 2 {
+		logDebug(fmt.Sprintf("服务器 %s 响应时间记录不足，保持当前动态权重: %d", 
+			server.URL, 
+			server.DynamicWeight))
 		return server.DynamicWeight
 	}
 	
-	// 使用最近的响应时间计算动态权重
 	latestRT := server.ResponseTimes[len(server.ResponseTimes)-1]
 	weight := float64(DynamicWeightMultiplier) / float64(latestRT.Milliseconds())
 	
-	// 限制权重范围
 	if weight < 1 {
 		weight = 1
 	} else if weight > 100 {
 		weight = 100
 	}
+	
+	logDebug(fmt.Sprintf("服务器 %s 计算动态权重: 最近响应时间=%v, 新权重=%d", 
+		server.URL, 
+		latestRT,
+		int(weight)))
 	
 	return int(weight)
 }
@@ -470,7 +476,7 @@ func calculateCombinedWeight(server *Server) int {
 func averageDuration(durations []time.Duration) time.Duration {
 	if len(durations) == 0 {
 		logError("计算平均响应时间时，输入的 durations 列表为空")
-		return 0 // 回一个默认值
+		return 0 // 返回一个默认值
 	}
 
 	var sum time.Duration
@@ -509,12 +515,9 @@ func getWeightedRandomServer() *Server {
 	defer selectedServer.mutex.RUnlock()
 
 	avgResponseTime := averageDuration(selectedServer.ResponseTimes)
-	logInfo(fmt.Sprintf("选择的服务器: %s", selectedServer.URL))
-	logInfo(fmt.Sprintf("平均响应时间: %v", avgResponseTime))
-	logInfo(fmt.Sprintf("基础权重: %d", selectedServer.BaseWeight))
-	logInfo(fmt.Sprintf("动态权重: %d", selectedServer.DynamicWeight))
-	logInfo(fmt.Sprintf("综合权重: %d", calculateCombinedWeight(selectedServer)))
-	logInfo(fmt.Sprintf("总权重: %d, 选择比例: %.2f%%", totalWeight, float64(calculateCombinedWeight(selectedServer))*100/float64(totalWeight)))
+	logInfo(fmt.Sprintf("选择的服务器: %s, 平均响应时间: %v, 基础权重: %d, 动态权重: %d, 综合权重: %d, 总权重: %d, 选择比例: %.2f%%", 
+		selectedServer.URL, avgResponseTime, selectedServer.BaseWeight, selectedServer.DynamicWeight, 
+		calculateCombinedWeight(selectedServer), totalWeight, float64(calculateCombinedWeight(selectedServer))*100/float64(totalWeight)))
 
 	return selectedServer
 }
@@ -778,12 +781,6 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 复制原始求头
-	req.Header = make(http.Header)
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
-	
 	start := time.Now()
 	resp, err := client.Do(req)
 	responseTime := time.Since(start)
@@ -792,12 +789,15 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 记录响应时
 	server.mutex.Lock()
 	server.ResponseTimes = append(server.ResponseTimes, responseTime)
 	if len(server.ResponseTimes) > RecentRequestLimit {
 		server.ResponseTimes = server.ResponseTimes[1:]
 	}
+	logDebug(fmt.Sprintf("服务器 %s 更新响应时间: %v (当前列表长度: %d)", 
+		server.URL, 
+		responseTime,
+		len(server.ResponseTimes)))
 	server.mutex.Unlock()
 	
 	return resp, nil
@@ -1346,7 +1346,9 @@ func NewServer(url string) Server {
 		Alpha:         AlphaInitial,
 		Healthy:       true,
 		BaseWeight:    50,
-		RetryCount:    0,          // 初始化重试计数器
+		DynamicWeight: 50,  // 给一个初始值
+		RetryCount:    0,
+		ResponseTimes: make([]time.Duration, 0, RecentRequestLimit),  // 预分配容量
 		circuitBreaker: &CircuitBreaker{
 			threshold:    5,
 			resetTimeout: time.Minute * 1,
