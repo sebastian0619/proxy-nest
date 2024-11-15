@@ -229,19 +229,26 @@ func initCaches() error {
 	return nil
 }
 
-// 修改后的缓存检查逻辑
-func checkCaches(uri string) ([]byte, bool) {
+// 生成缓存键的函数
+func generateCacheKey(r *http.Request) string {
+	// 使用请求的URI作为缓存键
+	return r.URL.RequestURI()
+}
+
+// 检查缓存逻辑
+func checkCaches(r *http.Request) ([]byte, bool) {
+	uri := generateCacheKey(r)
 	logDebug(fmt.Sprintf("检查缓存: %s", uri))
 
 	// 检查本地缓存
-	if data, err := localCache.Get(uri); err == nil && validateData(data, "") {
+	if data, err := localCache.Get(uri); err == nil && isValidJSON(data) {
 		metrics.LocalCacheHits.Add(1)
 		logInfo(fmt.Sprintf("本地缓存命中: %s", uri))
 		return data, true
 	}
 
 	// 检查Redis缓存
-	if data, err := redisCache.Get(uri); err == nil && validateData(data, "") {
+	if data, err := redisCache.Get(uri); err == nil && isValidJSON(data) {
 		metrics.RedisCacheHits.Add(1)
 		logInfo(fmt.Sprintf("Redis缓存命中: %s", uri))
 		// 更新本地缓存
@@ -256,8 +263,9 @@ func checkCaches(uri string) ([]byte, bool) {
 	return nil, false
 }
 
-// 修改后的缓存更新逻辑
-func addToCache(uri string, data []byte) {
+// 更新缓存逻辑
+func addToCache(r *http.Request, data []byte) {
+	uri := generateCacheKey(r)
 	logDebug(fmt.Sprintf("更新缓存: %s, 数据长度: %d", uri, len(data)))
 
 	// 确保数据是有效的JSON
@@ -621,7 +629,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
 
 	// 检查缓存
-	if data, found := checkCaches(uri); found {
+	if data, found := checkCaches(r); found {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
@@ -823,7 +831,7 @@ func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID
 	
 	// 如果是缓存的响应，添加到缓存
 	if resp.StatusCode == http.StatusOK {
-		addToCache(requestID, body)
+		addToCache(r, body)
 	}
 	
 	logInfo(fmt.Sprintf("[%s] 请求成功完成", requestID))
