@@ -44,6 +44,7 @@ var (
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
 	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024
+	METRICS_INTERVAL_MINUTES = getIntEnv("METRICS_INTERVAL_MINUTES", 10)
 	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
 )
 
@@ -378,6 +379,7 @@ func getWeightedRandomServer() *Server {
 	selectedServer := &healthyServers[rand.Intn(len(healthyServers))]
 
 	// 记录详细日志
+	logInfo(fmt.Sprintf("选择的服务器: %s", selectedServer.URL))
 	selectedServer.mutex.RLock()
 	defer selectedServer.mutex.RUnlock()
 
@@ -463,7 +465,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		close(responses)
 	}()
 
-	// 获���第一个成功的响应
+	// 获第一个成功的响应
 	for resp := range responses {
 		return resp.resp, resp.body
 	}
@@ -498,7 +500,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	uri := r.RequestURI
 
 	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
-	
+
 	// 检查缓存
 	if data, found := checkCaches(uri); found {
 		w.Header().Set("Content-Type", "application/json")
@@ -507,36 +509,40 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		logInfo(fmt.Sprintf("[%s] 缓存命中", requestID))
 		return
 	}
-	
-	// 获取可用服务器
-	availableServers := getHealthyServers()
-	if len(availableServers) == 0 {
+
+	// 获取加权随机的健康服务器
+	server := getWeightedRandomServer()
+	if server == nil {
 		metrics.ErrorCount.Add(1)
 		http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
 		logError(fmt.Sprintf("[%s] 没有可用的服务器", requestID))
 		return
 	}
-	
+
 	// 尝试请求
 	var lastErr error
-	for _, server := range availableServers {
+	for i := 0; i < MaxRetryAttempts; i++ {
 		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			server.circuitBreaker.Record(err)
-			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
+			logError(fmt.Sprintf("[%s] 服务器 %s ��求失败: %v", requestID, server.URL, err))
 			continue
 		}
-		
+
 		// 处理成功响应
 		handleSuccessResponse(w, resp, requestID)
 		// 重置该服务器的重试计数
 		resetRetryCount(server)
 		return
 	}
-	
-	// 所有服务器都失败
+
+	// 如果多次重试后仍然失败，将服务器标记为不健康
+	server.mutex.Lock()
+	server.Healthy = false
+	server.mutex.Unlock()
+	server.circuitBreaker.Record(lastErr)
+
 	metrics.ErrorCount.Add(1)
 	http.Error(w, fmt.Sprintf("所有可用上游服务器都失败: %v", lastErr), http.StatusBadGateway)
 	logError(fmt.Sprintf("[%s] 所有上游服务器请求失败", requestID))
@@ -620,7 +626,7 @@ func getHealthyServers() []*Server {
 	}
 	
 	if bestServer != nil {
-		logWarning(fmt.Sprintf("使用备选服务器: %s (平均响应时间: %v)", 
+		logWarning(fmt.Sprintf("使用备服务器: %s (平均响应时间: %v)", 
 			bestServer.URL, 
 			bestResponseTime))
 		return []*Server{bestServer}
@@ -667,7 +673,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 记录响应时间
+	// 记录响应时��
 	server.mutex.Lock()
 	server.ResponseTimes = append(server.ResponseTimes, responseTime)
 	if len(server.ResponseTimes) > RecentRequestLimit {
@@ -852,7 +858,7 @@ func checkCaches(uri string) ([]byte, bool) {
 
 // 添加指标收集
 func collectMetrics() {
-	ticker := time.NewTicker(time.Duration(os.Getenv("METRICS_INTERVAL_MINUTES")) * time.Minute)
+	ticker := time.NewTicker(METRICS_INTERVAL_MINUTES * time.Minute)
 	for range ticker.C {
 		logInfo(fmt.Sprintf(
 			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
@@ -944,7 +950,7 @@ func generateRequestID() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
 }
 
-// 添加定期健康状态报告函数
+// 添加定期健康状态报函数
 func startHealthStatusReporting() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)  // 每五分钟报告一次
@@ -1221,7 +1227,7 @@ func checkServerHealth(server *Server) (bool, error) {
 	case "custom":
 		healthCheckURL = os.Getenv("CUSTOM_HEALTH_CHECK_URL")
 		if healthCheckURL == "" {
-			healthCheckURL = server.URL + "/health" // 默认值
+			healthCheckURL = server.URL + "/health" // 默值
 		}
 	default:
 		log.Fatal("未知的 UPSTREAM_TYPE")
