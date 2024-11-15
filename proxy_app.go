@@ -791,11 +791,6 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	if err == nil {
 		server.mutex.Lock()
 		
-		// 检查并初始化 ResponseTimes 切片
-		if server.ResponseTimes == nil {
-			server.ResponseTimes = make([]time.Duration, 0, MaxResponseTimeRecords)
-		}
-		
 		// 更新响应时间记录
 		server.ResponseTimes = append(server.ResponseTimes, responseTime)
 		if len(server.ResponseTimes) > MaxResponseTimeRecords {
@@ -810,7 +805,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 历史记录=%v, 记录数=%d, 动态权重=%d", 
 			server.URL, 
 			responseTime,
-			server.ResponseTimes,  // 打印所有响应时间记录
+			server.ResponseTimes,
 			len(server.ResponseTimes),
 			server.DynamicWeight))
 			
@@ -1363,7 +1358,7 @@ func NewServer(url string) Server {
 		Alpha:         AlphaInitial,
 		Healthy:       true,
 		BaseWeight:    50,
-		DynamicWeight: 50,  // 初始动态权重
+		DynamicWeight: 50,
 		ResponseTimes: make([]time.Duration, 0, MaxResponseTimeRecords),
 		RetryCount:    0,
 		circuitBreaker: &CircuitBreaker{
