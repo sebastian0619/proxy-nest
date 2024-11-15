@@ -700,8 +700,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
 	requestID := generateRequestID()
 	uri := r.RequestURI
-	logInfo(fmt.Sprintf("处理代理请求, 请求ID: %s, URI: %s", requestID, uri))
-
+	
+	// 只记录初始请求日志
 	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
 
 	// 检查缓存
@@ -710,7 +710,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取加权随机的健康服务器
+	// 获取服务器并尝试请求
 	server := getWeightedRandomServer()
 	if server == nil {
 		metrics.ErrorCount.Add(1)
@@ -719,29 +719,27 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 只记录选中的服务器
+	logInfo(fmt.Sprintf("[%s] 使用服务器: %s", requestID, server.URL))
+
 	// 尝试请求
 	var lastErr error
 	for i := 0; i < MaxRetryAttempts; i++ {
-		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
 			continue
 		}
 
-		// 处理成功响应
 		handleSuccessResponse(w, resp, requestID, r)
 		resetRetryCount(server)
 		return
 	}
 
-	// 如果多次重试后仍然失败，将服务器标记为不健康
+	// 请求失败处理
 	markServerUnhealthy(server)
-
 	metrics.ErrorCount.Add(1)
-	http.Error(w, fmt.Sprintf("所有可用上游服务器都失败: %v", lastErr), http.StatusBadGateway)
-	logError(fmt.Sprintf("[%s] 所有上游服务器请求失败", requestID))
+	http.Error(w, fmt.Sprintf("请求失败: %v", lastErr), http.StatusBadGateway)
 }
 
 // 获取健康服务器列表
@@ -844,39 +842,59 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 
 // 尝试请求函数
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
-	start := time.Now()
-	
-	// 正确构建完整的 URL
-	targetURL := server.URL + r.URL.Path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
+	if !server.Healthy {
+		return nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
 	}
 	
-	// 创建新的请求
-	newReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+	client := &http.Client{Timeout: RequestTimeout}
+	url := server.URL + r.RequestURI
+	
+	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
 		return nil, err
 	}
 	
-	// 复制原始请求的 header
-	newReq.Header = r.Header
-	
-	client := &http.Client{Timeout: RequestTimeout}
-	resp, err := client.Do(newReq)
-	
+	start := time.Now()
+	resp, err := client.Do(req)
 	responseTime := time.Since(start)
-	if err == nil {
-		server.afterRequest(responseTime)
+	
+	server.mutex.Lock()
+	defer server.mutex.Unlock()
+	
+	if err != nil {
+		server.RetryCount++
+		if server.RetryCount >= MaxRetries {
+			server.Healthy = false
+			server.DynamicWeight = 1
+			logError(fmt.Sprintf("服务器 %s 连续失败次数过多，标记为不健康", server.URL))
+		}
+		return nil, err
 	}
 	
-	return resp, err
+	// 请求成功，更新服务器状态
+	server.RetryCount = 0
+	server.ResponseTimes = append(server.ResponseTimes, responseTime)
+	if len(server.ResponseTimes) > MaxResponseTimeRecords {
+		server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
+	}
+	
+	// 只在请求成功时更新动态权重并记录日志
+	if server.Healthy {
+		server.DynamicWeight = calculateDynamicWeight(server)
+		logDebug(fmt.Sprintf("服务器 %s 更新动态权重: 健康状态=true, 平均响应时间=%v, 样本数=%d, 新权重=%d", 
+			server.URL, 
+			averageDuration(server.ResponseTimes),
+			len(server.ResponseTimes),
+			server.DynamicWeight))
+	}
+	
+	return resp, nil
 }
 
 // 处理成功响应
 func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID string, r *http.Request) {
 	defer resp.Body.Close()
 	
-	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "读取响应失败", http.StatusInternalServerError)
@@ -888,13 +906,10 @@ func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID
 		w.Header()[k] = v
 	}
 	
-	// 设置状态码
 	w.WriteHeader(resp.StatusCode)
-	
-	// 写入响应体
 	w.Write(body)
 	
-	// 如果是缓存的响应，添加到缓存
+	// 缓存处理
 	if resp.StatusCode == http.StatusOK {
 		addToCache(r, body)
 	}
