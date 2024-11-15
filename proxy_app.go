@@ -419,6 +419,12 @@ func calculateBaseWeight(avgRT time.Duration) int {
 
 // 计算动态权重
 func calculateDynamicWeight(server *Server) int {
+	// 如果服务器不健康，返回最低权重
+	if !server.Healthy {
+		logDebug(fmt.Sprintf("服务器 %s 不健康，动态权重设为1", server.URL))
+		return 1
+	}
+	
 	if len(server.ResponseTimes) == 0 {
 		return server.DynamicWeight
 	}
@@ -431,7 +437,7 @@ func calculateDynamicWeight(server *Server) int {
 	avgRT := totalRT / time.Duration(len(server.ResponseTimes))
 	
 	// 基于平均响应时间计算权重
-	const expectedRT = 500 * time.Millisecond  // 预期响应时间
+	const expectedRT = 500 * time.Millisecond
 	weight := int(float64(DynamicWeightMultiplier) * float64(expectedRT) / float64(avgRT))
 	
 	// 限制权重范围
@@ -440,6 +446,13 @@ func calculateDynamicWeight(server *Server) int {
 	} else if weight > 100 {
 		weight = 100
 	}
+	
+	logDebug(fmt.Sprintf("服务器 %s 更新动态权重: 健康状态=true, 平均响应时间=%v, 样本数=%d, 新权重=%d", 
+		server.URL, 
+		avgRT,
+		len(server.ResponseTimes),
+		weight))
+	
 	return weight
 }
 
@@ -484,38 +497,34 @@ func averageDuration(durations []time.Duration) time.Duration {
 
 // 选择健康的上游服务器
 func getWeightedRandomServer() *Server {
-	healthyServers := make([]Server, 0)
+	var healthyServers []*Server
 	totalWeight := 0
-
-	for _, server := range upstreamServers {
-		if server.Healthy {
-			combinedWeight := calculateCombinedWeight(&server)
-			totalWeight += combinedWeight
-			for i := 0; i < combinedWeight; i++ {
-				healthyServers = append(healthyServers, server)
-			}
+	
+	// 收集健康的服务器
+	for i := range upstreamServers {
+		if upstreamServers[i].Healthy {
+			healthyServers = append(healthyServers, &upstreamServers[i])
+			totalWeight += calculateCombinedWeight(&upstreamServers[i])
 		}
 	}
-
+	
 	if len(healthyServers) == 0 {
-		logWarning("没有健康的服务器可用")
 		return nil
 	}
-
-	// 选择服务器
-	selectedServer := &healthyServers[rand.Intn(len(healthyServers))]
-
-	// 记录详细日志
-	logInfo(fmt.Sprintf("选择的服务器: %s", selectedServer.URL))
-	selectedServer.mutex.RLock()
-	defer selectedServer.mutex.RUnlock()
-
-	avgResponseTime := averageDuration(selectedServer.ResponseTimes)
-	logInfo(fmt.Sprintf("选择的服务器: %s, 平均响应时间: %v, 基础权重: %d, 动态权重: %d, 综合权重: %d, 总权重: %d, 选择比例: %.2f%%", 
-		selectedServer.URL, avgResponseTime, selectedServer.BaseWeight, selectedServer.DynamicWeight, 
-		calculateCombinedWeight(selectedServer), totalWeight, float64(calculateCombinedWeight(selectedServer))*100/float64(totalWeight)))
-
-	return selectedServer
+	
+	// 随机选择一个点
+	r := rand.Intn(totalWeight)
+	currentWeight := 0
+	
+	// 遍历找到对应的服务器
+	for _, server := range healthyServers {
+		currentWeight += calculateCombinedWeight(server)
+		if r < currentWeight {
+			return server
+		}
+	}
+	
+	return healthyServers[len(healthyServers)-1]
 }
 
 // 修改：尝试其他上游服务器
@@ -769,6 +778,11 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 
 // 尝试请求函数
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
+	// 如果服务器不健康，直接返回错误
+	if !server.Healthy {
+		return nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
+	}
+	
 	client := &http.Client{Timeout: RequestTimeout}
 	url := server.URL + r.RequestURI
 	
@@ -781,38 +795,41 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	resp, err := client.Do(req)
 	responseTime := time.Since(start)
 	
-	if err == nil {
-		server.mutex.Lock()
-		
-		// 确保 ResponseTimes 已初始化
-		if server.ResponseTimes == nil {
-			server.ResponseTimes = make([]time.Duration, 0, MaxResponseTimeRecords)
+	server.mutex.Lock()
+	defer server.mutex.Unlock()
+	
+	if err != nil {
+		// 请求失败时的处理
+		server.RetryCount++
+		if server.RetryCount >= MaxRetries {
+			server.Healthy = false
+			server.DynamicWeight = 1  // 设置最低权重
+			logError(fmt.Sprintf("服务器 %s 连续失败次数过多，标记为不健康", server.URL))
 		}
-		
-		// 追加新的响应时间
-		server.ResponseTimes = append(server.ResponseTimes, responseTime)
-		
-		// 如果超过最大记录数，移除最旧的记录
-		if len(server.ResponseTimes) > MaxResponseTimeRecords {
-			// 只保留最近的 MaxResponseTimeRecords 条记录
-			server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
-		}
-		
-		// 实时更新动态权重
+		return nil, err
+	}
+	
+	// 请求成功，重置重试计数
+	server.RetryCount = 0
+	
+	// 更新响应时间记录
+	server.ResponseTimes = append(server.ResponseTimes, responseTime)
+	if len(server.ResponseTimes) > MaxResponseTimeRecords {
+		server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
+	}
+	
+	// 只有健康的服务器才更新动态权重
+	if server.Healthy {
 		server.DynamicWeight = calculateDynamicWeight(server)
-		
-		// 记录详细日志
 		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 历史记录=%v, 记录数=%d, 动态权重=%d", 
 			server.URL, 
 			responseTime,
 			server.ResponseTimes,
 			len(server.ResponseTimes),
 			server.DynamicWeight))
-			
-		server.mutex.Unlock()
 	}
 	
-	return resp, err
+	return resp, nil
 }
 
 // 处理成功响应
