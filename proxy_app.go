@@ -463,7 +463,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		close(responses)
 	}()
 
-	// 获取第一个成功的响应
+	// 获���第一个成功的响应
 	for resp := range responses {
 		return resp.resp, resp.body
 	}
@@ -800,29 +800,49 @@ func initCache() error {
 	return nil
 }
 
-// 修改缓存检查逻辑
+// 修改缓存检查逻辑，使用并发检查本地和 Redis 缓存
 func checkCaches(uri string) ([]byte, bool) {
-	// 1. 检查本地缓存（如果启用）
-	if useLocalCache && localCache != nil {
-		if data, err := localCache.Get(uri); err == nil {
-			if isValidJSON(data) {
-				metrics.LocalCacheHits.Add(1)
-				return data, true
-			}
-		}
+	type cacheResult struct {
+		data  []byte
+		found bool
+		source string
 	}
 
-	// 2. 检查 Redis 缓存
-	if data, found := checkCache(uri); found {
-		if isValidJSON(data) {
+	results := make(chan cacheResult, 2)
+
+	// 检查本地缓存
+	go func() {
+		if useLocalCache && localCache != nil {
+			if data, err := localCache.Get(uri); err == nil && isValidJSON(data) {
+				metrics.LocalCacheHits.Add(1)
+				results <- cacheResult{data, true, "local"}
+				return
+			}
+		}
+		results <- cacheResult{nil, false, "local"}
+	}()
+
+	// 检查 Redis 缓存
+	go func() {
+		if data, found := checkCache(uri); found && isValidJSON(data) {
 			metrics.RedisCacheHits.Add(1)
-			// 只在本地缓存可用时更新
-			if useLocalCache && localCache != nil {
-				if err := localCache.Set(uri, data); err != nil {
+			results <- cacheResult{data, true, "redis"}
+			return
+		}
+		results <- cacheResult{nil, false, "redis"}
+	}()
+
+	// 等待第一个成功的缓存命中
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.found {
+			// 如果是 Redis 命中，更新本地缓存
+			if result.source == "redis" && useLocalCache && localCache != nil {
+				if err := localCache.Set(uri, result.data); err != nil {
 					logError(fmt.Sprintf("更新本地缓存失败: %v", err))
 				}
 			}
-			return data, true
+			return result.data, true
 		}
 	}
 
@@ -832,7 +852,7 @@ func checkCaches(uri string) ([]byte, bool) {
 
 // 添加指标收集
 func collectMetrics() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(time.Duration(os.Getenv("METRICS_INTERVAL_MINUTES")) * time.Minute)
 	for range ticker.C {
 		logInfo(fmt.Sprintf(
 			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
