@@ -790,29 +790,31 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	
 	if err == nil {
 		server.mutex.Lock()
+		
+		// 检查并初始化 ResponseTimes 切片
+		if server.ResponseTimes == nil {
+			server.ResponseTimes = make([]time.Duration, 0, MaxResponseTimeRecords)
+		}
+		
 		// 更新响应时间记录
 		server.ResponseTimes = append(server.ResponseTimes, responseTime)
 		if len(server.ResponseTimes) > MaxResponseTimeRecords {
-			// 保留最近的记录
-			server.ResponseTimes = server.ResponseTimes[1:]
+			// 只保留最近的 MaxResponseTimeRecords 条记录
+			server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
 		}
 		
 		// 实时更新动态权重
 		server.DynamicWeight = calculateDynamicWeight(server)
 		
 		// 记录详细日志
-		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 记录数=%d, 动态权重=%d", 
+		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 历史记录=%v, 记录数=%d, 动态权重=%d", 
 			server.URL, 
 			responseTime,
+			server.ResponseTimes,  // 打印所有响应时间记录
 			len(server.ResponseTimes),
 			server.DynamicWeight))
 			
 		server.mutex.Unlock()
-		
-		// 保存健康数据到Redis
-		if err := saveHealthData(server, responseTime); err != nil {
-			logError(fmt.Sprintf("保存健康数据失败: %v", err))
-		}
 	}
 	
 	return resp, err
