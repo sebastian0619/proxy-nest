@@ -709,9 +709,7 @@ func getHealthyServers() []*Server {
 	totalWeight := 0
 	
 	// 首先只选择健康的服务器
-	for i := range upstreamServers {
-		server := &upstreamServers[i]
-		
+	for _, server := range upstreamServers {
 		// 确保 CircuitBreaker 已初始化
 		if server.circuitBreaker == nil {
 			server.circuitBreaker = &CircuitBreaker{
@@ -764,12 +762,11 @@ func getHealthyServers() []*Server {
 		logInfo(fmt.Sprintf("服务器 %s 状态: %s", s.URL, status))
 	}
 	
-	// 在没有健康服务器的情况下，尝试使用响应时最好的不健康服务器
+	// 在没有健康服务器的情况下，尝试使用响应时间最好的不健康服务器
 	var bestServer *Server
 	var bestResponseTime time.Duration = time.Hour
 	
-	for i := range upstreamServers {
-		server := &upstreamServers[i]
+	for _, server := range upstreamServers {
 		if len(server.ResponseTimes) > 0 {
 			avgTime := calculateAverageResponseTime(server)
 			if avgTime < bestResponseTime {
@@ -780,13 +777,13 @@ func getHealthyServers() []*Server {
 	}
 	
 	if bestServer != nil {
-		logWarning(fmt.Sprintf("使用备服务器: %s (平均响应时间: %v)", 
+		logWarning(fmt.Sprintf("使用备用服务器: %s (平均响应时间: %v)", 
 			bestServer.URL, 
 			bestResponseTime))
 		return []*Server{bestServer}
 	}
 	
-	// 如果实在没可用服务器返回空切片
+	// 如果实在没有可用服务器返回空切片
 	return nil
 }
 
