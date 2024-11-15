@@ -538,8 +538,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	
 	// 所有服务器都失败
 	metrics.ErrorCount.Add(1)
-	http.Error(w, fmt.Sprintf("所有可用服务器都失败: %v", lastErr), http.StatusBadGateway)
-	logError(fmt.Sprintf("[%s] 所有服务器请求失败", requestID))
+	http.Error(w, fmt.Sprintf("所有可用上游服务器都失败: %v", lastErr), http.StatusBadGateway)
+	logError(fmt.Sprintf("[%s] 所有上游服务器请求失败", requestID))
 }
 
 // 获取健康服务器列表
@@ -1030,7 +1030,7 @@ func main() {
 			}
 		}()
 	} else if role == "backend" {
-		// 只从 Redis 读取健康的��务器列表
+		// 只从 Redis 读取健康的务器列表
 		go func() {
 			ticker := time.NewTicker(WeightUpdateInterval)
 			for range ticker.C {
@@ -1343,11 +1343,5 @@ func isRetryableError(err error) bool {
 
 func isValidImage(data []byte) bool {
 	contentType := http.DetectContentType(data)
-	validTypes := []string{"image/jpeg", "image/png", "image/gif"}
-	for _, validType := range validTypes {
-		if contentType == validType {
-			return true
-		}
-	}
-	return false
+	return strings.HasPrefix(contentType, "image/")
 }
