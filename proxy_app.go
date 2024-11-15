@@ -1030,7 +1030,7 @@ func reportHealthStatus() {
 	// 构建状态消息
 	if len(unhealthyServers) > 0 {
 		logError(fmt.Sprintf(
-			"服务器健康状态报告 - 总计: %d, 健康: %d, 不健康: %d\n不健康服务器列表:\n%s",
+			"服务器健康状态报告 - 总计: %d, 健康: %d, 不健康: %d\n不健康服务器列表: %s",
 			totalServers,
 			healthyCount,
 			len(unhealthyServers),
