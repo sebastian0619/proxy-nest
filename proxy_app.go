@@ -151,6 +151,8 @@ type Cache interface {
 	Get(key string) ([]byte, error)
 	Set(key string, value []byte) error
 	Delete(key string) error
+	Len() int
+	Reset()
 }
 
 // Redis缓存实现
@@ -188,6 +190,14 @@ func (l *LocalCache) Set(key string, value []byte) error {
 
 func (l *LocalCache) Delete(key string) error {
 	return l.cache.Delete(key)
+}
+
+func (l *LocalCache) Len() int {
+	return l.cache.Len()
+}
+
+func (l *LocalCache) Reset() {
+	l.cache.Reset()
 }
 
 // 初始化缓存
