@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 	"encoding/json"
+	"net/url"
 	
 	"github.com/redis/go-redis/v9"
 	"github.com/allegro/bigcache/v3"
@@ -49,7 +50,6 @@ var (
 	METRICS_INTERVAL = time.Duration(getIntEnv("METRICS_INTERVAL_MINUTES", 10)) * time.Minute
 	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
 )
-
 // Redis客户端
 var redisClient *redis.Client
 
@@ -341,21 +341,48 @@ var (
 )
 
 // 初始化上游服务器列表，从环境变量加载
-func initUpstreamServers() {
+func initUpstreamServers() error {
 	upstreamEnv := os.Getenv("UPSTREAM_SERVERS")
 	if upstreamEnv == "" {
-		log.Fatal(ColorRed + "错误: UPSTREAM_SERVERS 环境变量未设置" + ColorReset)
+		return fmt.Errorf("错误: UPSTREAM_SERVERS 环境变量未设置")
 	}
 	
 	servers := strings.Split(upstreamEnv, ",")
-	upstreamServers = make([]*Server, 0, len(servers))  // 预分配切片容量
+	validServers := make([]string, 0, len(servers))
 	
+	// 首先验证所有URL
 	for _, serverURL := range servers {
-		server := NewServer(strings.TrimSpace(serverURL))
-		upstreamServers = append(upstreamServers, server)
+		serverURL = strings.TrimSpace(serverURL)
+		if serverURL == "" {
+			continue
+		}
+		
+		// 验证URL格式
+		_, err := url.Parse(serverURL)
+		if err != nil {
+			logError(fmt.Sprintf("无效的服务器URL: %s, 错误: %v", serverURL, err))
+			continue
+		}
+		
+		validServers = append(validServers, serverURL)
 	}
 	
-	logInfo(fmt.Sprintf("已加载 %d 个上游服务器", len(upstreamServers)))
+	if len(validServers) == 0 {
+		return fmt.Errorf("错误: 没有有效的上游服务器URL")
+	}
+	
+	// 初始化服务器列表
+	upstreamServers = make([]*Server, 0, len(validServers))
+	
+	// 创建服务器实例
+	for _, serverURL := range validServers {
+		server := NewServer(serverURL)
+		upstreamServers = append(upstreamServers, server)
+		logInfo(fmt.Sprintf("添加上游服务器: %s", serverURL))
+	}
+	
+	logInfo(fmt.Sprintf("成功初始化 %d 个上游服务器", len(upstreamServers)))
+	return nil
 }
 
 // 权重更新和健康检查
@@ -501,10 +528,10 @@ func getWeightedRandomServer() *Server {
 	totalWeight := 0
 	
 	// 收集健康的服务器
-	for i := range upstreamServers {
-		if upstreamServers[i].Healthy {
-			healthyServers = append(healthyServers, &upstreamServers[i])
-			totalWeight += calculateCombinedWeight(&upstreamServers[i])
+	for _, server := range upstreamServers {
+		if server.Healthy {
+			healthyServers = append(healthyServers, server)
+			totalWeight += calculateCombinedWeight(server)
 		}
 	}
 	
@@ -942,7 +969,7 @@ func collectMetrics() {
 	ticker := time.NewTicker(METRICS_INTERVAL)
 	for range ticker.C {
 		logInfo(fmt.Sprintf(
-			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
+			"性能指标 - 请求总数: %d, ���误数: %d, 缓���命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
 			metrics.RequestCount.Load(),
 			metrics.ErrorCount.Load(),
 			metrics.CacheHits.Load(),
@@ -1118,7 +1145,10 @@ func main() {
 	logInfo("本地缓存初始化完成")
 	
 	// 3. 从环境变量加载上游服务器
-	initUpstreamServers()
+	if err := initUpstreamServers(); err != nil {
+		logError(fmt.Sprintf("初始化上游服务器失败: %v", err))
+		os.Exit(1)
+	}
 	logInfo("上游服务器加载完成")
 	
 	// 4. 启动健康检查（包括加载共享健康数据）
