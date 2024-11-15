@@ -32,6 +32,7 @@ const (
 	MaxRetryAttempts = 3  // API可以少一些重试次数
 	HealthCheckPrefix = "health:"
 	HealthDataTTL    = 5 * time.Minute
+	MaxResponseSize = 15 * 1024 * 1024  // 15MB
 )
 
 var (
@@ -215,10 +216,14 @@ func initCaches() error {
 
 	// 初始化本地缓存
 	config := bigcache.DefaultConfig(LocalCacheExpiration)
-	config.MaxEntriesInWindow = 10000
-	config.MaxEntrySize = 1 * 1024 * 1024
-	config.HardMaxCacheSize = LocalCacheSize
+	config.MaxEntriesInWindow = getIntEnv("LOCAL_CACHE_MAX_ENTRIES", 5000)  // 减少最大条目数
+	config.MaxEntrySize = getIntEnv("LOCAL_CACHE_MAX_ENTRY_SIZE_KB", 512) * 1024  // 限制单个缓存项大小
+	config.HardMaxCacheSize = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024  // 限制总缓存大小
 	config.Verbose = false
+	config.Shards = 1024  // 增加分片数量，减少锁竞争
+	
+	// 添加缓存统计日志
+	go monitorCacheSize()
 
 	cache, err := bigcache.NewBigCache(config)
 	if err != nil {
@@ -354,13 +359,7 @@ func initUpstreamServers() {
 
 // 权重更新和健康检查
 func updateBaseWeights() {
-	logInfo("开始定期服务器健康检查和权重更新...")
-	
-	// 首先尝试加载共享的健康检查数据
-	if err := loadHealthData(); err != nil {
-		logError(fmt.Sprintf("加载共享健康数据失败: %v", err))
-		// 继续执行，不要中断健康检查
-	}
+	logInfo("开始定期服务器健康检查和基础权重更新...")
 	
 	var wg sync.WaitGroup
 	for i := range upstreamServers {
@@ -368,32 +367,33 @@ func updateBaseWeights() {
 		go func(server *Server) {
 			defer wg.Done()
 			
-			start := time.Now()
-			healthy, healthErr := checkServerHealth(server)
-			responseTime := time.Since(start)
+			// 健康检查
+			healthy, err := checkServerHealth(server)
+			if err != nil {
+				logError(fmt.Sprintf("服务器 %s 健康检查失败: %v", server.URL, err))
+				server.mutex.Lock()
+				server.Healthy = false
+				server.mutex.Unlock()
+				return
+			}
 			
 			server.mutex.Lock()
 			server.Healthy = healthy
-			if healthy {
-				server.ResponseTimes = append(server.ResponseTimes, responseTime)
-				if len(server.ResponseTimes) > RecentRequestLimit {
-					server.ResponseTimes = server.ResponseTimes[1:]
-				}
-				server.BaseWeight = calculateBaseWeightEWMA(server)
-				server.DynamicWeight = calculateDynamicWeight(server)
-			} else {
-				server.BaseWeight = 0
-				server.DynamicWeight = 0
-				if healthErr != nil {
-					logError(fmt.Sprintf("服务器 %s 健康检查失败: %v", server.URL, healthErr))
-				}
+			
+			// 更新基础权重（可以基于其他指标）
+			if len(server.ResponseTimes) > 0 {
+				avgRT := averageDuration(server.ResponseTimes)
+				server.BaseWeight = calculateBaseWeight(avgRT)
 			}
 			server.mutex.Unlock()
 			
-			// 保存健康检查数据到 Redis
-			if err := saveHealthData(server, responseTime); err != nil {
-				logError(fmt.Sprintf("保存健康检查数据失败: %v", err))
+			// 保存健康数据
+			if err := saveHealthData(server, 0); err != nil {
+				logError(fmt.Sprintf("保存健康数据失败: %v", err))
 			}
+			
+			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 基础权重=%d", 
+				server.URL, healthy, server.BaseWeight))
 		}(&upstreamServers[i])
 	}
 	
@@ -410,7 +410,7 @@ func calculateBaseWeightEWMA(server *Server) int {
 	// 计算平均响应时间
 	var total time.Duration
 	for _, rt := range server.ResponseTimes {
-		total += rt
+			total += rt
 	}
 	avgResponseTime := total / time.Duration(len(server.ResponseTimes))
 	
@@ -423,28 +423,35 @@ func calculateBaseWeightEWMA(server *Server) int {
 
 // 计算动态权重
 func calculateDynamicWeight(server *Server) int {
-	if len(server.ResponseTimes) < 2 {
-		logDebug(fmt.Sprintf("服务器 %s 响应时间记录不足，保持当前动态权重: %d", 
-			server.URL, 
-			server.DynamicWeight))
+	if len(server.ResponseTimes) == 0 {
 		return server.DynamicWeight
 	}
 	
-	latestRT := server.ResponseTimes[len(server.ResponseTimes)-1]
-	weight := float64(DynamicWeightMultiplier) / float64(latestRT.Milliseconds())
+	// 计算最近记录的平均响应时间
+	var totalRT time.Duration
+	for _, rt := range server.ResponseTimes {
+		totalRT += rt
+	}
+	avgRT := totalRT / time.Duration(len(server.ResponseTimes))
 	
+	// 基于平均响应时间计算权重
+	const expectedRT = 500 * time.Millisecond  // 预期响应时间
+	weight := int(float64(DynamicWeightMultiplier) * float64(expectedRT) / float64(avgRT))
+	
+	// 限制权重范围
 	if weight < 1 {
 		weight = 1
 	} else if weight > 100 {
 		weight = 100
 	}
 	
-	logDebug(fmt.Sprintf("服务器 %s 计算动态权重: 最近响应时间=%v, 新权重=%d", 
+	logDebug(fmt.Sprintf("服务器 %s 更新动态权重: 平均响应时间=%v, 样本数=%d, 新权重=%d", 
 		server.URL, 
-		latestRT,
-		int(weight)))
+		avgRT,
+		len(server.ResponseTimes),
+		weight))
 	
-	return int(weight)
+	return weight
 }
 
 // 计综合权重
@@ -785,22 +792,34 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	resp, err := client.Do(req)
 	responseTime := time.Since(start)
 	
-	if err != nil {
-		return nil, err
+	if err == nil {
+		server.mutex.Lock()
+		// 更新响应时间记录
+		server.ResponseTimes = append(server.ResponseTimes, responseTime)
+		if len(server.ResponseTimes) > MaxResponseTimeRecords {
+			// 保留最近的记录
+			server.ResponseTimes = server.ResponseTimes[1:]
+		}
+		
+		// 实时更新动态权重
+		server.DynamicWeight = calculateDynamicWeight(server)
+		
+		// 记录详细日志
+		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 记录数=%d, 动态权重=%d", 
+			server.URL, 
+			responseTime,
+			len(server.ResponseTimes),
+			server.DynamicWeight))
+			
+		server.mutex.Unlock()
+		
+		// 保存健康数据到Redis
+		if err := saveHealthData(server, responseTime); err != nil {
+			logError(fmt.Sprintf("保存健康数据失败: %v", err))
+		}
 	}
 	
-	server.mutex.Lock()
-	server.ResponseTimes = append(server.ResponseTimes, responseTime)
-	if len(server.ResponseTimes) > RecentRequestLimit {
-		server.ResponseTimes = server.ResponseTimes[1:]
-	}
-	logDebug(fmt.Sprintf("服务器 %s 更新响应时间: %v (当前列表长度: %d)", 
-		server.URL, 
-		responseTime,
-		len(server.ResponseTimes)))
-	server.mutex.Unlock()
-	
-	return resp, nil
+	return resp, err
 }
 
 // 处理成功响应
@@ -1346,9 +1365,9 @@ func NewServer(url string) Server {
 		Alpha:         AlphaInitial,
 		Healthy:       true,
 		BaseWeight:    50,
-		DynamicWeight: 50,  // 给一个初始值
+		DynamicWeight: 50,  // 初始动态权重
+		ResponseTimes: make([]time.Duration, 0, MaxResponseTimeRecords),
 		RetryCount:    0,
-		ResponseTimes: make([]time.Duration, 0, RecentRequestLimit),  // 预分配容量
 		circuitBreaker: &CircuitBreaker{
 			threshold:    5,
 			resetTimeout: time.Minute * 1,
@@ -1403,7 +1422,7 @@ func isRetryableError(err error) bool {
 		return true
 	}
 	
-	// 检查特定的错误字符串
+	// 检查特定的错误字串
 	errStr := err.Error()
 	retryableErrors := []string{
 		"connection reset by peer",
@@ -1431,4 +1450,18 @@ func markServerUnhealthy(server *Server) {
 	defer server.mutex.Unlock()
 	server.Healthy = false
 	logError(fmt.Sprintf("服务器 %s 被标记为不健康", server.URL))
+}
+
+func monitorCacheSize() {
+	ticker := time.NewTicker(10 * time.Minute)
+	for range ticker.C {
+		if localCache != nil {
+			stats := localCache.cache.Stats()
+			logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d, 删除数: %d",
+				stats.Entries,
+				stats.Hits,
+				stats.Misses,
+				stats.Deletes))
+		}
+	}
 }
