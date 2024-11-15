@@ -29,15 +29,9 @@ const (
 	ColorMagenta = "\033[35m"
 	ColorCyan   = "\033[36m"
 	ColorReset  = "\033[0m"
-	LocalCacheSize = 500 * 1024 * 1024  // 本地图片缓存大小设置为500MB
-	LocalCacheExpiration = 24 * time.Hour  // 本地图片缓存过期时间设为24小时
 	MaxRetryAttempts = 3  // API可以少一些重试次数
 	HealthCheckPrefix = "health:"
 	HealthDataTTL    = 5 * time.Minute
-	ImageCacheSize = 500 * 1024 * 1024  // 图片缓存大小设置为500MB
-	ImageCacheExpiration = 24 * time.Hour  // 图片缓存过期时间设为24小时
-	MaxConcurrentRequests = 100  // 最大并发请求数
-	RequestQueueSize = 1000      // 请求队列大小
 )
 
 var (
@@ -49,6 +43,8 @@ var (
 	AlphaAdjustmentStep   = getFloat64Env("ALPHA_ADJUSTMENT_STEP", 0.05)
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
+	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024
+	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
 )
 
 // Redis客户端
@@ -104,22 +100,10 @@ func initRedis() {
 	}
 }
 
-// 修改：验证内容类型是否为图片
-func isValidImage(data []byte) bool {
-	contentType := http.DetectContentType(data)
-	validTypes := []string{
-		"image/jpeg",
-		"image/png",
-		"image/gif",
-		"image/webp",
-	}
-	
-	for _, t := range validTypes {
-		if strings.HasPrefix(contentType, t) {
-			return true
-		}
-	}
-	return false
+// 新增：验证JSON格式
+func isValidJSON(data []byte) bool {
+	var js json.RawMessage
+	return json.Unmarshal(data, &js) == nil
 }
 
 // 修改：检查缓存函数
@@ -134,11 +118,11 @@ func checkCache(uri string) ([]byte, bool) {
 		return nil, false
 	}
 	
-	// 验证缓存数据是否为空或非图片格式
-	if len(data) == 0 || !isValidImage(data) {
+	// 验证缓存数据是否为空或非JSON格式
+	if len(data) == 0 || !isValidJSON(data) {
 		// 删除无效缓存
 		redisClient.Del(ctx, uri)
-		logError("缓存数据无效或非图片格式，已删除")
+		logError("缓存数据无效或非JSON格式，已删除")
 		return nil, false
 	}
 	
@@ -147,9 +131,9 @@ func checkCache(uri string) ([]byte, bool) {
 
 // 修改：添加到缓存函数
 func addToCache(uri string, data []byte) {
-	// 验证数据是否为空或非图片格式
-	if len(data) == 0 || !isValidImage(data) {
-		logError("尝试缓存无效数据或非图片格式数据")
+	// 验证数据是否为空或非JSON格式
+	if len(data) == 0 || !isValidJSON(data) {
+		logError("尝试缓存无效数据或非JSON格式数据")
 		return
 	}
 	
@@ -168,7 +152,7 @@ func addToCache(uri string, data []byte) {
 		return
 	}
 	
-	logInfo(fmt.Sprintf("成功缓存图片，URI: %s, 数据大小: %d bytes", uri, len(data)))
+	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", uri, len(data)))
 }
 
 // 新增：清理非JSON缓存的函数
@@ -182,9 +166,9 @@ func cleanInvalidCache() {
 			continue
 		}
 		
-		if !isValidImage(data) {
+		if !isValidJSON(data) {
 			redisClient.Del(ctx, key)
-			logInfo(fmt.Sprintf("已删除非图片缓存: %s", key))
+			logInfo(fmt.Sprintf("已删除非JSON缓存: %s", key))
 		}
 	}
 }
@@ -220,7 +204,7 @@ type Server struct {
 
 var (
 	upstreamServers []Server
-	mu              sync.RWMutex
+	mu              sync.Mutex
 )
 
 // 初始化上游服务器列表，从环境变量加载
@@ -316,7 +300,7 @@ func calculateDynamicWeight(server *Server) int {
 		return server.DynamicWeight
 	}
 	
-	// 使用最近的响应时间计算动态权
+	// 使用最近的响应时间计算动态权重
 	latestRT := server.ResponseTimes[len(server.ResponseTimes)-1]
 	weight := float64(DynamicWeightMultiplier) / float64(latestRT.Milliseconds())
 	
@@ -366,52 +350,39 @@ func averageDuration(durations []time.Duration) time.Duration {
 
 // 选择健康的上游服务器
 func getWeightedRandomServer() *Server {
-	var (
-		totalWeight     int
-		healthyServers  = make([]*Server, 0)
-		serverWeights   = make([]int, 0)
-	)
+	healthyServers := make([]Server, 0)
+	totalWeight := 0
 
-	// 使用读锁获取健康服务器列表
-	mu.RLock()
-	for i := range upstreamServers {
-		server := &upstreamServers[i]
-		if server.Healthy && !server.circuitBreaker.IsOpen() {
-			weight := calculateCombinedWeight(server)
-			if weight > 0 {
+	for _, server := range upstreamServers {
+		if server.Healthy {
+			combinedWeight := calculateCombinedWeight(&server)
+			totalWeight += combinedWeight
+			for i := 0; i < combinedWeight; i++ {
 				healthyServers = append(healthyServers, server)
-				serverWeights = append(serverWeights, weight)
-				totalWeight += weight
 			}
 		}
 	}
-	mu.RUnlock()
 
 	if len(healthyServers) == 0 {
 		return nil
 	}
 
-	// 使用权重随机选择
-	r := rand.Intn(totalWeight)
-	currentWeight := 0
-	for i, server := range healthyServers {
-		currentWeight += serverWeights[i]
-		if r < currentWeight {
-			return server
-		}
-	}
-
-	return healthyServers[0]
+	return &healthyServers[rand.Intn(len(healthyServers))]
 }
 
 // 修改：尝试其他上游服务器
-func tryOtherUpstreams(uri string, r *http.Request, failedURL string) *http.Response {
+func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Response, []byte) {
 	var wg sync.WaitGroup
-	responses := make(chan *http.Response, len(upstreamServers))
+	responses := make(chan struct {
+		resp *http.Response
+		body []byte
+		url  string
+	}, len(upstreamServers))
 
-	// 并发请求所有健康的上游服务器
+	// 遍历所有健康的上游服务器（除了刚刚失败的那个）
 	for i := range upstreamServers {
 		server := &upstreamServers[i]
+		// 跳过不健康的服务器和刚刚失败的服务器
 		if !server.Healthy || server.URL == failedURL {
 			continue
 		}
@@ -435,101 +406,98 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) *http.Resp
 			}
 			defer resp.Body.Close()
 
-			responses <- resp
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				logError(fmt.Sprintf("读取响应体失败: %v", err))
+				return
+			}
+
+			if isValidJSON(body) {
+				responses <- struct {
+					resp *http.Response
+					body []byte
+					url  string
+				}{resp, body, s.URL}
+				logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取JSON响应", s.URL))
+			} else {
+				s.mutex.Lock()
+				s.RetryCount++
+				if s.RetryCount >= 5 {
+					s.Healthy = false
+					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非JSON响应，标记为不健康", 
+						s.URL, s.RetryCount))
+				} else {
+					logError(fmt.Sprintf("上游服务器 %s 返回非JSON格式响应 (重试次数: %d/5)", 
+						s.URL, s.RetryCount))
+				}
+				s.mutex.Unlock()
+			}
 		}(server)
 	}
 
-	// 等待所有请求完成或获取第一个成功的响应
+	// 等待所有请求完成或者收到第一个成功的响应
 	go func() {
 		wg.Wait()
 		close(responses)
 	}()
 
 	// 获取第一个成功的响应
-	select {
-	case resp := <-responses:
-		return resp
-	case <-time.After(RequestTimeout):
-		return nil
+	for resp := range responses {
+		return resp.resp, resp.body
 	}
+
+	return nil, nil
 }
 
-// 修改：handleProxyRequest 函数
+// 修改：handleProxyRequest 中处理非JSON响应的部分
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
 	requestID := generateRequestID()
 	uri := r.RequestURI
 
-	// 检查缓存（这部分可以快速返回）
+	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
+	
+	// 检查缓存
 	if data, found := checkCaches(uri); found {
-		w.Header().Set("Content-Type", http.DetectContentType(data))
+		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
 		logInfo(fmt.Sprintf("[%s] 缓存命中", requestID))
 		return
 	}
-
-	// 非阻塞方式获取信号量
-	select {
-	case requestController.semaphore <- struct{}{}:
-		// 获取到信号量，继续处理
-		defer func() { <-requestController.semaphore }()
-	default:
-		// 如果无法立即获取信号量，将请求加入队列
-		select {
-		case requestController.queue <- r:
-			// 请求已加入队列
-			logInfo(fmt.Sprintf("[%s] 请求已加入队列", requestID))
-		default:
-			// 队列已满，返回服务繁忙
-			http.Error(w, "服务器繁忙，请稍后重试", http.StatusServiceUnavailable)
-			metrics.ErrorCount.Add(1)
-			return
-		}
+	
+	// 获取可用服务器
+	availableServers := getHealthyServers()
+	if len(availableServers) == 0 {
+		metrics.ErrorCount.Add(1)
+		http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
+		logError(fmt.Sprintf("[%s] 没有可用的服务器", requestID))
+		return
 	}
-
-	// 并发处理请求
-	go func() {
-		// 获取可用服务器（使用权重选择）
-		server := getWeightedRandomServer()
-		if server == nil {
-			http.Error(w, "没有可用的服务器", http.StatusServiceUnavailable)
-			metrics.ErrorCount.Add(1)
-			return
+	
+	// 尝试请求
+	var lastErr error
+	for _, server := range availableServers {
+		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
+		resp, err := tryRequest(server, r)
+		if err != nil {
+			lastErr = err
+			server.circuitBreaker.Record(err)
+			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
+			continue
 		}
-
-		// 创建错误通道
-		errChan := make(chan error, 1)
-		respChan := make(chan *http.Response, 1)
-
-		// 启动请求处理
-		go func() {
-			resp, err := tryRequest(server, r)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			respChan <- resp
-		}()
-
-		// 等待响应或超时
-		select {
-		case resp := <-respChan:
-			handleSuccessResponse(w, resp, requestID)
-			resetRetryCount(server)
-		case err := <-errChan:
-			// 处理错误，尝试其他服务器
-			if resp := tryOtherUpstreams(uri, r, server.URL); resp != nil {  // 只返回 resp
-				handleSuccessResponse(w, resp, requestID)
-			} else {
-				http.Error(w, fmt.Sprintf("请求失败: %v", err), http.StatusBadGateway)
-				metrics.ErrorCount.Add(1)
-			}
-		case <-time.After(RequestTimeout):
-			http.Error(w, "请求超时", http.StatusGatewayTimeout)
-			metrics.ErrorCount.Add(1)
-		}
-	}()
+		
+		// 处理成功响应
+		handleSuccessResponse(w, resp, requestID)
+		// 重置该服务器的重试计数
+		resetRetryCount(server)
+		return
+	}
+	
+	// 所有服务器都失败
+	metrics.ErrorCount.Add(1)
+	http.Error(w, fmt.Sprintf("所有可用服务器都失败: %v", lastErr), http.StatusBadGateway)
+	logError(fmt.Sprintf("[%s] 所有服务器请求失败", requestID))
 }
 
 // 获取健康服务器列表
@@ -672,34 +640,30 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
 	defer resp.Body.Close()
 	
+	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "读取响应失败", http.StatusInternalServerError)
 		return
 	}
 	
-	// 验证是否为图片
-	if !isValidImage(body) {
-		http.Error(w, "无效的图片格式", http.StatusBadRequest)
-		return
+	// 复制响应头
+	for k, v := range resp.Header {
+		w.Header()[k] = v
 	}
 	
-	// 设置正确的Content-Type
-	contentType := http.DetectContentType(body)
-	w.Header().Set("Content-Type", contentType)
-	
-	// 设置缓存控制头
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	// 设置状态码
+	w.WriteHeader(resp.StatusCode)
 	
 	// 写入响应体
 	w.Write(body)
 	
-	// 如果是成功的响应，添加到缓存
+	// 如果是缓存的响应，添加到缓存
 	if resp.StatusCode == http.StatusOK {
 		addToCache(requestID, body)
 	}
 	
-	logInfo(fmt.Sprintf("[%s] 图片请求成功完成", requestID))
+	logInfo(fmt.Sprintf("[%s] 请求成功完成", requestID))
 }
 
 func min(a, b int) int {
@@ -721,7 +685,7 @@ func logWeightDistribution() {
 	var totalWeight int
 	weights := make(map[string]int)
 	
-	// 计算总权重
+	// 计总权重
 	for _, server := range upstreamServers {
 		if server.Healthy {
 			weight := calculateCombinedWeight(&server)
@@ -782,8 +746,8 @@ type Metrics struct {
 func initCache() error {
 	config := bigcache.DefaultConfig(LocalCacheExpiration)
 	config.MaxEntriesInWindow = 10000
-	config.MaxEntrySize = 10 * 1024 * 1024  // 单个图片最大5MB
-	config.HardMaxCacheSize = LocalCacheSize / 1024 / 1024  // BigCache需要MB为单位
+	config.MaxEntrySize = 1 * 1024 * 1024  // API响应通常小于1MB
+	config.HardMaxCacheSize = LocalCacheSize
 	config.Verbose = false
 	
 	var err error
@@ -799,7 +763,7 @@ func checkCaches(uri string) ([]byte, bool) {
 	// 1. 检查本地缓存（如果启用）
 	if useLocalCache && localCache != nil {
 		if data, err := localCache.Get(uri); err == nil {
-			if isValidImage(data) {
+			if isValidJSON(data) {
 				metrics.LocalCacheHits.Add(1)
 				return data, true
 			}
@@ -808,7 +772,7 @@ func checkCaches(uri string) ([]byte, bool) {
 
 	// 2. 检查 Redis 缓存
 	if data, found := checkCache(uri); found {
-		if isValidImage(data) {
+		if isValidJSON(data) {
 			metrics.RedisCacheHits.Add(1)
 			// 只在本地缓存可用时更新
 			if useLocalCache && localCache != nil {
@@ -1009,16 +973,31 @@ func main() {
 	logInfo("上游服务器加载完成")
 	
 	// 4. 启动健康检查（包括加载共享健康数据）
-	go func() {
-		// 首次健康检查
-		updateBaseWeights()
-		
-		// 定期健康检查
-		ticker := time.NewTicker(WeightUpdateInterval)
-		for range ticker.C {
+	role := os.Getenv("ROLE")
+
+	if role == "host" {
+		// 执行健康检查并写入 Redis
+		go func() {
+			// 首次健康检查
 			updateBaseWeights()
-		}
-	}()
+			
+			// 定期健康检查
+			ticker := time.NewTicker(WeightUpdateInterval)
+			for range ticker.C {
+				updateBaseWeights()
+			}
+		}()
+	} else if role == "backend" {
+		// 只从 Redis 读取健康的服务器列表
+		go func() {
+			ticker := time.NewTicker(WeightUpdateInterval)
+			for range ticker.C {
+				if err := loadHealthData(); err != nil {
+					logError(fmt.Sprintf("加载共享健康数据失败: %v", err))
+				}
+			}
+		}()
+	}
 	
 	// 5. 启动健康状态报告
 	startHealthStatusReporting()
@@ -1165,38 +1144,72 @@ func loadHealthData() error {
 	return nil
 }
 
-// 修改：健康检查函数
+// 添加健康检查函数
 func checkServerHealth(server *Server) (bool, error) {
 	client := &http.Client{Timeout: RequestTimeout}
 	
-	// 使用示例图片路径进行健康检查
-	healthCheckURL := server.URL + "/t/p/original/7eOTFvo5gyXJIHVDURKorE6ERgU.jpg"
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	var healthCheckURL string
+
+	switch upstreamType {
+	case "tmdb-api":
+		healthCheckURL = server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
+	case "tmdb-image":
+		healthCheckURL = server.URL + "/t/p/original/7eOTFvo5gyXJIHVDURKorE6ERgU.jpg"
+	case "custom":
+		healthCheckURL = os.Getenv("CUSTOM_HEALTH_CHECK_URL")
+		if healthCheckURL == "" {
+			healthCheckURL = server.URL + "/health" // 默认值
+		}
+	default:
+		log.Fatal("未知的 UPSTREAM_TYPE")
+	}
+
 	req, err := http.NewRequest("GET", healthCheckURL, nil)
 	if err != nil {
 		return false, fmt.Errorf("创建健康检查请求失败: %v", err)
 	}
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("健康检查请求失败: %v", err)
 	}
 	defer resp.Body.Close()
-	
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("健康检查返回非200状态码: %d", resp.StatusCode)
-	}
-	
-	// 验证响应是否为图片
+
+	// 根据 upstream_type 检测内容类型
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false, fmt.Errorf("读取健康检查响应失败: %v", err)
 	}
-	
-	if !isValidImage(body) {
-		return false, fmt.Errorf("健康检查返回非图片响应")
+
+	switch upstreamType {
+	case "tmdb-api":
+		if !isValidJSON(body) {
+			return false, fmt.Errorf("健康检查返回无效的 JSON 响应")
+		}
+	case "tmdb-image":
+		if !isValidImage(body) {
+			return false, fmt.Errorf("健康检查返回非图片响应")
+		}
+	case "custom":
+		// 自定义响应检查
+		customResponseCheck := os.Getenv("CUSTOM_RESPONSE_CHECK") == "true"
+		customContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
+
+		if customResponseCheck {
+			if resp.StatusCode != http.StatusOK {
+				return false, fmt.Errorf("自定义健康检查返回非 200 状态码")
+			}
+		}
+
+		if customContentType != "" {
+			contentType := resp.Header.Get("Content-Type")
+			if !strings.Contains(contentType, customContentType) {
+				return false, fmt.Errorf("自定义健康检查返回的内容类型不匹配: 期望 %s, 实际 %s", customContentType, contentType)
+			}
+		}
 	}
-	
+
 	return true, nil
 }
 
@@ -1286,18 +1299,13 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// 添加并控制结构
-type RequestController struct {
-	semaphore chan struct{}
-	queue     chan *http.Request
-}
-
-// 初始化请求控制器
-func NewRequestController() *RequestController {
-	return &RequestController{
-		semaphore: make(chan struct{}, MaxConcurrentRequests),
-		queue:     make(chan *http.Request, RequestQueueSize),
+func isValidImage(data []byte) bool {
+	contentType := http.DetectContentType(data)
+	validTypes := []string{"image/jpeg", "image/png", "image/gif"}
+	for _, validType := range validTypes {
+		if contentType == validType {
+			return true
+		}
 	}
+	return false
 }
-
-var requestController = NewRequestController()
