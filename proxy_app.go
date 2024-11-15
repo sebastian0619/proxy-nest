@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/allegro/bigcache/v3"
 	"sync/atomic"
+	"math"
 )
 
 // 配置常量
@@ -388,7 +389,7 @@ func initUpstreamServers() error {
 
 // 权重更新和健康检查
 func updateBaseWeights() {
-	logInfo("开始定期服务器健康检查和基础权重更新...")
+	logInfo("开始服务器健康检查和基础权重更新...")
 	
 	var wg sync.WaitGroup
 	for _, server := range upstreamServers {
@@ -396,8 +397,8 @@ func updateBaseWeights() {
 		go func(server *Server) {
 			defer wg.Done()
 			
-			// 健康检查
-			healthy, err := checkServerHealth(server)
+			// 健康检查并获取响应时间
+			healthy, responseTime, err := checkServerHealth(server)
 			if err != nil {
 				logError(fmt.Sprintf("服务器 %s 健康检查失败: %v", server.URL, err))
 				server.mutex.Lock()
@@ -409,20 +410,23 @@ func updateBaseWeights() {
 			server.mutex.Lock()
 			server.Healthy = healthy
 			
-			// 更新基础权重（可以基于其他指标）
-			if len(server.ResponseTimes) > 0 {
-				avgRT := averageDuration(server.ResponseTimes)
-				server.BaseWeight = calculateBaseWeight(avgRT)
+			// 直接根据这次健康检查的响应时间计算基础权重
+			server.BaseWeight = calculateBaseWeight(responseTime)
+			
+			// 记录这次响应时间
+			server.ResponseTimes = append(server.ResponseTimes, responseTime)
+			if len(server.ResponseTimes) > MaxResponseTimeRecords {
+				server.ResponseTimes = server.ResponseTimes[1:]
 			}
 			server.mutex.Unlock()
 			
 			// 保存健康数据
-			if err := saveHealthData(server, 0); err != nil {
+			if err := saveHealthData(server, responseTime); err != nil {
 				logError(fmt.Sprintf("保存健康数据失败: %v", err))
 			}
 			
-			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 基础权重=%d", 
-				server.URL, healthy, server.BaseWeight))
+			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 响应时间=%v, 基础权重=%d", 
+				server.URL, healthy, responseTime, server.BaseWeight))
 		}(server)
 	}
 	
@@ -430,17 +434,20 @@ func updateBaseWeights() {
 	reportHealthStatus()
 }
 
-// 基于平均响应时间计算基础权重
-func calculateBaseWeight(avgRT time.Duration) int {
+// 修改基础权重计算函数
+func calculateBaseWeight(responseTime time.Duration) int {
 	const baseExpectedRT = 1 * time.Second
-	weight := int(float64(BaseWeightMultiplier) * float64(baseExpectedRT) / float64(avgRT))
+	weight := int(float64(BaseWeightMultiplier) * float64(baseExpectedRT) / float64(responseTime))
 	
-	// 限制范围在 10-100 之间
+	// 限制权重范围
 	if weight < 10 {
 		weight = 10
 	} else if weight > 100 {
 		weight = 100
 	}
+	
+	logDebug(fmt.Sprintf("计算基础权重 - 响应时间: %v, 基准时间: %v, 权重: %d", 
+		responseTime, baseExpectedRT, weight))
 	
 	return weight
 }
@@ -484,7 +491,7 @@ func calculateDynamicWeight(server *Server) int {
 	return weight
 }
 
-// 计综合权重
+// 修改计算综合权重的函数
 func calculateCombinedWeight(server *Server) int {
 	if server == nil {
 		return 0
@@ -493,11 +500,11 @@ func calculateCombinedWeight(server *Server) int {
 	server.mutex.RLock()
 	defer server.mutex.RUnlock()
 	
-	// 基础权重和动态权重的组合
-	weight := server.BaseWeight
-	if server.DynamicWeight > 0 {
-		weight = (weight + server.DynamicWeight) / 2
-	}
+	// 使用 Alpha 来平衡基础权重和动态权重
+	// Alpha 越大，基础权重的影响越大
+	// (1-Alpha) 越大，动态权重的影响越大
+	weight := int(server.Alpha*float64(server.BaseWeight) + 
+		(1-server.Alpha)*float64(server.DynamicWeight))
 	
 	// 确保权重在合理范围内
 	if weight < 1 {
@@ -506,7 +513,43 @@ func calculateCombinedWeight(server *Server) int {
 		weight = 100
 	}
 	
+	logDebug(fmt.Sprintf("服务器 %s 综合权重计算: 基础权重=%d, 动态权重=%d, Alpha=%.2f, 最终权重=%d",
+		server.URL,
+		server.BaseWeight,
+		server.DynamicWeight,
+		server.Alpha,
+		weight))
+	
 	return weight
+}
+
+// 可以添加 Alpha 调整函数
+func (s *Server) adjustAlpha() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	
+	// 计算基础权重和动态权重的差异
+	weightDiff := math.Abs(float64(s.BaseWeight - s.DynamicWeight))
+	currentAlpha := s.Alpha
+	
+	// 根据权重差异调整 Alpha
+	if weightDiff > 30 {  // 权重差异大
+		// 增加 Alpha，更倾向于使用基础权重（更稳定）
+		newAlpha := math.Min(currentAlpha + AlphaAdjustmentStep, 0.9)
+		if newAlpha != currentAlpha {
+			logDebug(fmt.Sprintf("服务器 %s Alpha 增加: %.2f -> %.2f (权重差异: %.0f)", 
+				s.URL, currentAlpha, newAlpha, weightDiff))
+			s.Alpha = newAlpha
+		}
+	} else {  // 权重差异小
+		// 减小 Alpha，更倾向于使用动态权重（更灵活）
+		newAlpha := math.Max(currentAlpha - AlphaAdjustmentStep, 0.1)
+		if newAlpha != currentAlpha {
+			logDebug(fmt.Sprintf("服务器 %s Alpha 减小: %.2f -> %.2f (权重差异: %.0f)", 
+				s.URL, currentAlpha, newAlpha, weightDiff))
+			s.Alpha = newAlpha
+		}
+	}
 }
 
 // 平均响应时间计算
@@ -679,7 +722,32 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 尝试请求
 	var lastErr error
 	for i := 0; i < MaxRetryAttempts; i++ {
-		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
+		server.mutex.RLock()
+		baseWeight := server.BaseWeight  // 基础权重直接读取
+		server.mutex.RUnlock()
+		
+		// 实时计算动态权重
+		dynamicWeight := calculateDynamicWeight(server)
+		// 使用最新的动态权重计算综合权重
+		combinedWeight := calculateCombinedWeight(server)
+		
+		// 计算该服务器被选中的概率
+		totalWeight := 0
+		for _, s := range upstreamServers {
+			if s.Healthy {
+				totalWeight += calculateCombinedWeight(s)  // 对每个服务器都实时计算
+			}
+		}
+		probability := float64(combinedWeight) / float64(totalWeight) * 100
+		
+		logInfo(fmt.Sprintf("[%s] 使用服务器: %s (基础权重=%d, 动态权重=%d, 综合权重=%d, 选中概率=%.2f%%)", 
+			requestID, 
+			server.URL,
+			baseWeight,
+			dynamicWeight,
+			combinedWeight,
+			probability))
+		
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
@@ -801,58 +869,18 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 
 // 尝试请求函数
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
-	// 如果服务器不健康，直接返回错误
-	if !server.Healthy {
-		return nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
-	}
+	start := time.Now()
 	
 	client := &http.Client{Timeout: RequestTimeout}
-	url := server.URL + r.RequestURI
+	resp, err := client.Do(r)
 	
-	req, err := http.NewRequest(r.Method, url, r.Body)
-	if err != nil {
-		return nil, err
-	}
-	
-	start := time.Now()
-	resp, err := client.Do(req)
 	responseTime := time.Since(start)
-	
-	server.mutex.Lock()
-	defer server.mutex.Unlock()
-	
-	if err != nil {
-		// 请求失败时的处理
-		server.RetryCount++
-		if server.RetryCount >= MaxRetries {
-			server.Healthy = false
-			server.DynamicWeight = 1  // 设置最低权重
-			logError(fmt.Sprintf("服务器 %s 连续失败次数过多，标记为不健康", server.URL))
-		}
-		return nil, err
+	if err == nil {
+		// 请求成功时才调整 Alpha
+		server.afterRequest(responseTime)
 	}
 	
-	// 请求成功，重置重试计数
-	server.RetryCount = 0
-	
-	// 更新响应时间记录
-	server.ResponseTimes = append(server.ResponseTimes, responseTime)
-	if len(server.ResponseTimes) > MaxResponseTimeRecords {
-		server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
-	}
-	
-	// 只有健康的服务器才更新动态权重
-	if server.Healthy {
-		server.DynamicWeight = calculateDynamicWeight(server)
-		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 历史记录=%v, 记录数=%d, 动态权重=%d", 
-			server.URL, 
-			responseTime,
-			server.ResponseTimes,
-			len(server.ResponseTimes),
-			server.DynamicWeight))
-	}
-	
-	return resp, nil
+	return resp, err
 }
 
 // 处理成功响应
@@ -1027,7 +1055,7 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 	if atomic.LoadInt32(&cb.failures) >= cb.threshold {
-		// 如果超过重置时间，重置失败计数
+		// 如果超过重置时间，重置失败数
 		if time.Since(cb.lastFailure) > cb.resetTimeout {
 			atomic.StoreInt32(&cb.failures, 0)
 			return false
@@ -1320,8 +1348,8 @@ func loadHealthData() error {
 	return nil
 }
 
-// 修改健康检查函数
-func checkServerHealth(server *Server) (bool, error) {
+// 修改健康检查函数，返回响应时间
+func checkServerHealth(server *Server) (bool, time.Duration, error) {
 	client := &http.Client{Timeout: RequestTimeout}
 
 	upstreamType := os.Getenv("UPSTREAM_TYPE")
@@ -1329,64 +1357,57 @@ func checkServerHealth(server *Server) (bool, error) {
 
 	switch upstreamType {
 	case "tmdb-api":
-		healthCheckURL = server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
+			healthCheckURL = server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
 	case "tmdb-image":
-		healthCheckURL = server.URL + "/t/p/original/7eOTFvo5gyXJIHVDURKorE6ERgU.jpg"
+			healthCheckURL = server.URL + "/t/p/original/7eOTFvo5gyXJIHVDURKorE6ERgU.jpg"
 	case "custom":
-		healthCheckURL = os.Getenv("CUSTOM_HEALTH_CHECK_URL")
+			healthCheckURL = os.Getenv("CUSTOM_HEALTH_CHECK_URL")
 		if healthCheckURL == "" {
-			healthCheckURL = server.URL + "/health" // 默值
+			healthCheckURL = server.URL + "/health"
 		}
 	default:
-		log.Fatal("未知的 UPSTREAM_TYPE")
+		return false, 0, fmt.Errorf("未知的 UPSTREAM_TYPE")
 	}
 
+	start := time.Now()
 	req, err := http.NewRequest("GET", healthCheckURL, nil)
 	if err != nil {
-		return false, fmt.Errorf("创建健康检查请求失败: %v", err)
+		return false, 0, fmt.Errorf("创建健康检查请求失败: %v", err)
 	}
 
 	resp, err := client.Do(req)
+	responseTime := time.Since(start)
 	if err != nil {
-		return false, fmt.Errorf("健康检查请求失败: %v", err)
+		return false, responseTime, fmt.Errorf("健康检查请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// 根据 upstream_type 检测内容类型
+	// 检查响应内容
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, fmt.Errorf("读取健康检查响应失败: %v", err)
+		return false, responseTime, fmt.Errorf("读取健康检查响应失败: %v", err)
 	}
 
+	// 根据不同类型验证响应
+	isValid := false
 	switch upstreamType {
 	case "tmdb-api":
-		if !isValidJSON(body) {
-			return false, fmt.Errorf("康检查返回无效的 JSON 响应")
-		}
+		isValid = isValidJSON(body)
 	case "tmdb-image":
-		if !isValidImage(body) {
-			return false, fmt.Errorf("健康检查返回非图片响应")
-		}
+		isValid = isValidImage(body)
 	case "custom":
-		// 自定义响应检查
 		customResponseCheck := os.Getenv("CUSTOM_RESPONSE_CHECK") == "true"
 		customContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
 
 		if customResponseCheck {
-			if resp.StatusCode != http.StatusOK {
-				return false, fmt.Errorf("自定义健康检查返回非 200 状态码")
-			}
+			isValid = resp.StatusCode == http.StatusOK
 		}
-
 		if customContentType != "" {
-			contentType := resp.Header.Get("Content-Type")
-			if !strings.Contains(contentType, customContentType) {
-				return false, fmt.Errorf("自定义健康检查返回的内容类型不匹配: 期望 %s, 实际 %s", customContentType, contentType)
-			}
+			isValid = strings.Contains(resp.Header.Get("Content-Type"), customContentType)
 		}
 	}
 
-	return true, nil
+	return isValid, responseTime, nil
 }
 
 // 添加警告日志函数
@@ -1502,4 +1523,22 @@ func monitorCacheSize() {
 			}
 		}
 	}
+}
+
+// 在 Server 结构体中添加方法
+func (s *Server) afterRequest(responseTime time.Duration) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	
+	// 更新响应时间记录
+	s.ResponseTimes = append(s.ResponseTimes, responseTime)
+	if len(s.ResponseTimes) > MaxResponseTimeRecords {
+		s.ResponseTimes = s.ResponseTimes[1:]
+	}
+	
+	// 计算新的动态权重
+	s.DynamicWeight = calculateDynamicWeight(s)
+	
+	// 调整 Alpha
+	s.adjustAlpha()
 }
