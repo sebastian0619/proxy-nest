@@ -231,15 +231,19 @@ func initCaches() error {
 
 // 修改后的缓存检查逻辑
 func checkCaches(uri string) ([]byte, bool) {
+	logDebug(fmt.Sprintf("检查缓存: %s", uri))
+
 	// 检查本地缓存
 	if data, err := localCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.LocalCacheHits.Add(1)
+		logInfo(fmt.Sprintf("本地缓存命中: %s", uri))
 		return data, true
 	}
 
 	// 检查Redis缓存
 	if data, err := redisCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.RedisCacheHits.Add(1)
+		logInfo(fmt.Sprintf("Redis缓存命中: %s", uri))
 		// 更新本地缓存
 		if err := localCache.Set(uri, data); err != nil {
 			logError(fmt.Sprintf("更新本地缓存失败: %v", err))
@@ -248,11 +252,14 @@ func checkCaches(uri string) ([]byte, bool) {
 	}
 
 	metrics.CacheMisses.Add(1)
+	logInfo(fmt.Sprintf("缓存未命中: %s", uri))
 	return nil, false
 }
 
 // 修改后的缓存更新逻辑
 func addToCache(uri string, data []byte) {
+	logDebug(fmt.Sprintf("更新缓存: %s", uri))
+
 	// 更新Redis缓存
 	if err := redisCache.Set(uri, data); err != nil {
 		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", uri, err))
@@ -263,6 +270,8 @@ func addToCache(uri string, data []byte) {
 	if err := localCache.Set(uri, data); err != nil {
 		logError(fmt.Sprintf("本地缓存更新失败: %v", err))
 	}
+
+	logInfo(fmt.Sprintf("缓存更新成功: %s", uri))
 }
 
 // 辅助函数：截断数据以避免日志过长
@@ -601,6 +610,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
 	requestID := generateRequestID()
 	uri := r.RequestURI
+	logInfo(fmt.Sprintf("处理代理请求, 请求ID: %s, URI: %s", requestID, uri))
 
 	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
 
@@ -609,7 +619,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
-		logInfo(fmt.Sprintf("[%s] 缓存中，URI: %s", requestID, uri))
+		logInfo(fmt.Sprintf("[%s] 缓存中，URI: %s，数据长度: %d", requestID, uri, len(data)))
 		return
 	}
 
@@ -731,7 +741,7 @@ func getHealthyServers() []*Server {
 		return []*Server{bestServer}
 	}
 	
-	// 如果实在没��可用服务器���返回空切片
+	// 如果实在没可用服务器返回空切片
 	return nil
 }
 
