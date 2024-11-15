@@ -391,7 +391,7 @@ func updateBaseWeights() {
 	logInfo("开始定期服务器健康检查和基础权重更新...")
 	
 	var wg sync.WaitGroup
-	for i := range upstreamServers {
+	for _, server := range upstreamServers {
 		wg.Add(1)
 		go func(server *Server) {
 			defer wg.Done()
@@ -423,7 +423,7 @@ func updateBaseWeights() {
 			
 			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 基础权重=%d", 
 				server.URL, healthy, server.BaseWeight))
-		}(&upstreamServers[i])
+		}(server)
 	}
 	
 	wg.Wait()
@@ -1300,15 +1300,16 @@ func loadHealthData() error {
 		// 更新服务器状态
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
-				upstreamServers[i].mutex.Lock()
-				upstreamServers[i].Healthy = health.Healthy
-				upstreamServers[i].BaseWeight = health.BaseWeight
+				server := upstreamServers[i]
+				server.mutex.Lock()
+				server.Healthy = health.Healthy
+				server.BaseWeight = health.BaseWeight
 				
-				upstreamServers[i].DynamicWeight = health.DynamicWeight
+				server.DynamicWeight = health.DynamicWeight
 				if upstreamServers[i].circuitBreaker != nil {
 					atomic.StoreInt32(&upstreamServers[i].circuitBreaker.failures, int32(health.ErrorCount))
 				}
-				upstreamServers[i].mutex.Unlock()
+				server.mutex.Unlock()
 				break
 			}
 		}
