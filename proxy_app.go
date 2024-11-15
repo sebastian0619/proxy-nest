@@ -710,7 +710,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取加权随机的健���服务器
+	// 获取加权随机的健康服务器
 	server := getWeightedRandomServer()
 	if server == nil {
 		metrics.ErrorCount.Add(1)
@@ -722,46 +722,11 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 尝试请求
 	var lastErr error
 	for i := 0; i < MaxRetryAttempts; i++ {
-		server.mutex.RLock()
-		baseWeight := server.BaseWeight
-		server.mutex.RUnlock()
-		
-		// 实时计算动态权重
-		dynamicWeight := calculateDynamicWeight(server)
-		// 使用最新的动态权重计算综合权重
-		combinedWeight := calculateCombinedWeight(server)
-		
-		// 计算该服务器被选中的概率（只计算当前服务器的）
-		totalWeight := 0
-		for _, s := range upstreamServers {
-			if s.Healthy {
-				totalWeight += calculateCombinedWeight(s)
-			}
-		}
-		probability := float64(combinedWeight) / float64(totalWeight) * 100
-		
-		// 只记录被选中服务器的权重信息
-		logInfo(fmt.Sprintf("[%s] 使用服务器: %s (基础权重=%d, 动态权重=%d, 综合权重=%d, 选中概率=%.2f%%)", 
-			requestID, 
-			server.URL,
-			baseWeight,
-			dynamicWeight,
-			combinedWeight,
-			probability))
-		
+		logInfo(fmt.Sprintf("[%s] 尝试使用服务器: %s", requestID, server.URL))
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			// 修改错误处理逻辑，不要轻易标记为不健康
-			if isConnectionError(err) {  // 添加这个函数来判断是否是连接错误
-				logError(fmt.Sprintf("[%s] 服务器 %s 连接失败: %v", requestID, server.URL, err))
-				server.mutex.Lock()
-				server.Healthy = false
-				server.mutex.Unlock()
-			} else {
-				// 其他类型的错误，记录但不标记为不健康
-				logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
-			}
+			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
 			continue
 		}
 
@@ -1540,7 +1505,7 @@ func monitorCacheSize() {
 		if localCache != nil {
 			if cache, ok := localCache.(*LocalCache); ok {
 				stats := cache.cache.Stats()
-				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, ���命中数: %d",
+				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 命中数: %d",
 					cache.cache.Len(),  // 使用 Len() 替代 stats.Capacity
 					stats.Hits,
 					stats.Misses))
