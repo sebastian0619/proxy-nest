@@ -146,11 +146,16 @@ func validateData(data []byte, contentType string) bool {
 	}
 }
 
-// 缓存接口定义
-type Cache interface {
+// 通用缓存接口定义
+type GeneralCache interface {
 	Get(key string) ([]byte, error)
 	Set(key string, value []byte) error
 	Delete(key string) error
+}
+
+// 本地缓存接口定义，扩展了通用缓存接口
+type LocalCacheInterface interface {
+	GeneralCache
 	Len() int
 	Reset()
 }
@@ -201,8 +206,8 @@ func (l *LocalCache) Reset() {
 }
 
 // 初始化缓存
-var redisCache Cache
-var localCache Cache
+var redisCache GeneralCache
+var localCache LocalCacheInterface
 
 func initCaches() error {
 	// 初始化Redis缓存
@@ -726,7 +731,7 @@ func getHealthyServers() []*Server {
 		return []*Server{bestServer}
 	}
 	
-	// 如果实在没有可用服务器，返回空切片
+	// 如果实在没��可用服务器���返回空切片
 	return nil
 }
 
@@ -753,7 +758,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 复制原始请求头
+	// 复制原始求头
 	req.Header = make(http.Header)
 	for k, v := range r.Header {
 		req.Header[k] = v
