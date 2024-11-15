@@ -4,54 +4,29 @@ services:
     image: redis:alpine
     container_name: tmdb-apicache-redis
     volumes:
-      - ./data:/data
-    command: redis-server --appendonly yes
+      - ./data:/data  # 持久化数据存储
+    command: redis-server --appendonly yes  # 启用持久化
     environment:
-      - TZ=Asia/Shanghai
+      - TZ=Asia/Shanghai  # 设置时区
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
-    restart: always
+        max-size: "10m"  # 日志文件最大大小
+        max-file: "3"    # 保留的最大日志文件数
+    restart: always  # 自动重启策略
 
-  go-apiproxy-app:
+  go-apiproxy-host:
     build:
       context: .
       dockerfile: Dockerfile
-    #image: ghcr.io/sebastian0619/tmdb-go-proxy-nest/tmdb-api-proxy:latest
     deploy:
       mode: replicated
-      replicas: 3
+      replicas: 1  # 只有一个 host 实例
     ports:
-      - 6640-6642:6637
+      - 6640:6637  # 映射端口
     environment:
-      # 基础配置
-      - PORT=6637
-      - TZ=Asia/Shanghai
-      - DEBUG_MODE=true
-      - TMDB_API_KEY=your_api_key_here
-      
-      # Redis配置
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=
-      - REDIS_DB=0
-      
-      # 权重和性能配置
-      - WEIGHT_UPDATE_INTERVAL_MINUTES=30
-      - BASE_WEIGHT_MULTIPLIER=50
-      - DYNAMIC_WEIGHT_MULTIPLIER=50
-      - ALPHA_INITIAL=0.5
-      - ALPHA_ADJUSTMENT_STEP=0.05
-      - RECENT_REQUEST_LIMIT=10
-      
-      # 超时和缓存配置
-      - REQUEST_TIMEOUT_MINUTES=1
-      - CACHE_TTL_MINUTES=1440
-      
-      # 上游服务器配置
-      - UPSTREAM_SERVERS=your_own_tmdb_api_server_url
+      <<: *common-environment  # 引用共享环境变量
+      ROLE: host  # 设置角色为 host
     
     logging:
       driver: "json-file"
@@ -60,4 +35,48 @@ services:
         max-file: "3"
     restart: always
     depends_on:
-      - redis
+      - redis  # 依赖 Redis 服务
+
+  go-apiproxy-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      mode: replicated
+      replicas: 2  # 两个 backend 实例
+    ports:
+      - 6641-6642:6637  # 映射端口
+    environment:
+      <<: *common-environment  # 引用共享环境变量
+      ROLE: backend  # 设置角色为 backend
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+    depends_on:
+      - redis  # 依赖 Redis 服务
+
+x-common-environment: &common-environment
+  PORT: 6637  # 应用程序端口
+  TZ: Asia/Shanghai  # 时区设置
+  DEBUG_MODE: "true"  # 调试模式
+  TMDB_API_KEY: your_api_key_here  # TMDB API 密钥
+  REDIS_HOST: redis  # Redis 主机名
+  REDIS_PORT: 6379  # Redis 端口
+  REDIS_PASSWORD: ""  # Redis 密码
+  REDIS_DB: 0  # Redis 数据库编号
+  WEIGHT_UPDATE_INTERVAL_MINUTES: 30  # 权重更新间隔
+  BASE_WEIGHT_MULTIPLIER: 50  # 基础权重乘数
+  DYNAMIC_WEIGHT_MULTIPLIER: 50  # 动态权重乘数
+  ALPHA_INITIAL: 0.5  # 初始 Alpha 值
+  ALPHA_ADJUSTMENT_STEP: 0.05  # Alpha 调整步长
+  RECENT_REQUEST_LIMIT: 10  # 最近请求限制
+  UPSTREAM_TYPE: tmdb-api  # 上游类型
+  REQUEST_TIMEOUT_MINUTES: 1  # 请求超时时间
+  CACHE_TTL_MINUTES: 1440  # 缓存过期时间
+  LOCAL_CACHE_SIZE_MB: 50  # 本地缓存大小
+  LOCAL_CACHE_EXPIRATION_MINUTES: 5  # 本地缓存过期时间
+  UPSTREAM_SERVERS: your_own_tmdb_api_server_url  # 上游服务器 URL

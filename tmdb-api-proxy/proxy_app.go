@@ -29,8 +29,6 @@ const (
 	ColorMagenta = "\033[35m"
 	ColorCyan   = "\033[36m"
 	ColorReset  = "\033[0m"
-	LocalCacheSize = 50 * 1024 * 1024  // API响应通常小于图片
-	LocalCacheExpiration = 5 * time.Minute
 	MaxRetryAttempts = 3  // API可以少一些重试次数
 	HealthCheckPrefix = "health:"
 	HealthDataTTL    = 5 * time.Minute
@@ -45,6 +43,8 @@ var (
 	AlphaAdjustmentStep   = getFloat64Env("ALPHA_ADJUSTMENT_STEP", 0.05)
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
+	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024
+	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
 )
 
 // Redis客户端
@@ -685,7 +685,7 @@ func logWeightDistribution() {
 	var totalWeight int
 	weights := make(map[string]int)
 	
-	// 计算总权重
+	// 计总权重
 	for _, server := range upstreamServers {
 		if server.Healthy {
 			weight := calculateCombinedWeight(&server)
@@ -973,16 +973,31 @@ func main() {
 	logInfo("上游服务器加载完成")
 	
 	// 4. 启动健康检查（包括加载共享健康数据）
-	go func() {
-		// 首次健康检查
-		updateBaseWeights()
-		
-		// 定期健康检查
-		ticker := time.NewTicker(WeightUpdateInterval)
-		for range ticker.C {
+	role := os.Getenv("ROLE")
+
+	if role == "host" {
+		// 执行健康检查并写入 Redis
+		go func() {
+			// 首次健康检查
 			updateBaseWeights()
-		}
-	}()
+			
+			// 定期健康检查
+			ticker := time.NewTicker(WeightUpdateInterval)
+			for range ticker.C {
+				updateBaseWeights()
+			}
+		}()
+	} else if role == "backend" {
+		// 只从 Redis 读取健康的服务器列表
+		go func() {
+			ticker := time.NewTicker(WeightUpdateInterval)
+			for range ticker.C {
+				if err := loadHealthData(); err != nil {
+					logError(fmt.Sprintf("加载共享健康数据失败: %v", err))
+				}
+			}
+		}()
+	}
 	
 	// 5. 启动健康状态报告
 	startHealthStatusReporting()
@@ -1133,37 +1148,68 @@ func loadHealthData() error {
 func checkServerHealth(server *Server) (bool, error) {
 	client := &http.Client{Timeout: RequestTimeout}
 	
-	// 使用 TMDB API 的一个轻量级接口作为健康检查
-	healthCheckURL := server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	var healthCheckURL string
+
+	switch upstreamType {
+	case "tmdb-api":
+		healthCheckURL = server.URL + "/3/configuration?api_key=" + os.Getenv("TMDB_API_KEY")
+	case "tmdb-image":
+		healthCheckURL = server.URL + "/t/p/original/7eOTFvo5gyXJIHVDURKorE6ERgU.jpg"
+	case "custom":
+		healthCheckURL = os.Getenv("CUSTOM_HEALTH_CHECK_URL")
+		if healthCheckURL == "" {
+			healthCheckURL = server.URL + "/health" // 默认值
+		}
+	default:
+		log.Fatal("未知的 UPSTREAM_TYPE")
+	}
+
 	req, err := http.NewRequest("GET", healthCheckURL, nil)
 	if err != nil {
 		return false, fmt.Errorf("创建健康检查请求失败: %v", err)
 	}
-	
-	// 添加必要的请求头
-	req.Header.Set("Accept", "application/json")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("健康检查请求失败: %v", err)
 	}
 	defer resp.Body.Close()
-	
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("健康检查返回非200状态码: %d", resp.StatusCode)
-	}
-	
-	// 验证响应是否为有效的 JSON
+
+	// 根据 upstream_type 检测内容类型
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false, fmt.Errorf("读取健康检查响应失败: %v", err)
 	}
-	
-	if !isValidJSON(body) {
-		return false, fmt.Errorf("健康检查返回无效的 JSON 响应")
+
+	switch upstreamType {
+	case "tmdb-api":
+		if !isValidJSON(body) {
+			return false, fmt.Errorf("健康检查返回无效的 JSON 响应")
+		}
+	case "tmdb-image":
+		if !isValidImage(body) {
+			return false, fmt.Errorf("健康检查返回非图片响应")
+		}
+	case "custom":
+		// 自定义响应检查
+		customResponseCheck := os.Getenv("CUSTOM_RESPONSE_CHECK") == "true"
+		customContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
+
+		if customResponseCheck {
+			if resp.StatusCode != http.StatusOK {
+				return false, fmt.Errorf("自定义健康检查返回非 200 状态码")
+			}
+		}
+
+		if customContentType != "" {
+			contentType := resp.Header.Get("Content-Type")
+			if !strings.Contains(contentType, customContentType) {
+				return false, fmt.Errorf("自定义健康检查返回的内容类型不匹配: 期望 %s, 实际 %s", customContentType, contentType)
+			}
+		}
 	}
-	
+
 	return true, nil
 }
 
@@ -1250,5 +1296,16 @@ func isRetryableError(err error) bool {
 		}
 	}
 	
+	return false
+}
+
+func isValidImage(data []byte) bool {
+	contentType := http.DetectContentType(data)
+	validTypes := []string{"image/jpeg", "image/png", "image/gif"}
+	for _, validType := range validTypes {
+		if contentType == validType {
+			return true
+		}
+	}
 	return false
 }
