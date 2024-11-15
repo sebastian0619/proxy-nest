@@ -565,9 +565,8 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 	}, len(upstreamServers))
 
 	// 遍历所有健康的上游服务器（除了刚刚失败的那个）
-	for i := range upstreamServers {
-		server := &upstreamServers[i]
-		// 跳过不健康的服务刚刚失败的服务
+	for _, server := range upstreamServers {
+		// 跳过不健康的服务器和刚刚失败的服务器
 		if !server.Healthy || server.URL == failedURL {
 			continue
 		}
@@ -597,7 +596,6 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 				return
 			}
 
-			
 			contentType := resp.Header.Get("Content-Type")
 			if isValidResponse(body, contentType) {
 				responses <- struct {
@@ -626,7 +624,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		close(responses)
 	}()
 
-	// 获第一个成功的响应
+	// 获取第一个成功的响应
 	for resp := range responses {
 		return resp.resp, resp.body
 	}
@@ -906,10 +904,10 @@ func logWeightDistribution() {
 	var totalWeight int
 	weights := make(map[string]int)
 	
-	// 计总权重
+	// 计算总权重
 	for _, server := range upstreamServers {
 		if server.Healthy {
-			weight := calculateCombinedWeight(&server)
+			weight := calculateCombinedWeight(server)
 			weights[server.URL] = weight
 			totalWeight += weight
 		}
