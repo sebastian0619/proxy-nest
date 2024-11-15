@@ -330,7 +330,7 @@ type Server struct {
 	DynamicWeight  int
 	Alpha          float64
 	ResponseTimes  []time.Duration
-	RetryCount     int32           // 添加重试计数器
+	RetryCount     int
 	circuitBreaker *CircuitBreaker
 	mutex          sync.RWMutex
 }
@@ -969,7 +969,7 @@ func collectMetrics() {
 	ticker := time.NewTicker(METRICS_INTERVAL)
 	for range ticker.C {
 		logInfo(fmt.Sprintf(
-			"性能指标 - 请求总数: %d, ���误数: %d, 缓���命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
+			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
 			metrics.RequestCount.Load(),
 			metrics.ErrorCount.Load(),
 			metrics.CacheHits.Load(),
@@ -1401,18 +1401,18 @@ func logWarning(message string) {
 // 添加 Server 结构体的初始化方法
 func NewServer(url string) *Server {
 	return &Server{
-		URL:           url,
+		URL:            url,
 		Alpha:         AlphaInitial,
 		Healthy:       true,
-		BaseWeight:    50,
-		DynamicWeight: 50,
-		ResponseTimes: make([]time.Duration, 0, MaxResponseTimeRecords),
-		RetryCount:    0,
+		BaseWeight:     50,
+		DynamicWeight:  50,
+		ResponseTimes:  make([]time.Duration, 0, MaxResponseTimeRecords),
+		RetryCount:     0,
 		circuitBreaker: &CircuitBreaker{
 			threshold:    5,
 			resetTimeout: time.Minute * 1,
 		},
-		mutex:         sync.RWMutex{},
+		mutex:          sync.RWMutex{},
 	}
 }
 
