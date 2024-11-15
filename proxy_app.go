@@ -107,49 +107,147 @@ func isValidJSON(data []byte) bool {
 	return json.Unmarshal(data, &js) == nil
 }
 
-// 修改：检查缓存函数
-func checkCache(uri string) ([]byte, bool) {
-	ctx := context.Background()
-	data, err := redisClient.Get(ctx, uri).Bytes()
-	if err == redis.Nil {
-		return nil, false
-	}
-	if err != nil {
-		logError(fmt.Sprintf("Redis获取错误: %v", err))
-		return nil, false
-	}
-	
-	// 根据 UPSTREAM_TYPE 验证缓存数据
-	upstreamType := os.Getenv("UPSTREAM_TYPE")
-	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
-	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
-		// 删除无效缓存
-		redisClient.Del(ctx, uri)
-		logError("缓存数据无效或格式不匹配，已删除")
-		return nil, false
-	}
-	
-	return data, true
+// 提取公共的日志记录函数
+func logMessage(level, color, message string) {
+	hostname, _ := os.Hostname()
+	log.Printf("%s[%s]%s [%s] %s", color, level, ColorReset, hostname, message)
 }
 
-// 修改：添加到缓存函数
-func addToCache(requestURI string, data []byte) {
-	// 更新本缓存（如果启用）
-	if useLocalCache && localCache != nil {
-		if err := localCache.Set(requestURI, data); err != nil {
-			logError(fmt.Sprintf("本地缓存更新失败: %v", err))
+func logInfo(message string) {
+	logMessage("信息", ColorBlue, message)
+}
+
+func logError(message string) {
+	logMessage("错误", ColorRed, message)
+}
+
+func logDebug(message string) {
+	logMessage("调试", ColorMagenta, message)
+}
+
+// 通用验证函数
+func validateData(data []byte, contentType string) bool {
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	switch upstreamType {
+	case "tmdb-api":
+		return isValidJSON(data)
+	case "tmdb-image":
+		return isValidImage(data)
+	case "custom":
+		expectedContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
+		if expectedContentType == "" {
+			logError("未设置 CUSTOM_CONTENT_TYPE 环境变量")
+			return false
 		}
+		return strings.Contains(contentType, expectedContentType)
+	default:
+		logError(fmt.Sprintf("未知的 UPSTREAM_TYPE: %s", upstreamType))
+		return false
+	}
+}
+
+// 缓存接口定义
+type Cache interface {
+	Get(key string) ([]byte, error)
+	Set(key string, value []byte) error
+	Delete(key string) error
+}
+
+// Redis缓存实现
+type RedisCache struct {
+	client *redis.Client
+}
+
+func (r *RedisCache) Get(key string) ([]byte, error) {
+	ctx := context.Background()
+	return r.client.Get(ctx, key).Bytes()
+}
+
+func (r *RedisCache) Set(key string, value []byte) error {
+	ctx := context.Background()
+	return r.client.Set(ctx, key, value, CacheTTL).Err()
+}
+
+func (r *RedisCache) Delete(key string) error {
+	ctx := context.Background()
+	return r.client.Del(ctx, key).Err()
+}
+
+// 本地缓存实现
+type LocalCache struct {
+	cache *bigcache.BigCache
+}
+
+func (l *LocalCache) Get(key string) ([]byte, error) {
+	return l.cache.Get(key)
+}
+
+func (l *LocalCache) Set(key string, value []byte) error {
+	return l.cache.Set(key, value)
+}
+
+func (l *LocalCache) Delete(key string) error {
+	return l.cache.Delete(key)
+}
+
+// 初始化缓存
+var redisCache Cache
+var localCache Cache
+
+func initCaches() error {
+	// 初始化Redis缓存
+	redisCache = &RedisCache{client: redisClient}
+
+	// 初始化本地缓存
+	config := bigcache.DefaultConfig(LocalCacheExpiration)
+	config.MaxEntriesInWindow = 10000
+	config.MaxEntrySize = 1 * 1024 * 1024
+	config.HardMaxCacheSize = LocalCacheSize
+	config.Verbose = false
+
+	cache, err := bigcache.NewBigCache(config)
+	if err != nil {
+		return fmt.Errorf("初始化本地缓存失败: %v", err)
+	}
+	localCache = &LocalCache{cache: cache}
+
+	return nil
+}
+
+// 修改后的缓存检查逻辑
+func checkCaches(uri string) ([]byte, bool) {
+	// 检查本地缓存
+	if data, err := localCache.Get(uri); err == nil && validateData(data, "") {
+		metrics.LocalCacheHits.Add(1)
+		return data, true
 	}
 
+	// 检查Redis缓存
+	if data, err := redisCache.Get(uri); err == nil && validateData(data, "") {
+		metrics.RedisCacheHits.Add(1)
+		// 更新本地缓存
+		if err := localCache.Set(uri, data); err != nil {
+			logError(fmt.Sprintf("更新本地缓存失败: %v", err))
+		}
+		return data, true
+	}
+
+	metrics.CacheMisses.Add(1)
+	return nil, false
+}
+
+// 修改后的缓存更新逻辑
+func addToCache(uri string, data []byte) {
 	// 更新Redis缓存
-	ctx := context.Background()
-	err := redisClient.Set(ctx, requestURI, data, CacheTTL).Err()
-	if err != nil {
-		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", requestURI, err))
+	if err := redisCache.Set(uri, data); err != nil {
+		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", uri, err))
 		return
 	}
 
-	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", requestURI, len(data)))
+	// 更新本地缓存
+	if err := localCache.Set(uri, data); err != nil {
+		logError(fmt.Sprintf("本地缓存更新失败: %v", err))
+	}
 }
 
 // 辅助函数：截断数据以避免日志过长
@@ -179,22 +277,6 @@ func cleanInvalidCache() {
 			logInfo(fmt.Sprintf("已删除无效缓存: %s", key))
 		}
 	}
-}
-
-// 日志函数
-func logInfo(message string) {
-	hostname, _ := os.Hostname()
-	log.Printf("%s[信息]%s [%s] %s", ColorBlue, ColorReset, hostname, message)
-}
-
-func logError(message string) {
-	hostname, _ := os.Hostname()
-	log.Printf("%s[错误]%s [%s] %s", ColorRed, ColorReset, hostname, message)
-}
-
-func logDebug(message string) {
-	hostname, _ := os.Hostname()
-	log.Printf("%s[调试]%s [%s] %s", ColorMagenta, ColorReset, hostname, message)
 }
 
 // Server 表示上游服务器结构体
@@ -653,18 +735,36 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 
 // 尝试请求函数
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
-	startTime := time.Now()
-	resp, err := http.DefaultClient.Do(r)
+	client := &http.Client{Timeout: RequestTimeout}
+	url := server.URL + r.RequestURI
+	
+	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
 		return nil, err
 	}
-	duration := time.Since(startTime)
-
-	// 确保在成功请求后记录响应时间
+	
+	// 复制原始请求头
+	req.Header = make(http.Header)
+	for k, v := range r.Header {
+		req.Header[k] = v
+	}
+	
+	start := time.Now()
+	resp, err := client.Do(req)
+	responseTime := time.Since(start)
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	// 记录响应时
 	server.mutex.Lock()
-	server.ResponseTimes = append(server.ResponseTimes, duration)
+	server.ResponseTimes = append(server.ResponseTimes, responseTime)
+	if len(server.ResponseTimes) > RecentRequestLimit {
+		server.ResponseTimes = server.ResponseTimes[1:]
+	}
 	server.mutex.Unlock()
-
+	
 	return resp, nil
 }
 
@@ -753,7 +853,6 @@ func findServerByURL(url string) *Server {
 // 添加新的全局变量
 var (
 	metrics     = &Metrics{}
-	localCache  *bigcache.BigCache
 	useLocalCache bool  // 新增：标记是否使用本地缓存
 	bufferPool  = sync.Pool{
 		New: func() interface{} {
@@ -772,72 +871,6 @@ type Metrics struct {
 	LocalCacheHits atomic.Int64
 	RedisCacheHits atomic.Int64
 	APIErrors      sync.Map    // URL -> error types count
-}
-
-// 初始化本地缓存
-func initCache() error {
-	config := bigcache.DefaultConfig(LocalCacheExpiration)
-	config.MaxEntriesInWindow = 10000
-	config.MaxEntrySize = 1 * 1024 * 1024  // API响应通常小于1MB
-	config.HardMaxCacheSize = LocalCacheSize
-	config.Verbose = false
-	
-	var err error
-	localCache, err = bigcache.NewBigCache(config)
-	if err != nil {
-		return fmt.Errorf("初始化本地缓存失败: %v", err)
-	}
-	return nil
-}
-
-// 修改缓存检查逻辑，使用并发检查本地和 Redis 缓存
-func checkCaches(uri string) ([]byte, bool) {
-	type cacheResult struct {
-		data  []byte
-		found bool
-		source string
-	}
-
-	results := make(chan cacheResult, 2)
-
-	// 检查本地缓存
-	go func() {
-		if useLocalCache && localCache != nil {
-			if data, err := localCache.Get(uri); err == nil && isValidJSON(data) {
-				metrics.LocalCacheHits.Add(1)
-				results <- cacheResult{data, true, "local"}
-				return
-			}
-		}
-		results <- cacheResult{nil, false, "local"}
-	}()
-
-	// 检查 Redis 缓存
-	go func() {
-		if data, found := checkCache(uri); found && isValidJSON(data) {
-			metrics.RedisCacheHits.Add(1)
-			results <- cacheResult{data, true, "redis"}
-			return
-		}
-		results <- cacheResult{nil, false, "redis"}
-	}()
-
-	// 等待第一个成功的缓命中
-	for i := 0; i < 2; i++ {
-		result := <-results
-		if result.found {
-			// 如果是 Redis 命中，更新本地缓存
-			if result.source == "redis" && useLocalCache && localCache != nil {
-				if err := localCache.Set(uri, result.data); err != nil {
-					logError(fmt.Sprintf("更新本地缓存失败: %v", err))
-				}
-			}
-			return result.data, true
-		}
-	}
-
-	metrics.CacheMisses.Add(1)
-	return nil, false
 }
 
 // 添加指标收集
@@ -881,7 +914,6 @@ type HealthStats struct {
 func NewHealthStats(windowSize int) *HealthStats {
 	return &HealthStats{
 		windowSize: windowSize,
-		
 		requests:   make([]bool, windowSize),
 	}
 }
@@ -976,7 +1008,7 @@ func reportHealthStatus() {
 		))
 	}
 	
-	// 额外报告熔断器状态
+	// 额报告熔断器状态
 	reportCircuitBreakerStatus()
 }
 
@@ -990,7 +1022,7 @@ func reportCircuitBreakerStatus() {
 				"%s (失败次数: %d, 最后失败时间: %s)",
 				server.URL,
 				server.circuitBreaker.failures,
-				server.circuitBreaker.lastFailure.Format("15:04:05"),
+					server.circuitBreaker.lastFailure.Format("15:04:05"),
 			))
 		}
 	}
@@ -1012,7 +1044,7 @@ func main() {
 	logInfo("Redis 初始化完成")
 	
 	// 2. 初始化本地缓存
-	if err := initCache(); err != nil {
+	if err := initCaches(); err != nil {
 		log.Printf("警告: 本地缓存初始化失败: %v", err)
 		useLocalCache = false
 	} else {
@@ -1052,7 +1084,7 @@ func main() {
 		}()
 	}
 	
-	// 5. 启动健康状态报
+	// 5. 启动健康状态报告
 	startHealthStatusReporting()
 	
 	// 6. 启动指标收集
@@ -1062,7 +1094,6 @@ func main() {
 	port := getEnv("PORT", "6637")
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
-		
 		ReadTimeout:  RequestTimeout,
 		WriteTimeout: RequestTimeout,
 	}
@@ -1239,7 +1270,7 @@ func checkServerHealth(server *Server) (bool, error) {
 	switch upstreamType {
 	case "tmdb-api":
 		if !isValidJSON(body) {
-			return false, fmt.Errorf("健康检查返回无效的 JSON 响应")
+			return false, fmt.Errorf("康检查返回无效的 JSON 响应")
 		}
 	case "tmdb-image":
 		if !isValidImage(body) {
