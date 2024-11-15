@@ -138,7 +138,8 @@ func addToCache(requestURI string, data []byte) {
 	upstreamType := os.Getenv("UPSTREAM_TYPE")
 	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
 	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
-		logError("尝试缓存无效数据或格式不匹配的数据")
+		// 记录无效数据的前 200 个字节
+		logError(fmt.Sprintf("尝试缓存无效数据或格式不匹配的数据，URI: %s, 数据: %s", requestURI, string(data[:min(len(data), 200)])))
 		return
 	}
 	
@@ -511,7 +512,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
-		logInfo(fmt.Sprintf("[%s] 缓存命中", requestID))
+		logInfo(fmt.Sprintf("[%s] 缓存命中，URI: %s", requestID, uri))
 		return
 	}
 
@@ -531,7 +532,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			logError(fmt.Sprintf("[%s] 服务器 %s 求失败: %v", requestID, server.URL, err))
+			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
 			continue
 		}
 
@@ -843,7 +844,7 @@ func checkCaches(uri string) ([]byte, bool) {
 		results <- cacheResult{nil, false, "redis"}
 	}()
 
-	// 等待第一个成功的缓存命中
+	// 等待第一个成功的缓命中
 	for i := 0; i < 2; i++ {
 		result := <-results
 		if result.found {
