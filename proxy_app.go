@@ -1455,7 +1455,7 @@ func monitorCacheSize() {
 			if cache, ok := localCache.(*LocalCache); ok {
 				stats := cache.cache.Stats()
 				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
-					stats.Capacity,    // 替换 Entries
+					cache.cache.Len(),  // 使用 Len() 替代 stats.Capacity
 					stats.Hits,
 					stats.Misses))
 			}
