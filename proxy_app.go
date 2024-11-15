@@ -44,7 +44,7 @@ var (
 	RecentRequestLimit    = getIntEnv("RECENT_REQUEST_LIMIT", 10)
 	CacheTTL             = getDurationEnv("CACHE_TTL_MINUTES", 10) * time.Minute
 	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024
-	METRICS_INTERVAL_MINUTES = getIntEnv("METRICS_INTERVAL_MINUTES", 10)
+	METRICS_INTERVAL = time.Duration(getIntEnv("METRICS_INTERVAL_MINUTES", 10)) * time.Minute
 	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
 )
 
@@ -321,7 +321,7 @@ func calculateDynamicWeight(server *Server) int {
 	return int(weight)
 }
 
-// 计算综合权重
+// 计���综合权重
 func calculateCombinedWeight(server *Server) int {
 	if server == nil {
 		return 0
@@ -526,7 +526,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			logError(fmt.Sprintf("[%s] 服务器 %s ��求失败: %v", requestID, server.URL, err))
+			logError(fmt.Sprintf("[%s] 服务器 %s 求失败: %v", requestID, server.URL, err))
 			continue
 		}
 
@@ -673,7 +673,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 记录响应时��
+	// 记录响应时
 	server.mutex.Lock()
 	server.ResponseTimes = append(server.ResponseTimes, responseTime)
 	if len(server.ResponseTimes) > RecentRequestLimit {
@@ -858,7 +858,7 @@ func checkCaches(uri string) ([]byte, bool) {
 
 // 添加指标收集
 func collectMetrics() {
-	ticker := time.NewTicker(METRICS_INTERVAL_MINUTES * time.Minute)
+	ticker := time.NewTicker(METRICS_INTERVAL)
 	for range ticker.C {
 		logInfo(fmt.Sprintf(
 			"性能指标 - 请求总数: %d, 错误数: %d, 缓存命中: %d (本地: %d, Redis: %d), 缓存未命中: %d",
