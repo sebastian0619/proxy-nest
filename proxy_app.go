@@ -258,12 +258,13 @@ func checkCaches(uri string) ([]byte, bool) {
 
 // 修改后的缓存更新逻辑
 func addToCache(uri string, data []byte) {
-	// 计算数据的摘要（例如，长度或哈希值）
-	dataSummary := fmt.Sprintf("长度: %d", len(data))
-	// 或者使用哈希值
-	// dataSummary := fmt.Sprintf("哈希: %x", sha256.Sum256(data))
+	logDebug(fmt.Sprintf("更新缓存: %s, 数据长度: %d", uri, len(data)))
 
-	logDebug(fmt.Sprintf("更新缓存: %s, 数据摘要: %s", uri, dataSummary))
+	// 确保数据是有效的JSON
+	if !isValidJSON(data) {
+		logError(fmt.Sprintf("尝试缓存无效的JSON数据: %s", uri))
+		return
+	}
 
 	// 更新Redis缓存
 	if err := redisCache.Set(uri, data); err != nil {
@@ -276,7 +277,7 @@ func addToCache(uri string, data []byte) {
 		logError(fmt.Sprintf("本地缓存更新失败: %v", err))
 	}
 
-	logInfo(fmt.Sprintf("缓存更新成功: %s, 数据摘要: %s", uri, dataSummary))
+	logInfo(fmt.Sprintf("缓存更新成功: %s, 数据长度: %d", uri, len(data)))
 }
 
 // 辅助函数：截断数据以避免日志过长
@@ -750,7 +751,7 @@ func getHealthyServers() []*Server {
 	return nil
 }
 
-// 添加计算平���响应时间的辅助函数
+// 添加计算平响应时间的辅助函数
 func calculateAverageResponseTime(server *Server) time.Duration {
 	if len(server.ResponseTimes) == 0 {
 		return time.Hour
