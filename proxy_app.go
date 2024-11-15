@@ -784,8 +784,15 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	if err == nil {
 		server.mutex.Lock()
 		
-		// 更新响应时间记录
+		// 确保 ResponseTimes 已初始化
+		if server.ResponseTimes == nil {
+			server.ResponseTimes = make([]time.Duration, 0, MaxResponseTimeRecords)
+		}
+		
+		// 追加新的响应时间
 		server.ResponseTimes = append(server.ResponseTimes, responseTime)
+		
+		// 如果超过最大记录数，移除最旧的记录
 		if len(server.ResponseTimes) > MaxResponseTimeRecords {
 			// 只保留最近的 MaxResponseTimeRecords 条记录
 			server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
