@@ -132,7 +132,7 @@ func checkCache(uri string) ([]byte, bool) {
 }
 
 // 修改：添加到缓存函数
-func addToCache(uri string, data []byte) {
+func addToCache(requestURI string, data []byte) {
 	// 根据 UPSTREAM_TYPE 验证数据
 	upstreamType := os.Getenv("UPSTREAM_TYPE")
 	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
@@ -143,26 +143,27 @@ func addToCache(uri string, data []byte) {
 	
 	// 更新本地缓存（如果启用）
 	if useLocalCache && localCache != nil {
-		if err := localCache.Set(uri, data); err != nil {
+		if err := localCache.Set(requestURI, data); err != nil {
 			logError(fmt.Sprintf("本地缓存更新失败: %v", err))
 		}
 	}
 	
 	// 更新Redis缓存
 	ctx := context.Background()
-	err := redisClient.Set(ctx, uri, data, CacheTTL).Err()
+	err := redisClient.Set(ctx, requestURI, data, CacheTTL).Err()
 	if err != nil {
-		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", uri, err))
+		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", requestURI, err))
 		return
 	}
 	
-	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", uri, len(data)))
+	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", requestURI, len(data)))
 }
 
 // 新增：清理非JSON缓存的函数
 func cleanInvalidCache() {
 	ctx := context.Background()
 	iter := redisClient.Scan(ctx, 0, "*", 0).Iterator()
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
 	for iter.Next(ctx) {
 		key := iter.Val()
 		data, err := redisClient.Get(ctx, key).Bytes()
@@ -170,9 +171,10 @@ func cleanInvalidCache() {
 			continue
 		}
 		
-		if !isValidJSON(data) {
+		if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
+		   (upstreamType == "tmdb-image" && !isValidImage(data)) {
 			redisClient.Del(ctx, key)
-			logInfo(fmt.Sprintf("已删除非JSON缓存: %s", key))
+			logInfo(fmt.Sprintf("已删除无效缓存: %s", key))
 		}
 	}
 }
@@ -368,10 +370,26 @@ func getWeightedRandomServer() *Server {
 	}
 
 	if len(healthyServers) == 0 {
+		logWarning("没有健康的服务器可用")
 		return nil
 	}
 
-	return &healthyServers[rand.Intn(len(healthyServers))]
+	// 选择服务器
+	selectedServer := &healthyServers[rand.Intn(len(healthyServers))]
+
+	// 记录详细日志
+	selectedServer.mutex.RLock()
+	defer selectedServer.mutex.RUnlock()
+
+	avgResponseTime := averageDuration(selectedServer.ResponseTimes)
+	logInfo(fmt.Sprintf("选择的服务器: %s", selectedServer.URL))
+	logInfo(fmt.Sprintf("平均响应时间: %v", avgResponseTime))
+	logInfo(fmt.Sprintf("基础权重: %d", selectedServer.BaseWeight))
+	logInfo(fmt.Sprintf("动态权重: %d", selectedServer.DynamicWeight))
+	logInfo(fmt.Sprintf("综合权重: %d", calculateCombinedWeight(selectedServer)))
+	logInfo(fmt.Sprintf("总权重: %d, 选择比例: %.2f%%", totalWeight, float64(calculateCombinedWeight(selectedServer))*100/float64(totalWeight)))
+
+	return selectedServer
 }
 
 // 修改：尝试其他上游服务器
@@ -416,25 +434,23 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 				return
 			}
 
-			if isValidJSON(body) {
+			if isValidResponse(body) {
 				responses <- struct {
 					resp *http.Response
 					body []byte
 					url  string
 				}{resp, body, s.URL}
-				logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取JSON响应", s.URL))
+				logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取预期格式响应", s.URL))
 			} else {
-				s.mutex.Lock()
-				s.RetryCount++
-				if s.RetryCount >= 5 {
+				incrementRetryCount(s)
+				if getRetryCount(s) >= 3 {
+					s.mutex.Lock()
 					s.Healthy = false
-					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非JSON响应，标记为不健康", 
-						s.URL, s.RetryCount))
+					s.mutex.Unlock()
+					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期格式响应，标记为不健康", s.URL, getRetryCount(s)))
 				} else {
-					logError(fmt.Sprintf("上游服务器 %s 返回非JSON格式响应 (重试次数: %d/5)", 
-						s.URL, s.RetryCount))
+					logError(fmt.Sprintf("上游服务器 %s 返回非预期格式响应 (重试次数: %d/3)", s.URL, getRetryCount(s)))
 				}
-				s.mutex.Unlock()
 			}
 		}(server)
 	}
@@ -451,6 +467,26 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 	}
 
 	return nil, nil
+}
+
+func isValidResponse(data []byte, contentType string) bool {
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	switch upstreamType {
+	case "tmdb-api":
+		return isValidJSON(data)
+	case "tmdb-image":
+		return isValidImage(data)
+	case "custom":
+		expectedContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
+		if expectedContentType == "" {
+			logError("未设置 CUSTOM_CONTENT_TYPE 环境变量")
+			return false
+		}
+		return strings.Contains(contentType, expectedContentType)
+	default:
+		logError(fmt.Sprintf("未知的 UPSTREAM_TYPE: %s", upstreamType))
+		return false
+	}
 }
 
 // 修改：handleProxyRequest 中处理非JSON响应的部分
@@ -889,7 +925,7 @@ func generateRequestID() string {
 // 添加定期健康状态报告函数
 func startHealthStatusReporting() {
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)  // 每分钟报告一次
+		ticker := time.NewTicker(5 * time.Minute)  // 每五分钟报告一次
 		for range ticker.C {
 			reportHealthStatus()
 		}
@@ -1239,7 +1275,7 @@ func NewServer(url string) Server {
 	}
 }
 
-// 修改重试相关的函数，使用原子操作处理 RetryCount
+// 修改重试��关的函数，使用原子操作处理 RetryCount
 func incrementRetryCount(s *Server) {
 	atomic.AddInt32(&s.RetryCount, 1)
 }
