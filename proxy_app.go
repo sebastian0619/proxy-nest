@@ -118,11 +118,13 @@ func checkCache(uri string) ([]byte, bool) {
 		return nil, false
 	}
 	
-	// 验证缓存数据是否为空或非JSON格式
-	if len(data) == 0 || !isValidJSON(data) {
+	// 根据 UPSTREAM_TYPE 验证缓存数据
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
+	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
 		// 删除无效缓存
 		redisClient.Del(ctx, uri)
-		logError("缓存数据无效或非JSON格式，已删除")
+		logError("缓存数据无效或格式不匹配，已删除")
 		return nil, false
 	}
 	
@@ -131,9 +133,11 @@ func checkCache(uri string) ([]byte, bool) {
 
 // 修改：添加到缓存函数
 func addToCache(uri string, data []byte) {
-	// 验证数据是否为空或非JSON格式
-	if len(data) == 0 || !isValidJSON(data) {
-		logError("尝试缓存无效数据或非JSON格式数据")
+	// 根据 UPSTREAM_TYPE 验证数据
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
+	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
+		logError("尝试缓存无效数据或格式不匹配的数据")
 		return
 	}
 	
@@ -1144,10 +1148,10 @@ func loadHealthData() error {
 	return nil
 }
 
-// 添加健康检查函数
+// 修改健康检查函数
 func checkServerHealth(server *Server) (bool, error) {
 	client := &http.Client{Timeout: RequestTimeout}
-	
+
 	upstreamType := os.Getenv("UPSTREAM_TYPE")
 	var healthCheckURL string
 
