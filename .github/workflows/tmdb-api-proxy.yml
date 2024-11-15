@@ -1,11 +1,10 @@
-name: Build and Push TMDB API Proxy
+name: Build and Push Proxy Nest
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'api-proxy/**'
-      - '.github/workflows/proxy-nest.yml'
+      - '**'
   release:
     types: [created]
   workflow_dispatch:
@@ -44,7 +43,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./tmdb-api-proxy
+          context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
