@@ -241,14 +241,14 @@ func checkCaches(r *http.Request) ([]byte, bool) {
 	logDebug(fmt.Sprintf("检查缓存: %s", uri))
 
 	// 检查本地缓存
-	if data, err := localCache.Get(uri); err == nil && isValidJSON(data) {
+	if data, err := localCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.LocalCacheHits.Add(1)
 		logInfo(fmt.Sprintf("本地缓存命中: %s", uri))
 		return data, true
 	}
 
 	// 检查Redis缓存
-	if data, err := redisCache.Get(uri); err == nil && isValidJSON(data) {
+	if data, err := redisCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.RedisCacheHits.Add(1)
 		logInfo(fmt.Sprintf("Redis缓存命中: %s", uri))
 		// 更新本地缓存
@@ -269,7 +269,7 @@ func addToCache(r *http.Request, data []byte) {
 	logDebug(fmt.Sprintf("更新缓存: %s, 数据长度: %d", uri, len(data)))
 
 	// 确保数据是有效的JSON
-	if !isValidJSON(data) {
+	if !validateData(data, "") {
 		logError(fmt.Sprintf("尝试缓存无效的JSON数据: %s", uri))
 		return
 	}
@@ -297,7 +297,7 @@ func truncateData(data []byte) string {
 	return string(data)
 }
 
-// 新增：清理非JSON缓存的函数
+
 func cleanInvalidCache() {
 	ctx := context.Background()
 	iter := redisClient.Scan(ctx, 0, "*", 0).Iterator()
@@ -309,8 +309,7 @@ func cleanInvalidCache() {
 			continue
 		}
 		
-		if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
-		   (upstreamType == "tmdb-image" && !isValidImage(data)) {
+		if !validateData(data, upstreamType) {
 			redisClient.Del(ctx, key)
 			logInfo(fmt.Sprintf("已删除无效缓存: %s", key))
 		}
