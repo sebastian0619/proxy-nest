@@ -134,7 +134,7 @@ func checkCache(uri string) ([]byte, bool) {
 
 // 修改：添加到缓存函数
 func addToCache(requestURI string, data []byte) {
-	// 更新本��缓存（如果启用）
+	// 更新本缓存（如果启用）
 	if useLocalCache && localCache != nil {
 		if err := localCache.Set(requestURI, data); err != nil {
 			logError(fmt.Sprintf("本地缓存更新失败: %v", err))
@@ -653,36 +653,18 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 
 // 尝试请求函数
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
-	client := &http.Client{Timeout: RequestTimeout}
-	url := server.URL + r.RequestURI
-	
-	req, err := http.NewRequest(r.Method, url, r.Body)
+	startTime := time.Now()
+	resp, err := http.DefaultClient.Do(r)
 	if err != nil {
 		return nil, err
 	}
-	
-	// 复制原始请求头
-	req.Header = make(http.Header)
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
-	
-	start := time.Now()
-	resp, err := client.Do(req)
-	responseTime := time.Since(start)
-	
-	if err != nil {
-		return nil, err
-	}
-	
-	// 记录响应时
+	duration := time.Since(startTime)
+
+	// 确保在成功请求后记录响应时间
 	server.mutex.Lock()
-	server.ResponseTimes = append(server.ResponseTimes, responseTime)
-	if len(server.ResponseTimes) > RecentRequestLimit {
-		server.ResponseTimes = server.ResponseTimes[1:]
-	}
+	server.ResponseTimes = append(server.ResponseTimes, duration)
 	server.mutex.Unlock()
-	
+
 	return resp, nil
 }
 
@@ -1070,7 +1052,7 @@ func main() {
 		}()
 	}
 	
-	// 5. 启动健康状态报��
+	// 5. 启动健康状态报
 	startHealthStatusReporting()
 	
 	// 6. 启动指标收集
@@ -1080,6 +1062,7 @@ func main() {
 	port := getEnv("PORT", "6637")
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
+		
 		ReadTimeout:  RequestTimeout,
 		WriteTimeout: RequestTimeout,
 	}
