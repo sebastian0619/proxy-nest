@@ -710,7 +710,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取加权随机的健康服务器
+	// 获取加权随机的健���服务器
 	server := getWeightedRandomServer()
 	if server == nil {
 		metrics.ErrorCount.Add(1)
@@ -723,7 +723,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	var lastErr error
 	for i := 0; i < MaxRetryAttempts; i++ {
 		server.mutex.RLock()
-		baseWeight := server.BaseWeight  // 基础权重直接读取
+		baseWeight := server.BaseWeight
 		server.mutex.RUnlock()
 		
 		// 实时计算动态权重
@@ -731,15 +731,16 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		// 使用最新的动态权重计算综合权重
 		combinedWeight := calculateCombinedWeight(server)
 		
-		// 计算该服务器被选中的概率
+		// 计算该服务器被选中的概率（只计算当前服务器的）
 		totalWeight := 0
 		for _, s := range upstreamServers {
 			if s.Healthy {
-				totalWeight += calculateCombinedWeight(s)  // 对每个服务器都实时计算
+				totalWeight += calculateCombinedWeight(s)
 			}
 		}
 		probability := float64(combinedWeight) / float64(totalWeight) * 100
 		
+		// 只记录被选中服务器的权重信息
 		logInfo(fmt.Sprintf("[%s] 使用服务器: %s (基础权重=%d, 动态权重=%d, 综合权重=%d, 选中概率=%.2f%%)", 
 			requestID, 
 			server.URL,
@@ -751,7 +752,16 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		resp, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
-			logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
+			// 修改错误处理逻辑，不要轻易标记为不健康
+			if isConnectionError(err) {  // 添加这个函数来判断是否是连接错误
+				logError(fmt.Sprintf("[%s] 服务器 %s 连接失败: %v", requestID, server.URL, err))
+				server.mutex.Lock()
+				server.Healthy = false
+				server.mutex.Unlock()
+			} else {
+				// 其他类型的错误，记录但不标记为不健康
+				logError(fmt.Sprintf("[%s] 服务器 %s 请求失败: %v", requestID, server.URL, err))
+			}
 			continue
 		}
 
@@ -775,7 +785,7 @@ func getHealthyServers() []*Server {
 	var healthyServers []*Server
 	totalWeight := 0
 	
-	// 首先只选择健康的服务器
+	// 首先只选择康的服务器
 	for _, server := range upstreamServers {
 		// 确保 CircuitBreaker 已初始化
 		if server.circuitBreaker == nil {
@@ -871,12 +881,26 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	start := time.Now()
 	
+	// 正确构建完整的 URL
+	targetURL := server.URL + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+	
+	// 创建新的请求
+	newReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 复制原始请求的 header
+	newReq.Header = r.Header
+	
 	client := &http.Client{Timeout: RequestTimeout}
-	resp, err := client.Do(r)
+	resp, err := client.Do(newReq)
 	
 	responseTime := time.Since(start)
 	if err == nil {
-		// 请求成功时才调整 Alpha
 		server.afterRequest(responseTime)
 	}
 	
@@ -1516,7 +1540,7 @@ func monitorCacheSize() {
 		if localCache != nil {
 			if cache, ok := localCache.(*LocalCache); ok {
 				stats := cache.cache.Stats()
-				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
+				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, ���命中数: %d",
 					cache.cache.Len(),  // 使用 Len() 替代 stats.Capacity
 					stats.Hits,
 					stats.Misses))
@@ -1541,4 +1565,20 @@ func (s *Server) afterRequest(responseTime time.Duration) {
 	
 	// 调整 Alpha
 	s.adjustAlpha()
+}
+
+// 添加判断连接错误的函数
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 只有真正的连接问题才返回 true
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	// 检查具体的错误类型
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection refused") ||
+		   strings.Contains(errStr, "no such host") ||
+		   strings.Contains(errStr, "network is unreachable")
 }
