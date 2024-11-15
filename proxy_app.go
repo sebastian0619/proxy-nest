@@ -33,6 +33,7 @@ const (
 	HealthCheckPrefix = "health:"
 	HealthDataTTL    = 5 * time.Minute
 	MaxResponseSize = 15 * 1024 * 1024  // 15MB
+	MaxResponseTimeRecords = 5  // 最大响应时间记录数
 )
 
 var (
@@ -236,7 +237,7 @@ func initCaches() error {
 
 // 生成缓存键的函数
 func generateCacheKey(r *http.Request) string {
-	// 使用请求的URI作为缓存键
+	// 使用请求的URI为缓存键
 	return r.URL.RequestURI()
 }
 
@@ -401,24 +402,19 @@ func updateBaseWeights() {
 	reportHealthStatus()
 }
 
-// 计基础权重的指数加权移动平均 (EWMA)
-func calculateBaseWeightEWMA(server *Server) int {
-	if len(server.ResponseTimes) == 0 {
-		return server.BaseWeight
+// 基于平均响应时间计算基础权重
+func calculateBaseWeight(avgRT time.Duration) int {
+	const baseExpectedRT = 1 * time.Second
+	weight := int(float64(BaseWeightMultiplier) * float64(baseExpectedRT) / float64(avgRT))
+	
+	// 限制范围在 10-100 之间
+	if weight < 10 {
+		weight = 10
+	} else if weight > 100 {
+		weight = 100
 	}
 	
-	// 计算平均响应时间
-	var total time.Duration
-	for _, rt := range server.ResponseTimes {
-			total += rt
-	}
-	avgResponseTime := total / time.Duration(len(server.ResponseTimes))
-	
-	// 使用 EWMA 计算权重
-	weight := float64(server.BaseWeight)
-	target := float64(BaseWeightMultiplier) / float64(avgResponseTime.Milliseconds())
-	
-	return int(weight*0.7 + target*0.3) // 平滑权重调整
+	return weight
 }
 
 // 计算动态权重
@@ -1456,12 +1452,14 @@ func monitorCacheSize() {
 	ticker := time.NewTicker(10 * time.Minute)
 	for range ticker.C {
 		if localCache != nil {
-			stats := localCache.cache.Stats()
-			logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d, 删除数: %d",
-				stats.Entries,
-				stats.Hits,
-				stats.Misses,
-				stats.Deletes))
+			if cache, ok := localCache.(*LocalCache); ok {
+				stats := cache.cache.Stats()
+				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d, 删除数: %d",
+					stats.Entries,
+					stats.Hits,
+					stats.Misses,
+					stats.Deletes))
+			}
 		}
 	}
 }
