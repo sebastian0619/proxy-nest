@@ -440,13 +440,6 @@ func calculateDynamicWeight(server *Server) int {
 	} else if weight > 100 {
 		weight = 100
 	}
-	
-	logDebug(fmt.Sprintf("服务器 %s 更新动态权重: 平均响应时间=%v, 样本数=%d, 新权重=%d", 
-		server.URL, 
-		avgRT,
-		len(server.ResponseTimes),
-		weight))
-	
 	return weight
 }
 
