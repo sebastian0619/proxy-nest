@@ -321,7 +321,7 @@ func calculateDynamicWeight(server *Server) int {
 	return int(weight)
 }
 
-// 计���综合权重
+// 计综合权重
 func calculateCombinedWeight(server *Server) int {
 	if server == nil {
 		return 0
@@ -348,11 +348,16 @@ func calculateCombinedWeight(server *Server) int {
 
 // 平均响应时间计算
 func averageDuration(durations []time.Duration) time.Duration {
+	if len(durations) == 0 {
+		logError("计算平均响应时间时，输入的 durations 列表为空")
+		return 0 // 或者返回一个默认值，比如 time.Duration(0)
+	}
+
 	var sum time.Duration
 	for _, d := range durations {
 		sum += d
 	}
-	return time.Duration(sum.Nanoseconds() / int64(len(durations)))
+	return sum / time.Duration(len(durations))
 }
 
 // 选择健康的上游服务器
