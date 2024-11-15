@@ -133,23 +133,14 @@ func checkCache(uri string) ([]byte, bool) {
 }
 
 // 修改：添加到缓存函数
-func addToCache(serverURL, requestURI string, data []byte) {
-	// 根据 UPSTREAM_TYPE 验证数据
-	upstreamType := os.Getenv("UPSTREAM_TYPE")
-	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
-	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
-		// 记录无效数据的前 200 个字节
-		logError(fmt.Sprintf("尝试缓存无效数据或格式不匹配的数据，服务器: %s, URI: %s, 数据: %s", serverURL, requestURI, truncateData(data)))
-		return
-	}
-	
-	// 更新本地缓存（如果启用）
+func addToCache(requestURI string, data []byte) {
+	// 更新本��缓存（如果启用）
 	if useLocalCache && localCache != nil {
 		if err := localCache.Set(requestURI, data); err != nil {
 			logError(fmt.Sprintf("本地缓存更新失败: %v", err))
 		}
 	}
-	
+
 	// 更新Redis缓存
 	ctx := context.Background()
 	err := redisClient.Set(ctx, requestURI, data, CacheTTL).Err()
@@ -157,8 +148,8 @@ func addToCache(serverURL, requestURI string, data []byte) {
 		logError(fmt.Sprintf("Redis缓存更新失败 %s: %v", requestURI, err))
 		return
 	}
-	
-	logInfo(fmt.Sprintf("成功缓存数据，服务器: %s, URI: %s, 数据大小: %d bytes", serverURL, requestURI, len(data)))
+
+	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", requestURI, len(data)))
 }
 
 // 辅助函数：截断数据以避免日志过长
@@ -360,7 +351,7 @@ func calculateCombinedWeight(server *Server) int {
 func averageDuration(durations []time.Duration) time.Duration {
 	if len(durations) == 0 {
 		logError("计算平均响应时间时，输入的 durations 列表为空")
-		return 0 // 或者返回一个默认值，比如 time.Duration(0)
+		return 0 // 回一个默认值
 	}
 
 	var sum time.Duration
@@ -521,7 +512,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
 		w.Write(data)
-		logInfo(fmt.Sprintf("[%s] 缓存命中，URI: %s", requestID, uri))
+		logInfo(fmt.Sprintf("[%s] 缓存中，URI: %s", requestID, uri))
 		return
 	}
 
@@ -547,16 +538,12 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 
 		// 处理成功响应
 		handleSuccessResponse(w, resp, requestID)
-		// 重置该服务器的重试计数
 		resetRetryCount(server)
 		return
 	}
 
 	// 如果多次重试后仍然失败，将服务器标记为不健康
-	server.mutex.Lock()
-	server.Healthy = false
-	server.mutex.Unlock()
-	server.circuitBreaker.Record(lastErr)
+	markServerUnhealthy(server)
 
 	metrics.ErrorCount.Add(1)
 	http.Error(w, fmt.Sprintf("所有可用上游服务器都失败: %v", lastErr), http.StatusBadGateway)
@@ -625,7 +612,7 @@ func getHealthyServers() []*Server {
 		logInfo(fmt.Sprintf("服务器 %s 状态: %s", s.URL, status))
 	}
 	
-	// 在没有健康服务器的情况下，尝试使用响应时间最好的不健康服务器
+	// 在没有健康服务器的情况下，尝试使用响应时最好的不健康服务器
 	var bestServer *Server
 	var bestResponseTime time.Duration = time.Hour
 	
@@ -912,6 +899,7 @@ type HealthStats struct {
 func NewHealthStats(windowSize int) *HealthStats {
 	return &HealthStats{
 		windowSize: windowSize,
+		
 		requests:   make([]bool, windowSize),
 	}
 }
@@ -1082,7 +1070,7 @@ func main() {
 		}()
 	}
 	
-	// 5. 启动健康状态报告
+	// 5. 启动健康状态报��
 	startHealthStatusReporting()
 	
 	// 6. 启动指标收集
@@ -1385,4 +1373,11 @@ func isRetryableError(err error) bool {
 func isValidImage(data []byte) bool {
 	contentType := http.DetectContentType(data)
 	return strings.HasPrefix(contentType, "image/")
+}
+
+func markServerUnhealthy(server *Server) {
+	server.mutex.Lock()
+	defer server.mutex.Unlock()
+	server.Healthy = false
+	logError(fmt.Sprintf("服务器 %s 被标记为不健康", server.URL))
 }
