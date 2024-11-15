@@ -434,7 +434,9 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 				return
 			}
 
-			if isValidResponse(body) {
+			
+			contentType := resp.Header.Get("Content-Type")
+			if isValidResponse(body, contentType) {
 				responses <- struct {
 					resp *http.Response
 					body []byte
@@ -1028,7 +1030,7 @@ func main() {
 			}
 		}()
 	} else if role == "backend" {
-		// 只从 Redis 读取健康的服务器列表
+		// 只从 Redis 读取健康的��务器列表
 		go func() {
 			ticker := time.NewTicker(WeightUpdateInterval)
 			for range ticker.C {
@@ -1275,7 +1277,7 @@ func NewServer(url string) Server {
 	}
 }
 
-// 修改重试��关的函数，使用原子操作处理 RetryCount
+// 修改重试关的函数，使用原子操作处理 RetryCount
 func incrementRetryCount(s *Server) {
 	atomic.AddInt32(&s.RetryCount, 1)
 }
