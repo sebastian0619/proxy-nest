@@ -35,6 +35,7 @@ const (
 	HealthDataTTL    = 5 * time.Minute
 	MaxResponseSize = 15 * 1024 * 1024  // 15MB
 	MaxResponseTimeRecords = 5  // 最大响应时间记录数
+	MaxRetries = 3  // 添加缺失的常量
 )
 
 var (
@@ -330,7 +331,7 @@ type Server struct {
 	DynamicWeight  int
 	Alpha          float64
 	ResponseTimes  []time.Duration
-	RetryCount     int
+	RetryCount     int32
 	circuitBreaker *CircuitBreaker
 	mutex          sync.RWMutex
 }
@@ -930,9 +931,9 @@ func logWeightDistribution() {
 
 // 辅助函数：根据URL找到对应的服务器
 func findServerByURL(url string) *Server {
-	for i := range upstreamServers {
-		if upstreamServers[i].URL == url {
-			return &upstreamServers[i]
+	for _, server := range upstreamServers {
+		if server.URL == url {
+			return server
 		}
 	}
 	return nil
