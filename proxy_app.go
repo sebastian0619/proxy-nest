@@ -133,13 +133,13 @@ func checkCache(uri string) ([]byte, bool) {
 }
 
 // 修改：添加到缓存函数
-func addToCache(requestURI string, data []byte) {
+func addToCache(serverURL, requestURI string, data []byte) {
 	// 根据 UPSTREAM_TYPE 验证数据
 	upstreamType := os.Getenv("UPSTREAM_TYPE")
 	if (upstreamType == "tmdb-api" && !isValidJSON(data)) || 
 	   (upstreamType == "tmdb-image" && !isValidImage(data)) {
 		// 记录无效数据的前 200 个字节
-		logError(fmt.Sprintf("尝试缓存无效数据或格式不匹配的数据，URI: %s, 数据: %s", requestURI, string(data[:min(len(data), 200)])))
+		logError(fmt.Sprintf("尝试缓存无效数据或格式不匹配的数据，服务器: %s, URI: %s, 数据: %s", serverURL, requestURI, truncateData(data)))
 		return
 	}
 	
@@ -158,7 +158,16 @@ func addToCache(requestURI string, data []byte) {
 		return
 	}
 	
-	logInfo(fmt.Sprintf("成功缓存数据，URI: %s, 数据大小: %d bytes", requestURI, len(data)))
+	logInfo(fmt.Sprintf("成功缓存数据，服务器: %s, URI: %s, 数据大小: %d bytes", serverURL, requestURI, len(data)))
+}
+
+// 辅助函数：截断数据以避免日志过长
+func truncateData(data []byte) string {
+	const maxLength = 200
+	if len(data) > maxLength {
+		return string(data[:maxLength]) + "..."
+	}
+	return string(data)
 }
 
 // 新增：清理非JSON缓存的函数
