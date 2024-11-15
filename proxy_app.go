@@ -1123,7 +1123,7 @@ func main() {
 			}
 		}()
 	} else if role == "backend" {
-		// 只从 Redis 读取健康的务器列表
+		// 只从 Redis 读取健康的服务器列表
 		go func() {
 			ticker := time.NewTicker(WeightUpdateInterval)
 			for range ticker.C {
@@ -1449,16 +1449,15 @@ func markServerUnhealthy(server *Server) {
 }
 
 func monitorCacheSize() {
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	for range ticker.C {
 		if localCache != nil {
 			if cache, ok := localCache.(*LocalCache); ok {
 				stats := cache.cache.Stats()
-				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d, 删除数: %d",
-					stats.Entries,
+				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
+					stats.Capacity,    // 替换 Entries
 					stats.Hits,
-					stats.Misses,
-					stats.Deletes))
+					stats.Misses))
 			}
 		}
 	}
