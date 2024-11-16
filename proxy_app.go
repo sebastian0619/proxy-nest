@@ -568,14 +568,19 @@ func averageDuration(durations []time.Duration) time.Duration {
 
 // 选择健康的上游服务器
 func getWeightedRandomServer() *Server {
+	weightCache.mu.RLock()
+	defer weightCache.mu.RUnlock()
+	
 	var healthyServers []*Server
 	totalWeight := 0
 	
-	// 收集健康的服务器
 	for _, server := range upstreamServers {
 		if server.Healthy {
-			healthyServers = append(healthyServers, server)
-			totalWeight += calculateCombinedWeight(server)
+			weight := weightCache.weights[server.URL]
+			if weight > 0 {
+				healthyServers = append(healthyServers, server)
+				totalWeight += weight
+			}
 		}
 	}
 	
@@ -583,13 +588,11 @@ func getWeightedRandomServer() *Server {
 		return nil
 	}
 	
-	// 随机选择一个点
 	r := rand.Intn(totalWeight)
 	currentWeight := 0
 	
-	// 遍历找到对应的服务器
 	for _, server := range healthyServers {
-		currentWeight += calculateCombinedWeight(server)
+		currentWeight += weightCache.weights[server.URL]
 		if r < currentWeight {
 			return server
 		}
@@ -1211,7 +1214,7 @@ func main() {
 	
 	// 6. 启动指标收集
 	go collectMetrics()
-	
+	go updateWeights()
 	// 7. 启动 HTTP 服务
 	port := getEnv("PORT", "6637")
 	server := &http.Server{
@@ -1561,4 +1564,38 @@ func isConnectionError(err error) bool {
 	return strings.Contains(errStr, "connection refused") ||
 		   strings.Contains(errStr, "no such host") ||
 		   strings.Contains(errStr, "network is unreachable")
+}
+
+// 添加缓存的权重数据结构
+type WeightCache struct {
+	weights map[string]int
+	mu      sync.RWMutex
+}
+
+// 全局权重缓存
+var weightCache = &WeightCache{
+	weights: make(map[string]int),
+}
+
+// 后台更新权重的函数
+func updateWeights() {
+	ticker := time.NewTicker(10 * time.Second) // 每10秒更新一次权重
+	for range ticker.C {
+		weightCache.mu.Lock()
+		for _, server := range upstreamServers {
+			if !server.Healthy {
+				weightCache.weights[server.URL] = 0
+				continue
+			}
+			
+			weight := calculateCombinedWeight(server)
+			weightCache.weights[server.URL] = weight
+		}
+		weightCache.mu.Unlock()
+		
+		// 可选：记录权重分布
+		if currentLogLevel <= LogLevelDebug {
+			logWeightDistribution()
+		}
+	}
 }
