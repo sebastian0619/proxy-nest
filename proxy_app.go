@@ -118,15 +118,21 @@ func logMessage(level, color, message string) {
 }
 
 func logInfo(message string) {
-	logMessage("信息", ColorBlue, message)
+	if currentLogLevel <= LogLevelInfo {
+		logMessage("信息", ColorBlue, message)
+	}
 }
 
 func logError(message string) {
-	logMessage("错误", ColorRed, message)
+	if currentLogLevel <= LogLevelError {
+		logMessage("错误", ColorRed, message)
+	}
 }
 
 func logDebug(message string) {
-	logMessage("调试", ColorMagenta, message)
+	if currentLogLevel <= LogLevelDebug {
+		logMessage("调试", ColorMagenta, message)
+	}
 }
 
 // 通用验证函数
@@ -534,7 +540,7 @@ func (s *Server) adjustAlpha() {
 	
 	// 根据权重差异调整 Alpha
 	if weightDiff > 30 {  // 权重差异大
-		// 增加 Alpha，更倾向于使用基���权重（更稳定）
+		// 增加 Alpha，更倾向于使用基权重（更稳定）
 		newAlpha := math.Min(currentAlpha + AlphaAdjustmentStep, 0.9)
 		if newAlpha != currentAlpha {
 			logDebug(fmt.Sprintf("服务器 %s Alpha 增加: %.2f -> %.2f (权重差异: %.0f)", 
@@ -656,7 +662,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 					s.mutex.Lock()
 					s.Healthy = false
 					s.mutex.Unlock()
-					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期���式响应，标记为不健康", s.URL, getRetryCount(s)))
+					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期格式响应，标记为不健康", s.URL, getRetryCount(s)))
 				} else {
 					logError(fmt.Sprintf("上游服务器 %s 返回非预期格式响应 (重试次数: %d/3)", s.URL, getRetryCount(s)))
 				}
@@ -952,7 +958,7 @@ func logWeightDistribution() {
 	logDebug("当前可用服务器权重分布:")
 	for url, weight := range weights {
 		percentage := float64(weight) * 100 / float64(totalWeight)
-		logDebug(fmt.Sprintf("  - %s: 权�� %d (%.2f%%)", url, weight, percentage))
+		logDebug(fmt.Sprintf("  - %s: 权重 %d (%.2f%%)", url, weight, percentage))
 		
 		server := findServerByURL(url)
 		if server != nil {
@@ -1258,7 +1264,7 @@ func startCacheCleanup() {
 	}()
 }
 
-// 定义健康检查数据结构
+// 定义健康��查数据结构
 type ServerHealth struct {
 	URL            string    `json:"url"`
 	Healthy        bool      `json:"healthy"`
@@ -1543,7 +1549,7 @@ func (s *Server) afterRequest(responseTime time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	
-	// 更新响应时间记录
+	// 更新响应��间记录
 	s.ResponseTimes = append(s.ResponseTimes, responseTime)
 	if len(s.ResponseTimes) > MaxResponseTimeRecords {
 		s.ResponseTimes = s.ResponseTimes[1:]
