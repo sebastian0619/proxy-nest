@@ -534,7 +534,7 @@ func (s *Server) adjustAlpha() {
 	
 	// 根据权重差异调整 Alpha
 	if weightDiff > 30 {  // 权重差异大
-		// 增加 Alpha，更倾向于使用基础权重（更稳定）
+		// 增加 Alpha，更倾向于使用基���权重（更稳定）
 		newAlpha := math.Min(currentAlpha + AlphaAdjustmentStep, 0.9)
 		if newAlpha != currentAlpha {
 			logDebug(fmt.Sprintf("服务器 %s Alpha 增加: %.2f -> %.2f (权重差异: %.0f)", 
@@ -656,7 +656,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 					s.mutex.Lock()
 					s.Healthy = false
 					s.mutex.Unlock()
-					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期格式响应，标记为不健康", s.URL, getRetryCount(s)))
+					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期���式响应，标记为不健康", s.URL, getRetryCount(s)))
 				} else {
 					logError(fmt.Sprintf("上游服务器 %s 返回非预期格式响应 (重试次数: %d/3)", s.URL, getRetryCount(s)))
 				}
@@ -952,7 +952,7 @@ func logWeightDistribution() {
 	logDebug("当前可用服务器权重分布:")
 	for url, weight := range weights {
 		percentage := float64(weight) * 100 / float64(totalWeight)
-		logDebug(fmt.Sprintf("  - %s: 权重 %d (%.2f%%)", url, weight, percentage))
+		logDebug(fmt.Sprintf("  - %s: 权�� %d (%.2f%%)", url, weight, percentage))
 		
 		server := findServerByURL(url)
 		if server != nil {
@@ -1158,8 +1158,14 @@ func reportCircuitBreakerStatus() {
 }
 
 func main() {
+	// 初始化日志配置
+	initLogging()
+	
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
+	
+	// 启动权重更新
+	go updateWeights()
 	
 	// 1. 初始化 Redis
 	initRedis()
@@ -1214,7 +1220,7 @@ func main() {
 	
 	// 6. 启动指标收集
 	go collectMetrics()
-	go updateWeights()
+
 	// 7. 启动 HTTP 服务
 	port := getEnv("PORT", "6637")
 	server := &http.Server{
@@ -1598,4 +1604,21 @@ func updateWeights() {
 			logWeightDistribution()
 		}
 	}
+}
+
+// 初始化日志配置函数
+func initLogging() {
+	logLevel := strings.ToUpper(getEnv("LOG_LEVEL", "INFO"))
+	switch logLevel {
+	case "DEBUG":
+		currentLogLevel = LogLevelDebug
+	case "INFO":
+		currentLogLevel = LogLevelInfo
+	case "WARNING":
+		currentLogLevel = LogLevelWarning
+	case "ERROR":
+		currentLogLevel = LogLevelError
+	}
+
+	logInfo(fmt.Sprintf("日志级别设置为: %s", logLevel))
 }
