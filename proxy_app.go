@@ -264,18 +264,15 @@ func checkCaches(r *http.Request) ([]byte, bool) {
 	uri := generateCacheKey(r)
 	logDebug(fmt.Sprintf("检查缓存: %s", uri))
 
-	// 检查本地缓存
 	if data, err := localCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.LocalCacheHits.Add(1)
 		logInfo(fmt.Sprintf("本地缓存命中: %s", uri))
 		return data, true
 	}
 
-	// 检查Redis缓存
 	if data, err := redisCache.Get(uri); err == nil && validateData(data, "") {
 		metrics.RedisCacheHits.Add(1)
 		logInfo(fmt.Sprintf("Redis缓存命中: %s", uri))
-		// 更新本地缓存
 		if err := localCache.Set(uri, data); err != nil {
 			logError(fmt.Sprintf("更新本地缓存失败: %v", err))
 		}
@@ -865,13 +862,24 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
 	}
 	
-	client := &http.Client{Timeout: RequestTimeout}
-	url := server.URL + r.RequestURI
+	client := &http.Client{
+		Timeout: RequestTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 	
+	url := server.URL + r.RequestURI
 	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
 		return nil, err
 	}
+	
+	// 使用缓冲区池
+	buffer := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buffer)
 	
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -890,19 +898,18 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	
-	// 请求成功，更新服务器状态
 	server.RetryCount = 0
 	server.ResponseTimes = append(server.ResponseTimes, responseTime)
 	if len(server.ResponseTimes) > MaxResponseTimeRecords {
 		server.ResponseTimes = server.ResponseTimes[len(server.ResponseTimes)-MaxResponseTimeRecords:]
 	}
 	
-	// 只在请求成功时更新动态权重并记录日志
 	if server.Healthy {
 		server.DynamicWeight = calculateDynamicWeight(server)
-		logDebug(fmt.Sprintf("服务器 %s 更新动态权重: 健康状态=true, 平均响应时间=%v, 样本数=%d, 新权重=%d", 
+		logDebug(fmt.Sprintf("服务器 %s 响应时间更新: 当前=%v, 历史记录=%v, 记录数=%d, 动态权重=%d", 
 			server.URL, 
-			averageDuration(server.ResponseTimes),
+			responseTime,
+			server.ResponseTimes,
 			len(server.ResponseTimes),
 			server.DynamicWeight))
 	}
@@ -1352,7 +1359,7 @@ func loadHealthData() error {
 			continue
 		}
 		
-		// 更新服务器状���
+		// 更新服务器状
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
 				server := upstreamServers[i]
