@@ -37,6 +37,12 @@ const (
 	MaxResponseSize = 15 * 1024 * 1024  // 15MB
 	MaxResponseTimeRecords = 5  // 最大响应时间记录数
 	MaxRetries = 3  // 添加缺失的常量
+
+	// 日志级别常量
+	LogLevelDebug = iota
+	LogLevelInfo
+	LogLevelWarning
+	LogLevelError
 )
 
 var (
@@ -51,7 +57,11 @@ var (
 	LocalCacheSize       = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024
 	METRICS_INTERVAL = time.Duration(getIntEnv("METRICS_INTERVAL_MINUTES", 10)) * time.Minute
 	LocalCacheExpiration = getDurationEnv("LOCAL_CACHE_EXPIRATION_MINUTES", 5) * time.Minute
+
+	// 日志级别变量
+	currentLogLevel = getLogLevelFromEnv()
 )
+
 // Redis客户端
 var redisClient *redis.Client
 
@@ -616,7 +626,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		url  string
 	}, len(upstreamServers))
 
-	// 遍历所有健康的上游服务器（除了刚刚失败的那个）
+	// 遍历所健康的上游服务器（除了刚刚失败的那个）
 	for _, server := range upstreamServers {
 		// 跳过不健康的服务器和刚刚失败的服务器
 		if !server.Healthy || server.URL == failedURL {
@@ -1264,7 +1274,7 @@ func startCacheCleanup() {
 	}()
 }
 
-// 定义健康��查数据结构
+// 定义健康查数据结构
 type ServerHealth struct {
 	URL            string    `json:"url"`
 	Healthy        bool      `json:"healthy"`
@@ -1342,7 +1352,7 @@ func loadHealthData() error {
 			continue
 		}
 		
-		// 更新服务器状态
+		// 更新服务器状���
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
 				server := upstreamServers[i]
@@ -1549,7 +1559,7 @@ func (s *Server) afterRequest(responseTime time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	
-	// 更新响应��间记录
+	// 更新响应间记录
 	s.ResponseTimes = append(s.ResponseTimes, responseTime)
 	if len(s.ResponseTimes) > MaxResponseTimeRecords {
 		s.ResponseTimes = s.ResponseTimes[1:]
@@ -1627,4 +1637,19 @@ func initLogging() {
 	}
 
 	logInfo(fmt.Sprintf("日志级别设置为: %s", logLevel))
+}
+
+// 添加获取日志级别的函数
+func getLogLevelFromEnv() int {
+	logLevel := strings.ToUpper(getEnv("LOG_LEVEL", "INFO"))
+	switch logLevel {
+	case "DEBUG":
+		return LogLevelDebug
+	case "WARNING":
+		return LogLevelWarning
+	case "ERROR":
+		return LogLevelError
+	default:
+		return LogLevelInfo
+	}
 }
