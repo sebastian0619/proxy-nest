@@ -7,12 +7,11 @@ const url = require('url'); // 用于处理 URL，提取路径和查询参数
 const app = express();
 const PORT = process.env.PORT || 8080;
 const BASE_WEIGHT_MULTIPLIER = 30;
-const DYNAMIC_WEIGHT_MULTIPLIER = 30;
 const REQUEST_TIMEOUT = 5000;
 const RECENT_REQUEST_LIMIT = 10; // 扩大记录数以更平滑动态权重
 const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
 const ALPHA_ADJUSTMENT_STEP = 0.05; // 每次非缓存请求或健康检查调整的 α 增减值
-const WEIGHT_UPDATE_INTERVAL = 30000; // 每30秒更新一次权重
+
 const UPSTREAM_TYPE = process.env.UPSTREAM_TYPE || 'tmdb-api';
 const CUSTOM_CONTENT_TYPE = process.env.CUSTOM_CONTENT_TYPE;
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
@@ -25,9 +24,6 @@ const BASE_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.BASE_WEIGHT_UPDATE_INTE
 const DYNAMIC_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.DYNAMIC_WEIGHT_UPDATE_INTERVAL, 10) || 30000;
 
 // 添加 EWMA 相关常量
-const EWMA_BETA = 0.8;  // EWMA 平滑系数，越大表示历史数据权重越高
-const MIN_WEIGHT = 1;   // 最小权重
-const MAX_WEIGHT = 100; // 最大权重
 
 let chalk;
 let LOG_PREFIX; // 声明 LOG_PREFIX 变量
@@ -327,6 +323,14 @@ function startServer() {
   // 权重更新队列处理
   const weightUpdateQueue = [];
 
+  // 添加常量定义
+  const RECENT_RESPONSES_LIMIT = 3;    // 保留最近3条响应时间记录
+  const EWMA_BETA = 0.8;              // EWMA平滑系数
+  const MIN_WEIGHT = 1;               // 最小权重
+  const MAX_WEIGHT = 100;             // 最大权重
+  const REQUEST_TIMEOUT = 5000;       // 请求超时时间（毫秒）
+
+  // 权重更新队列处理
   function processWeightUpdateQueue() {
     while (weightUpdateQueue.length > 0) {
       const { server, responseTime } = weightUpdateQueue.shift();
