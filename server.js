@@ -24,6 +24,11 @@ const BASE_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.BASE_WEIGHT_UPDATE_INTE
 // 动态权重更新间隔（每30秒）
 const DYNAMIC_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.DYNAMIC_WEIGHT_UPDATE_INTERVAL, 10) || 30000;
 
+// 添加 EWMA 相关常量
+const EWMA_BETA = 0.8;  // EWMA 平滑系数，越大表示历史数据权重越高
+const MIN_WEIGHT = 1;   // 最小权重
+const MAX_WEIGHT = 100; // 最大权重
+
 let chalk;
 let LOG_PREFIX; // 声明 LOG_PREFIX 变量
 
@@ -122,60 +127,130 @@ function startServer() {
     console.error(LOG_PREFIX.ERROR, '初始权重更新失败:', error.message);
   });
 
-  // 更新动态权重的函数
+  /**
+   * 使用 EWMA 计算动态权重
+   * @param {Object} server 服务器对象
+   * @param {number} newResponseTime 新的响应时间
+   */
+  function updateServerEWMA(server) {
+    if (!server.ewma) {
+      // 首次计算，直接使用当前响应时间
+      server.ewma = server.responseTime;
+    } else {
+      // 使用 EWMA 计算平均响应时间
+      server.ewma = EWMA_BETA * server.ewma + (1 - EWMA_BETA) * server.responseTime;
+    }
+
+    // 基于 EWMA 计算动态权重
+    if (server.ewma <= 0 || !server.healthy) {
+      server.dynamicWeight = 0;
+    } else {
+      // 响应时间越短，权重越高
+      const baseScore = 1000 / server.ewma;
+      // 使用对数函数使权重分布更均匀
+      const weight = Math.log10(baseScore + 1) * 20;
+      server.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
+    }
+  }
+
+  /**
+   * 更新动态权重
+   */
   async function updateDynamicWeights() {
     console.log(LOG_PREFIX.WEIGHT, "开始更新服务器动态权重");
     
     for (const server of upstreamServers) {
-      if (!server.healthy) continue;
+      if (!server.healthy) {
+        server.dynamicWeight = 0;
+        continue;
+      }
       
-      // 基于最近的响应时间计算动态权重
-      const recentAvgTime = server.responseTimes.length > 0
-        ? server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length
-        : Infinity;
-        
-      server.dynamicWeight = calculateDynamicWeight(recentAvgTime);
+      updateServerEWMA(server);
       
       console.log(
         LOG_PREFIX.WEIGHT,
-        `服务器: ${server.url}, 动态权重: ${server.dynamicWeight}, Alpha值: ${server.alpha.toFixed(2)}`
+        `服务器: ${server.url}\n` +
+        `  EWMA响应时间: ${server.ewma.toFixed(2)}ms\n` +
+        `  当前响应时间: ${server.responseTime}ms\n` +
+        `  动态权重: ${server.dynamicWeight}\n` +
+        `  健康状态: ${server.healthy ? '健康' : '异常'}`
       );
     }
   }
 
-  // 动态权重的指数加权平均计算
-  function adjustDynamicWeight(server) {
-    const smoothingFactor = 0.3;
-    const avgResponseTime = server.responseTimes.reduce((acc, time) => acc * (1 - smoothingFactor) + time * smoothingFactor, 0);
-    server.dynamicWeight = Math.min(
-      100,
-      Math.max(1, Math.floor((1000 / avgResponseTime) * DYNAMIC_WEIGHT_MULTIPLIER))
-    );
+  /**
+   * 存储上一次计算的权重数据
+   * @type {Map<string, Object>}
+   */
+  const weightCache = new Map();
 
-    console.log(LOG_PREFIX.WEIGHT, `服务器 ${server.url} 动态权重更新, 平均响应时间: ${avgResponseTime.toFixed(2)}ms, 动态权重: ${server.dynamicWeight}`);
-  }
+  /**
+   * 选择上游服务器（使用缓存的权重数据）
+   */
+  function selectUpstreamServer() {
+    const healthyServers = upstreamServers
+      .filter(server => server.healthy)
+      .map(server => {
+        // 使用缓存的权重数据或默认值
+        const cachedWeight = weightCache.get(server.url) || {
+          dynamicWeight: 0,
+          baseWeight: server.baseWeight || 0,
+          ewma: 0
+        };
+        
+        return {
+          ...server,
+          dynamicWeight: cachedWeight.dynamicWeight,
+          combinedWeight: calculateCombinedWeight(server, cachedWeight.dynamicWeight)
+        };
+      })
+      .sort((a, b) => b.combinedWeight - a.combinedWeight);
 
-  // 综合权重计算使用 EWMA
-  function calculateCombinedWeight(server) {
-    return Math.floor(server.alpha * server.dynamicWeight + (1 - server.alpha) * server.baseWeight);
-  }
+    if (healthyServers.length === 0) {
+      throw new Error('没有健康的上游服务器可用');
+    }
 
-  // 选择健康的上游服务器
-  function getWeightedRandomServer() {
-    const healthyServers = upstreamServers.filter(server => server.healthy);
-    if (healthyServers.length === 0) return null;
+    const totalWeight = healthyServers.reduce((sum, server) => sum + server.combinedWeight, 0);
+    const random = Math.random() * totalWeight;
+    let weightSum = 0;
 
-    const weightedServers = [];
+    // 输出所有服务器的权重信息
     healthyServers.forEach(server => {
-      const combinedWeight = calculateCombinedWeight(server);
-      for (let i = 0; i < combinedWeight; i++) {
-        weightedServers.push(server);
-      }
+      console.log(
+        LOG_PREFIX.WEIGHT,
+        `${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 综合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+      );
     });
 
-    const selectedServer = weightedServers[Math.floor(Math.random() * weightedServers.length)];
-    console.log(LOG_PREFIX.PROXY, `已选择上游服务器: ${selectedServer.url}, 综合权重: ${calculateCombinedWeight(selectedServer)}`);
-    return selectedServer;
+    // 选择服务器
+    for (const server of healthyServers) {
+      weightSum += server.combinedWeight;
+      if (weightSum > random) {
+        console.log(
+          LOG_PREFIX.SUCCESS,
+          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 综合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+        );
+        return server;
+      }
+    }
+
+    return healthyServers[0];
+  }
+
+  /**
+   * 计算服务器的综合权重
+   * @param {Object} server 服务器对象
+   * @returns {number} 综合权重
+   */
+  function calculateCombinedWeight(server) {
+    if (!server.healthy) return 0;
+    
+    const baseWeight = server.baseWeight || 0;
+    const dynamicWeight = server.dynamicWeight || 0;
+    const alpha = server.alpha || ALPHA_INITIAL;
+    
+    // 综合权重 = alpha * 动态权重 + (1 - alpha) * 基础权重
+    return (alpha * dynamicWeight + (1 - alpha) * baseWeight);
   }
 
   // 标准化缓存键
@@ -196,7 +271,7 @@ function startServer() {
       }
       console.log(LOG_PREFIX.CACHE.MISS, `键值: ${cacheKey}`);
 
-      let targetServer = getWeightedRandomServer();
+      let targetServer = selectUpstreamServer();
       let retryCount = 0;
 
       while (targetServer && retryCount < upstreamServers.length) {
@@ -266,7 +341,7 @@ function startServer() {
         } catch (error) {
           console.log(LOG_PREFIX.WARN, `代理请求失败 - 服务器: ${targetServer.url}, 错误: ${error.message}, 重试次数: ${retryCount + 1}/${upstreamServers.length}`);
           targetServer.healthy = false;
-          targetServer = getWeightedRandomServer();
+          targetServer = selectUpstreamServer();
           retryCount++;
         }
       }
