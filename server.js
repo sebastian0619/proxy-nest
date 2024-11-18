@@ -19,25 +19,28 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const TMDB_IMAGE_TEST_URL = process.env.TMDB_IMAGE_TEST_URL || '';
 
 let chalk;
+let LOG_PREFIX; // 声明 LOG_PREFIX 变量
+
 import('chalk').then((module) => {
   chalk = module.default;
   chalk.level = 3; // 支持 16M 色彩输出
+  
+  // 将 LOG_PREFIX 的定义移到这里
+  LOG_PREFIX = {
+    INFO: chalk.blue('[ 信息 ]'),
+    ERROR: chalk.red('[ 错误 ]'),
+    WARN: chalk.yellow('[ 警告 ]'),
+    SUCCESS: chalk.green('[ 成功 ]'),
+    CACHE: {
+      HIT: chalk.green('[ 缓存命中 ]'),
+      MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]')
+    },
+    PROXY: chalk.cyan('[ 代理 ]'),
+    WEIGHT: chalk.magenta('[ 权重 ]')
+  };
+  
   startServer();
 });
-
-// 在文件开头添加日志格式相关的常量
-const LOG_PREFIX = {
-  INFO: chalk.blue('[ 信息 ]'),
-  ERROR: chalk.red('[ 错误 ]'),
-  WARN: chalk.yellow('[ 警告 ]'),
-  SUCCESS: chalk.green('[ 成功 ]'),
-  CACHE: {
-    HIT: chalk.green('[ 缓存命中 ]'),
-    MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]')
-  },
-  PROXY: chalk.cyan('[ 代理 ]'),
-  WEIGHT: chalk.magenta('[ 权重 ]')
-};
 
 function startServer() {
   app.use(morgan('combined'));
@@ -85,15 +88,16 @@ function startServer() {
         server.responseTime = responseTime;
 
         // 计算新的基础权重
-        const oldWeight = server.baseWeight;
         server.baseWeight = calculateBaseWeight(responseTime);
-        server.alpha = Math.min(server.alpha + ALPHA_INCREMENT, ALPHA_MAX);
+        // 健康检查成功时增加 alpha 值
+        server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
 
         console.log(LOG_PREFIX.SUCCESS, `服务器: ${server.url}, 响应时间: ${responseTime}ms, 基础权重: ${server.baseWeight}, Alpha值: ${server.alpha.toFixed(2)}`);
       } catch (error) {
         server.healthy = false;
         server.baseWeight = 0;
-        server.alpha = ALPHA_INITIAL;
+        // 健康检查失败时减少 alpha 值
+        server.alpha = Math.max(0, server.alpha - ALPHA_ADJUSTMENT_STEP);
         console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 出错: ${error.message}`);
       }
     }
@@ -292,4 +296,13 @@ async function checkServerHealth(server) {
     console.error(LOG_PREFIX.ERROR, `健康检查失败 - 服务器: ${server.url}, 错误: ${error.message}`);
     throw error;
   }
+}
+
+function calculateBaseWeight(responseTime) {
+  // 基于响应时间计算基础权重
+  // 响应时间越短，权重越高
+  return Math.min(
+    100, // 设置最大权重上限为100
+    Math.max(1, Math.floor((1000 / responseTime) * BASE_WEIGHT_MULTIPLIER))
+  );
 }
