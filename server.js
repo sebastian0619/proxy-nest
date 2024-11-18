@@ -293,10 +293,13 @@ function startServer() {
           timeout: REQUEST_TIMEOUT
         });
         
-        // 请求成功，异步更新权重
-        setImmediate(() => {
-          updateWeightDataAsync(server, Date.now() - startTime).catch(err => {
-            console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+        // 请求成功后，将响应时间放入队列，异步处理
+        process.nextTick(() => {
+          const responseTime = Date.now() - startTime;
+          weightUpdateQueue.push({
+            server,
+            responseTime,
+            timestamp: Date.now()
           });
         });
 
@@ -304,16 +307,18 @@ function startServer() {
 
       } catch (error) {
         retryCount++;
-        lastError = error;
-
-        // 异步更新失败的权重数据
-        setImmediate(() => {
-          updateWeightDataAsync(server, Infinity).catch(err => {
-            console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+        
+        // 请求失败后，将失败信息放入队列，异步处理
+        process.nextTick(() => {
+          weightUpdateQueue.push({
+            server,
+            responseTime: Infinity,
+            timestamp: Date.now(),
+            error: error.message
           });
         });
 
-        // 只在最后一次重试失败时显示错误
+        // 只在最后一次重试时显示错误
         if (retryCount === maxRetries) {
           console.error(LOG_PREFIX.ERROR, `所有重试都失败了 - 最后错误: ${error.message}`);
           throw error;
@@ -321,6 +326,24 @@ function startServer() {
       }
     }
   }
+
+  // 权重更新队列
+  const weightUpdateQueue = [];
+
+  /**
+   * 异步处理权重更新队列
+   */
+  function processWeightUpdateQueue() {
+    while (weightUpdateQueue.length > 0) {
+      const update = weightUpdateQueue.shift();
+      updateWeightDataAsync(update.server, update.responseTime).catch(err => {
+        console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+      });
+    }
+  }
+
+  // 定期处理权重更新队列
+  setInterval(processWeightUpdateQueue, 1000);
 
   // 代理请求
   app.use(
