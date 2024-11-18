@@ -280,47 +280,42 @@ function startServer() {
   /**
    * 处理请求
    */
-  async function handleRequest(req, res) {
-    const server = selectUpstreamServer();
-    const startTime = Date.now();
-    
-    try {
-      const response = await axios.get(`${server.url}${req.path}`);
-      const responseTime = Date.now() - startTime;
-      
-      // 成功请求后异步更新权重
-      setImmediate(() => {
-        updateWeightDataAsync(server, responseTime).catch(err => {
-          console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
-        });
-      });
-      
-      return response.data;
-    } catch (error) {
-      // 失败时调整权重
-      await handleRequestError(server, error);
-      throw error;
-    }
-  }
-
-  /**
-   * 重试处理逻辑
-   */
   async function handleRequestWithRetry(req, res, maxRetries = 9) {
     let retryCount = 0;
-    
+    let lastError;
+
     while (retryCount < maxRetries) {
+      const server = selectUpstreamServer();
+      const startTime = Date.now();
+
       try {
-        return await handleRequest(req, res);
+        const response = await axios.get(`${server.url}${req.path}`, {
+          timeout: REQUEST_TIMEOUT
+        });
+        
+        // 请求成功，异步更新权重
+        setImmediate(() => {
+          updateWeightDataAsync(server, Date.now() - startTime).catch(err => {
+            console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+          });
+        });
+
+        return response.data;
+
       } catch (error) {
         retryCount++;
-        console.warn(
-          LOG_PREFIX.WARN,
-          `代理请求失败 - 服务器: ${error.server?.url || '未知'}, ` +
-          `错误: ${error.message}, 重试次数: ${retryCount}/${maxRetries}`
-        );
-        
+        lastError = error;
+
+        // 异步更新失败的权重数据
+        setImmediate(() => {
+          updateWeightDataAsync(server, Infinity).catch(err => {
+            console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+          });
+        });
+
+        // 只在最后一次重试失败时显示错误
         if (retryCount === maxRetries) {
+          console.error(LOG_PREFIX.ERROR, `所有重试都失败了 - 最后错误: ${error.message}`);
           throw error;
         }
       }
@@ -473,7 +468,7 @@ function calculateBaseWeight(responseTime) {
   // 基于响应时间计算基础权重
   // 响应时间越短，权重越高
   return Math.min(
-    100, // 设置最大权重上��为100
+    100, // 设置最大权重上为100
     Math.max(1, Math.floor((1000 / responseTime) * BASE_WEIGHT_MULTIPLIER))
   );
 }
