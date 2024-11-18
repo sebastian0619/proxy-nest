@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,6 +188,8 @@ type LocalCacheInterface interface {
 	GetStats() CacheStats
 	GetAllKeys() []string
 	CleanupOldItems(duration time.Duration) int
+	GetUnderlyingCache() *bigcache.BigCache
+	GetMutex() *sync.RWMutex
 }
 
 // Redis缓存实现
@@ -1837,9 +1838,16 @@ func emergencyCleanup() {
     keys := localCache.GetAllKeys()
     before := localCache.Len()
     
+    // 获取底层缓存和互斥锁
+    cache := localCache.GetUnderlyingCache()
+    mutex := localCache.GetMutex()
+
+    mutex.Lock()
+    defer mutex.Unlock()
+    
     // 删除一半的缓存项
     for i := 0; i < len(keys)/2; i++ {
-        localCache.Delete(keys[i])
+        cache.Delete(keys[i])
     }
 
     after := localCache.Len()
