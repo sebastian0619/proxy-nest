@@ -1,6 +1,5 @@
 const https = require('https');
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
 const morgan = require('morgan');
 const url = require('url'); // 用于处理 URL，提取路径和查询参数
