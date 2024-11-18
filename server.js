@@ -165,11 +165,7 @@ function startServer() {
       
       console.log(
         LOG_PREFIX.WEIGHT,
-        `服务器: ${server.url}\n` +
-        `  EWMA响应时间: ${server.ewma.toFixed(2)}ms\n` +
-        `  当前响应时间: ${server.responseTime}ms\n` +
-        `  动态权重: ${server.dynamicWeight}\n` +
-        `  健康状态: ${server.healthy ? '健康' : '异常'}`
+        `${server.url} [EWMA:${server.ewma.toFixed(0)}ms 响应:${server.responseTime}ms 权重:${server.dynamicWeight} ${server.healthy ? '✓' : '✗'}]`
       );
     }
   }
@@ -225,7 +221,7 @@ function startServer() {
     const selected = healthyServers[0];
     console.log(
       LOG_PREFIX.SUCCESS,
-      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综合:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综��:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
     );
     return selected;
   }
