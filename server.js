@@ -290,7 +290,7 @@ async function checkServerHealth(server) {
         console.error(LOG_PREFIX.ERROR, 'TMDB_API_KEY 环境变量未设置');
         process.exit(1);
       }
-      testUrl = `/3/movie/configuration?api_key=${TMDB_API_KEY}`;
+      testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
       break;
       
     case 'tmdb-image':
