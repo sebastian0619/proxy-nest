@@ -48,7 +48,7 @@ const (
 
 	// 添加 swap 监控相关常量和结构体
 	SwapCheckInterval   = 30 * time.Second
-	HighSwapThreshold  = 60.0  // swap 使用率超过60%触发清理
+	HighSwapThreshold  = 65.0  // swap 使用率超过65%触发清理
 	CriticalSwapThreshold = 75.0 // swap 使用率超过75%触发紧急清理
 	SwapCleanupInterval = 5 * time.Minute
 )
@@ -1258,11 +1258,11 @@ func main() {
 	// 启动权重更新
 	go updateWeights()
 	
-	// 1. 初始化 Redis
+	// 初始化 Redis
 	initRedis()
 	logInfo("Redis 初始化完成")
 	
-	// 2. 初始化本地缓存
+	// 初始化本地缓存
 	if err := initCaches(); err != nil {
 		log.Printf("警告: 本地缓存初始化失败: %v", err)
 		useLocalCache = false
@@ -1272,30 +1272,24 @@ func main() {
 	}
 	logInfo("本地缓存初始化完成")
 	
-	// 3. 从环境变量加载上游服务器
+	// 从环境变量加载上游服务器
 	if err := initUpstreamServers(); err != nil {
 		logError(fmt.Sprintf("初始化上游服务器失败: %v", err))
 		os.Exit(1)
 	}
 	logInfo("上游服务器加载完成")
 	
-	// 4. 启动健康检查（包括加载共享健康数据）
+	// 启动健康检查
 	role := os.Getenv("ROLE")
-
 	if role == "host" {
-		// 执行健康检查并写入 Redis
 		go func() {
-			// 首次健康检
 			updateBaseWeights()
-			
-			// 定期健康检查
 			ticker := time.NewTicker(WeightUpdateInterval)
 			for range ticker.C {
 				updateBaseWeights()
 			}
 		}()
 	} else if role == "backend" {
-		// 只从 Redis 读取健康的服务器列表
 		go func() {
 			ticker := time.NewTicker(WeightUpdateInterval)
 			for range ticker.C {
@@ -1306,13 +1300,32 @@ func main() {
 		}()
 	}
 	
-	// 5. 启动健康状态报告
+	// 启动健康状态报告
 	startHealthStatusReporting()
 	
-	// 6. 启动指标收集
+	// 启动指标收集
 	go collectMetrics()
+	
+	// 启动 swap 监控
+	startSwapMonitoring()
+	
+	// 添加 swap 使用情况日志
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			if err := swapController.updateSwapUsage(); err != nil {
+				logError(fmt.Sprintf("获取 swap 使用情况失败: %v", err))
+				continue
+			}
+			swapUsage := swapController.getSwapUsagePercent()
+			logInfo(fmt.Sprintf("Swap 使用情况 - 使用率: %.2f%%, 已用: %d MB, 总量: %d MB",
+				swapUsage,
+				swapController.swapUsed/1024,
+				swapController.swapTotal/1024))
+		}
+	}()
 
-	// 7. 启动 HTTP 服务
+	// 启动 HTTP 服务
 	port := getEnv("PORT", "6637")
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", port),
@@ -1639,7 +1652,7 @@ func monitorCacheSize() {
 	}
 }
 
-// 在 Server 结构体中添加方法
+// 在 Server 结构体中添加方��
 func (s *Server) afterRequest(responseTime time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -1862,30 +1875,4 @@ func normalCleanup() {
     }
 
     logInfo(fmt.Sprintf("常规清理完成: 清理了 %d 个缓存项", cleanupCount))
-}
-
-// 修改 main 函数，添加 swap 监控
-func main() {
-    // ... 现有代码 ...
-    
-    // 启动 swap 监控
-    startSwapMonitoring()
-    
-    // 添加 swap 使用情况日志
-    go func() {
-        ticker := time.NewTicker(5 * time.Minute)
-        for range ticker.C {
-            if err := swapController.updateSwapUsage(); err != nil {
-                logError(fmt.Sprintf("获取 swap 使用情况失败: %v", err))
-                continue
-            }
-            swapUsage := swapController.getSwapUsagePercent()
-            logInfo(fmt.Sprintf("Swap 使用情况 - 使用率: %.2f%%, 已用: %d MB, 总量: %d MB",
-                swapUsage,
-                swapController.swapUsed/1024,
-                swapController.swapTotal/1024))
-        }
-    }()
-    
-    // ... 现有代码 ...
 }
