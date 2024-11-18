@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/allegro/bigcache/v3"
 	"sync/atomic"
 	"math"
+	"runtime"
 )
 
 // 配置常量
@@ -43,6 +45,12 @@ const (
 	LogLevelInfo
 	LogLevelWarning
 	LogLevelError
+
+	// 添加 swap 监控相关常量和结构体
+	SwapCheckInterval   = 30 * time.Second
+	HighSwapThreshold  = 60.0  // swap 使用率超过60%触发清理
+	CriticalSwapThreshold = 75.0 // swap 使用率超过75%触发紧急清理
+	SwapCleanupInterval = 5 * time.Minute
 )
 
 var (
@@ -178,6 +186,7 @@ type LocalCacheInterface interface {
 	GeneralCache
 	Len() int
 	Reset()
+	GetStats() CacheStats
 }
 
 // Redis缓存实现
@@ -208,48 +217,56 @@ type CacheItem struct {
 }
 
 type LocalCache struct {
-	cache map[string]*CacheItem
-	mutex sync.RWMutex
+	cache     *bigcache.BigCache
+	hitCount  int64
+	missCount int64
+	mutex     sync.RWMutex
 }
 
+// 实现 LocalCacheInterface 的方法
 func (l *LocalCache) Get(key string) ([]byte, error) {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
-
-	if item, found := l.cache[key]; found {
-		item.HitCount++
-		item.LastAccess = time.Now()
-		return item.Data, nil
+	
+	data, err := l.cache.Get(key)
+	if err != nil {
+		atomic.AddInt64(&l.missCount, 1)
+		return nil, err
 	}
-	return nil, fmt.Errorf("缓存未命中")
+	atomic.AddInt64(&l.hitCount, 1)
+	return data, nil
 }
 
 func (l *LocalCache) Set(key string, value []byte) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-
-	l.cache[key] = &CacheItem{
-		Data:       value,
-		HitCount:   0,
-		LastAccess: time.Now(),
-	}
-	return nil
+	return l.cache.Set(key, value)
 }
 
 func (l *LocalCache) Delete(key string) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-
-	delete(l.cache, key)
-	return nil
+	return l.cache.Delete(key)
 }
 
 func (l *LocalCache) Len() int {
-	return len(l.cache)
+	return l.cache.Len()
 }
 
 func (l *LocalCache) Reset() {
-	l.cache = make(map[string]*CacheItem)
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.cache.Reset()
+	atomic.StoreInt64(&l.hitCount, 0)
+	atomic.StoreInt64(&l.missCount, 0)
+}
+
+func (l *LocalCache) GetStats() CacheStats {
+	return CacheStats{
+		ItemCount: l.cache.Len(),
+		Hits:      atomic.LoadInt64(&l.hitCount),
+		Misses:    atomic.LoadInt64(&l.missCount),
+	}
 }
 
 // 初始化缓存
@@ -262,20 +279,20 @@ func initCaches() error {
 
 	// 初始化本地缓存
 	config := bigcache.DefaultConfig(LocalCacheExpiration)
-	config.MaxEntriesInWindow = getIntEnv("LOCAL_CACHE_MAX_ENTRIES", 1000)  // 减少最大条目数
-	config.MaxEntrySize = getIntEnv("LOCAL_CACHE_MAX_ENTRY_SIZE_KB", 256) * 1024  // 限制单个缓存项大小
-	config.HardMaxCacheSize = getIntEnv("LOCAL_CACHE_SIZE_MB", 20) * 1024 * 1024  // 限制总缓存大小
+	config.MaxEntriesInWindow = getIntEnv("LOCAL_CACHE_MAX_ENTRIES", 1000)
+	config.MaxEntrySize = getIntEnv("LOCAL_CACHE_MAX_ENTRY_SIZE_KB", 256) * 1024
+	config.HardMaxCacheSize = getIntEnv("LOCAL_CACHE_SIZE_MB", 20)
 	config.Verbose = false
-	config.Shards = 256  // 减少分片数量，减少内存占用
-	
-	// 添加缓存统计日志
-	go monitorCacheSize()
+	config.Shards = 256
 
 	cache, err := bigcache.NewBigCache(config)
 	if err != nil {
 		return fmt.Errorf("初始化本地缓存失败: %v", err)
 	}
-	localCache = &LocalCache{cache: cache}
+	
+	localCache = &LocalCache{
+		cache: cache,
+	}
 
 	return nil
 }
@@ -534,7 +551,7 @@ func calculateDynamicWeight(server *Server) int {
 	return weight
 }
 
-// 修改��算综合权重的函数
+// 修改算综合权重的函数
 func calculateCombinedWeight(server *Server) int {
 	if server == nil {
 		return 0
@@ -1613,13 +1630,11 @@ func monitorCacheSize() {
 	ticker := time.NewTicker(5 * time.Minute)
 	for range ticker.C {
 		if localCache != nil {
-			if cache, ok := localCache.(*LocalCache); ok {
-				stats := cache.cache.Stats()
+				stats := localCache.GetStats()
 				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
-					cache.cache.Len(),
+					stats.ItemCount,
 					stats.Hits,
 					stats.Misses))
-			}
 		}
 	}
 }
@@ -1725,3 +1740,152 @@ func getLogLevelFromEnv() int {
 }
 
 var goroutinePool = make(chan struct{}, 100) // 例如，限制最大并发 Goroutine 数量为 100
+
+// 添加 swap 监控相关常量和结构体
+const (
+    SwapCheckInterval   = 30 * time.Second
+    HighSwapThreshold  = 70.0  // swap 使用率超过70%触发清理
+    CriticalSwapThreshold = 85.0 // swap 使用率超过85%触发紧急清理
+    SwapCleanupInterval = 5 * time.Minute
+)
+
+type SwapController struct {
+    mu            sync.RWMutex
+    swapTotal     uint64
+    swapUsed      uint64
+    lastCleanup   time.Time
+}
+
+var swapController = &SwapController{}
+
+// 获取 swap 使用情况
+func (sc *SwapController) updateSwapUsage() error {
+    sc.mu.Lock()
+    defer sc.mu.Unlock()
+
+    // 读取 /proc/meminfo 获取 swap 信息
+    data, err := os.ReadFile("/proc/meminfo")
+    if err != nil {
+        return fmt.Errorf("读取内存信息失败: %v", err)
+    }
+
+    lines := strings.Split(string(data), "\n")
+    for _, line := range lines {
+        if strings.HasPrefix(line, "SwapTotal:") {
+            fmt.Sscanf(line, "SwapTotal: %d kB", &sc.swapTotal)
+        } else if strings.HasPrefix(line, "SwapFree:") {
+            var swapFree uint64
+            fmt.Sscanf(line, "SwapFree: %d kB", &swapFree)
+            sc.swapUsed = sc.swapTotal - swapFree
+        }
+    }
+    return nil
+}
+
+// 获取 swap 使用率
+func (sc *SwapController) getSwapUsagePercent() float64 {
+    sc.mu.RLock()
+    defer sc.mu.RUnlock()
+    
+    if sc.swapTotal == 0 {
+        return 0
+    }
+    return float64(sc.swapUsed) / float64(sc.swapTotal) * 100
+}
+
+// 添加 swap 监控和控制逻辑
+func startSwapMonitoring() {
+    go func() {
+        ticker := time.NewTicker(SwapCheckInterval)
+        for range ticker.C {
+            if err := swapController.updateSwapUsage(); err != nil {
+                logError(fmt.Sprintf("更新 swap 使用情况失败: %v", err))
+                continue
+            }
+
+            swapUsage := swapController.getSwapUsagePercent()
+            logDebug(fmt.Sprintf("当前 Swap 使用率: %.2f%%", swapUsage))
+
+            switch {
+            case swapUsage > CriticalSwapThreshold:
+                logError(fmt.Sprintf("Swap 使用率严重过高 (%.2f%%), 执行紧急清理", swapUsage))
+                emergencyCleanup()
+                runtime.GC()
+            case swapUsage > HighSwapThreshold:
+                logWarning(fmt.Sprintf("Swap 使用率过高 (%.2f%%), 执行常规清理", swapUsage))
+                normalCleanup()
+            }
+        }
+    }()
+}
+
+// 紧急清理函数
+func emergencyCleanup() {
+    if localCache == nil {
+        return
+    }
+
+    // 获取所有键
+    keys := make([]string, 0)
+    // 使用 bigcache 的迭代器获取所有键
+    iterator := localCache.cache.Iterator()
+    for iterator.SetNext() {
+        if entry, err := iterator.Value(); err == nil {
+            keys = append(keys, entry.Key())
+        }
+    }
+
+    // 删除一半的缓存项
+    for i := 0; i < len(keys)/2; i++ {
+        localCache.Delete(keys[i])
+    }
+
+    logWarning(fmt.Sprintf("紧急清理完成: 清理了 %d 个缓存项", len(keys)/2))
+    runtime.GC()
+}
+
+// 常规清理函数
+func normalCleanup() {
+    if localCache == nil {
+        return
+    }
+
+    cleanupCount := 0
+    iterator := localCache.cache.Iterator()
+    for iterator.SetNext() {
+        if entry, err := iterator.Value(); err == nil {
+            if time.Since(time.Unix(0, entry.Timestamp())) > 30*time.Minute {
+                localCache.Delete(entry.Key())
+                cleanupCount++
+            }
+        }
+    }
+
+    logInfo(fmt.Sprintf("常规清理完成: 清理了 %d 个缓存项", cleanupCount))
+}
+
+// 修改 main 函数，添加 swap 监控
+func main() {
+    // ... 现有代码 ...
+    
+    // 启动 swap 监控
+    startSwapMonitoring()
+    
+    // 添加 swap 使用情况日志
+    go func() {
+        ticker := time.NewTicker(5 * time.Minute)
+        for range ticker.C {
+            if err := swapController.updateSwapUsage(); err != nil {
+                logError(fmt.Sprintf("获取 swap 使用情况失败: %v", err))
+                continue
+            }
+            swapUsage := swapController.getSwapUsagePercent()
+            logInfo(fmt.Sprintf("Swap 使用情况 - 使用率: %.2f%%, 已用: %d MB, 总量: %d MB",
+                swapUsage,
+                swapController.swapUsed/1024,
+                swapController.swapTotal/1024))
+        }
+    }()
+    
+    // ... 现有代码 ...
+}
