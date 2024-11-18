@@ -187,6 +187,8 @@ type LocalCacheInterface interface {
 	Len() int
 	Reset()
 	GetStats() CacheStats
+	GetAllKeys() []string
+	CleanupOldItems(duration time.Duration) int
 }
 
 // Redis缓存实现
@@ -1183,7 +1185,7 @@ func generateRequestID() string {
 // 添加定期健康状态报函数
 func startHealthStatusReporting() {
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)  // 每五分钟报告一次
+		ticker := time.NewTicker(5 * time.Minute)  // ���五分钟报告一次
 		for range ticker.C {
 			reportHealthStatus()
 		}
@@ -1652,7 +1654,7 @@ func monitorCacheSize() {
 	}
 }
 
-// 在 Server 结构体中添加方��
+// 在 Server 结构体中添加方
 func (s *Server) afterRequest(responseTime time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -1832,22 +1834,16 @@ func emergencyCleanup() {
         return
     }
 
-    // 获取所有键
-    keys := make([]string, 0)
-    // 使用 bigcache 的迭代器获取所有键
-    iterator := localCache.cache.Iterator()
-    for iterator.SetNext() {
-        if entry, err := iterator.Value(); err == nil {
-            keys = append(keys, entry.Key())
-        }
-    }
-
+    keys := localCache.GetAllKeys()
+    before := len(keys)
+    
     // 删除一半的缓存项
     for i := 0; i < len(keys)/2; i++ {
         localCache.Delete(keys[i])
     }
 
-    logWarning(fmt.Sprintf("紧急清理完成: 清理了 %d 个缓存项", len(keys)/2))
+    after := localCache.Len()
+    logWarning(fmt.Sprintf("紧急清理完成: 从 %d 项减少到 %d 项", before, after))
     runtime.GC()
 }
 
@@ -1857,16 +1853,70 @@ func normalCleanup() {
         return
     }
 
-    cleanupCount := 0
-    iterator := localCache.cache.Iterator()
+    before := localCache.Len()
+    cleanupCount := localCache.CleanupOldItems(30 * time.Minute)
+    after := localCache.Len()
+
+    logInfo(fmt.Sprintf("常规清理完成: 从 %d 项减少到 %d 项，清理了 %d 项", 
+        before, after, cleanupCount))
+}
+
+// 定义缓存统计结构体
+type CacheStats struct {
+    ItemCount int
+    Hits      int64
+    Misses    int64
+}
+
+// 修改接口定义，添加需要的方法
+type LocalCacheInterface interface {
+    Get(key string) ([]byte, error)
+    Set(key string, value []byte) error
+    Delete(key string) error
+    Len() int
+    Reset()
+    GetStats() CacheStats
+    GetAllKeys() []string
+    CleanupOldItems(duration time.Duration) int
+}
+
+// 修改 LocalCache 实现
+type LocalCache struct {
+    cache     *bigcache.BigCache
+    hitCount  int64
+    missCount int64
+    mutex     sync.RWMutex
+}
+
+// 添加获取所有键的方法
+func (l *LocalCache) GetAllKeys() []string {
+    l.mutex.RLock()
+    defer l.mutex.RUnlock()
+    
+    keys := make([]string, 0)
+    iterator := l.cache.Iterator()
     for iterator.SetNext() {
         if entry, err := iterator.Value(); err == nil {
-            if time.Since(time.Unix(0, entry.Timestamp())) > 30*time.Minute {
-                localCache.Delete(entry.Key())
+            keys = append(keys, entry.Key())
+        }
+    }
+    return keys
+}
+
+// 添加清理旧项目的方法
+func (l *LocalCache) CleanupOldItems(duration time.Duration) int {
+    l.mutex.Lock()
+    defer l.mutex.Unlock()
+    
+    cleanupCount := 0
+    iterator := l.cache.Iterator()
+    for iterator.SetNext() {
+        if entry, err := iterator.Value(); err == nil {
+            if time.Since(time.Unix(0, entry.Timestamp())) > duration {
+                l.cache.Delete(entry.Key())
                 cleanupCount++
             }
         }
     }
-
-    logInfo(fmt.Sprintf("常规清理完成: 清理了 %d 个缓存项", cleanupCount))
+    return cleanupCount
 }
