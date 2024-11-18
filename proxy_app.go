@@ -201,28 +201,55 @@ func (r *RedisCache) Delete(key string) error {
 }
 
 // 本地缓存实现
+type CacheItem struct {
+	Data       []byte
+	HitCount   int
+	LastAccess time.Time
+}
+
 type LocalCache struct {
-	cache *bigcache.BigCache
+	cache map[string]*CacheItem
+	mutex sync.RWMutex
 }
 
 func (l *LocalCache) Get(key string) ([]byte, error) {
-	return l.cache.Get(key)
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+
+	if item, found := l.cache[key]; found {
+		item.HitCount++
+		item.LastAccess = time.Now()
+		return item.Data, nil
+	}
+	return nil, fmt.Errorf("缓存未命中")
 }
 
 func (l *LocalCache) Set(key string, value []byte) error {
-	return l.cache.Set(key, value)
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	l.cache[key] = &CacheItem{
+		Data:       value,
+		HitCount:   0,
+		LastAccess: time.Now(),
+	}
+	return nil
 }
 
 func (l *LocalCache) Delete(key string) error {
-	return l.cache.Delete(key)
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	delete(l.cache, key)
+	return nil
 }
 
 func (l *LocalCache) Len() int {
-	return l.cache.Len()
+	return len(l.cache)
 }
 
 func (l *LocalCache) Reset() {
-	l.cache.Reset()
+	l.cache = make(map[string]*CacheItem)
 }
 
 // 初始化缓存
@@ -235,11 +262,11 @@ func initCaches() error {
 
 	// 初始化本地缓存
 	config := bigcache.DefaultConfig(LocalCacheExpiration)
-	config.MaxEntriesInWindow = getIntEnv("LOCAL_CACHE_MAX_ENTRIES", 5000)  // 减少最大条目数
-	config.MaxEntrySize = getIntEnv("LOCAL_CACHE_MAX_ENTRY_SIZE_KB", 512) * 1024  // 限制单个缓存项大小
-	config.HardMaxCacheSize = getIntEnv("LOCAL_CACHE_SIZE_MB", 50) * 1024 * 1024  // 限制总缓存大小
+	config.MaxEntriesInWindow = getIntEnv("LOCAL_CACHE_MAX_ENTRIES", 1000)  // 减少最大条目数
+	config.MaxEntrySize = getIntEnv("LOCAL_CACHE_MAX_ENTRY_SIZE_KB", 256) * 1024  // 限制单个缓存项大小
+	config.HardMaxCacheSize = getIntEnv("LOCAL_CACHE_SIZE_MB", 20) * 1024 * 1024  // 限制总缓存大小
 	config.Verbose = false
-	config.Shards = 1024  // 增加分片数量，减少锁竞争
+	config.Shards = 256  // 减少分片数量，减少内存占用
 	
 	// 添加缓存统计日志
 	go monitorCacheSize()
@@ -507,7 +534,7 @@ func calculateDynamicWeight(server *Server) int {
 	return weight
 }
 
-// 修改计算综合权重的函数
+// 修改��算综合权重的函数
 func calculateCombinedWeight(server *Server) int {
 	if server == nil {
 		return 0
@@ -634,6 +661,9 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		wg.Add(1)
 		go func(s *Server) {
 			defer wg.Done()
+			goroutinePool <- struct{}{} // 获取 Goroutine 池中的一个槽
+			defer func() { <-goroutinePool }() // 释放槽
+
 			for i := 0; i < MaxRetryAttempts; i++ {
 				client := &http.Client{Timeout: RequestTimeout}
 				url := s.URL + uri
@@ -1084,7 +1114,7 @@ func NewHealthStats(windowSize int) *HealthStats {
 	}
 }
 
-// CircuitBreaker 结构体定义 (删除重复定义，只保留一处)
+// CircuitBreaker 结构体定义 (删除重定义，只保留一处)
 type CircuitBreaker struct {
 	failures     int32
 	lastFailure  time.Time
@@ -1238,7 +1268,7 @@ func main() {
 	if role == "host" {
 		// 执行健康检查并写入 Redis
 		go func() {
-			// 首次健康检���
+			// 首次健康检
 			updateBaseWeights()
 			
 			// 定期健康检查
@@ -1293,9 +1323,21 @@ func startCacheCleanup() {
 		ticker := time.NewTicker(10 * time.Minute)
 		for range ticker.C {
 			if localCache != nil {  // 再次检查以确保安全
-				before := localCache.Len()
-				localCache.Reset()
-				after := localCache.Len()
+				localCache.mutex.Lock()
+				before := len(localCache.cache)
+				for key, item := range localCache.cache {
+					// 计算命中率
+					duration := time.Since(item.LastAccess).Minutes()
+					hitRate := float64(item.HitCount) / duration
+
+					// 清理命中率低于阈值的项目
+					if hitRate < 0.1 { // 设定命中率阈值
+						delete(localCache.cache, key)
+						logInfo(fmt.Sprintf("清理低命中率缓存项: %s, 命中率: %.2f", key, hitRate))
+					}
+				}
+				after := len(localCache.cache)
+				localCache.mutex.Unlock()
 				logInfo(fmt.Sprintf("本地缓存清理完成: 清理前 %d 项, 清理后 %d 项", before, after))
 			}
 		}
@@ -1380,7 +1422,7 @@ func loadHealthData() error {
 			continue
 		}
 		
-		// 更新服务��状
+		// 更新服务状
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
 				server := upstreamServers[i]
