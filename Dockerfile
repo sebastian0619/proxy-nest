@@ -1,25 +1,21 @@
-# 使用官方 Golang 镜像作为构建环境
-FROM golang:1.21-alpine AS builder
+# 使用官方 Node.js 镜像
+FROM node:18-alpine
 
+# 设置工作目录
 WORKDIR /app
-COPY . .
 
-# 安装 color 包
-RUN go mod init proxy-app && go mod tidy
-RUN go build -o /proxy-app
+# 复制 package.json 和 package-lock.json
+COPY package.json /app/
 
-# 使用轻量级的镜像作为运行环境
-FROM alpine:latest  
-WORKDIR /
+# 安装依赖
+RUN npm install
 
-COPY --from=builder /proxy-app /proxy-app
+# 复制项目文件
+COPY . /app
 
-# 设置时区
-RUN apk add --no-cache tzdata ca-certificates
+# 暴露应用运行的端口
+EXPOSE 6635
+ENV FORCE_COLOR=1
 
-ENV TZ=Asia/Shanghai
-
-# 暴露端口
-EXPOSE 6637
-
-CMD ["/proxy-app"]
+# 启动应用
+CMD ["node", "server.js"]

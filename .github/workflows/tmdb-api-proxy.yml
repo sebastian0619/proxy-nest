@@ -1,8 +1,8 @@
-name: Build and Push Proxy Nest
+name: Build and Push TMDB Proxy JS
 
 on:
   push:
-    branches: [ main ]
+    branches: [ JS-branch ]
     paths:
       - '**'
   release:
@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/proxy-nest
+  IMAGE_NAME: ${{ github.repository }}/proxy-nest-js
 
 jobs:
   build-and-push:
@@ -37,8 +37,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS-branch' }}
+            type=ref,event=branch
             type=sha,format=short
+            type=raw,value={{date 'YYYYMMDD'}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
