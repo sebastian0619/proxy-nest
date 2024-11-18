@@ -6,8 +6,8 @@ const url = require('url'); // 用于处理 URL，提取路径和查询参数
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const BASE_WEIGHT_MULTIPLIER = 50;
-const DYNAMIC_WEIGHT_MULTIPLIER = 50;
+const BASE_WEIGHT_MULTIPLIER = 30;
+const DYNAMIC_WEIGHT_MULTIPLIER = 30;
 const REQUEST_TIMEOUT = 5000;
 const RECENT_REQUEST_LIMIT = 10; // 扩大记录数以更平滑动态权重
 const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
@@ -191,7 +191,6 @@ function startServer() {
     const healthyServers = upstreamServers
       .filter(server => server.healthy)
       .map(server => {
-        // 使用缓存的权重数据或默认值
         const cachedWeight = weightCache.get(server.url) || {
           dynamicWeight: 0,
           baseWeight: server.baseWeight || 0,
@@ -214,14 +213,6 @@ function startServer() {
     const random = Math.random() * totalWeight;
     let weightSum = 0;
 
-    // 输出所有服务器的权重信息
-    healthyServers.forEach(server => {
-      console.log(
-        LOG_PREFIX.WEIGHT,
-        `${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 综合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
-      );
-    });
-
     // 选择服务器
     for (const server of healthyServers) {
       weightSum += server.combinedWeight;
@@ -234,7 +225,13 @@ function startServer() {
       }
     }
 
-    return healthyServers[0];
+    // 如果没有选中任何服务器，返回权重最高的并记录日志
+    const selected = healthyServers[0];
+    console.log(
+      LOG_PREFIX.SUCCESS,
+      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综合:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+    );
+    return selected;
   }
 
   /**
@@ -257,6 +254,77 @@ function startServer() {
   function getCacheKey(req) {
     const parsedUrl = url.parse(req.originalUrl, true);
     return `${parsedUrl.pathname}?${new URLSearchParams(parsedUrl.query)}`;
+  }
+
+  /**
+   * 处理请求失败时的权重调整
+   */
+  async function handleRequestError(server, error) {
+    // 异步更新权重数据
+    setImmediate(() => {
+      updateWeightDataAsync(server, Infinity).catch(err => {
+        console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+      });
+    });
+
+    // 标记服务器状态
+    server.healthy = false;
+    
+    // 记录错误日志
+    console.warn(
+      LOG_PREFIX.WARN,
+      `代理请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+    );
+  }
+
+  /**
+   * 处理请求
+   */
+  async function handleRequest(req, res) {
+    const server = selectUpstreamServer();
+    const startTime = Date.now();
+    
+    try {
+      const response = await axios.get(`${server.url}${req.path}`);
+      const responseTime = Date.now() - startTime;
+      
+      // 成功请求后异步更新权重
+      setImmediate(() => {
+        updateWeightDataAsync(server, responseTime).catch(err => {
+          console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
+        });
+      });
+      
+      return response.data;
+    } catch (error) {
+      // 失败时调整权重
+      await handleRequestError(server, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 重试处理逻辑
+   */
+  async function handleRequestWithRetry(req, res, maxRetries = 9) {
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      try {
+        return await handleRequest(req, res);
+      } catch (error) {
+        retryCount++;
+        console.warn(
+          LOG_PREFIX.WARN,
+          `代理请求失败 - 服务器: ${error.server?.url || '未知'}, ` +
+          `错误: ${error.message}, 重试次数: ${retryCount}/${maxRetries}`
+        );
+        
+        if (retryCount === maxRetries) {
+          throw error;
+        }
+      }
+    }
   }
 
   // 代理请求
@@ -405,7 +473,7 @@ function calculateBaseWeight(responseTime) {
   // 基于响应时间计算基础权重
   // 响应时间越短，权重越高
   return Math.min(
-    100, // 设置最大权重上限为100
+    100, // 设置最大权重上��为100
     Math.max(1, Math.floor((1000 / responseTime) * BASE_WEIGHT_MULTIPLIER))
   );
 }
