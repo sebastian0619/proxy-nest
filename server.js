@@ -225,7 +225,7 @@ function startServer() {
       }
     }
 
-    // 如果没有选中任何服务器，返回权重最高的并记录日志
+    // 如果没有选中任何服务器返回权重最高的并记录日志
     const selected = healthyServers[0];
     console.log(
       LOG_PREFIX.SUCCESS,
@@ -278,67 +278,92 @@ function startServer() {
   }
 
   /**
-   * 处理请求
+   * 处理单个请求
+   */
+  async function handleSingleRequest(server, req) {
+    const startTime = Date.now();
+    
+    try {
+      const response = await axios.get(`${server.url}${req.path}`, {
+        timeout: REQUEST_TIMEOUT
+      });
+      
+      // 成功后异步更新权重
+      process.nextTick(() => {
+        const responseTime = Date.now() - startTime;
+        weightUpdateQueue.push({ server, responseTime });
+      });
+      
+      return response.data;
+    } catch (error) {
+      // 失败后异步更新权重
+      process.nextTick(() => {
+        weightUpdateQueue.push({ server, responseTime: Infinity });
+      });
+      
+      throw error;
+    }
+  }
+
+  /**
+   * 带重试的请求处理
    */
   async function handleRequestWithRetry(req, res, maxRetries = 9) {
-    let retryCount = 0;
-    let lastError;
-
-    while (retryCount < maxRetries) {
+    for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
       const server = selectUpstreamServer();
-      const startTime = Date.now();
-
+      
       try {
-        const response = await axios.get(`${server.url}${req.path}`, {
-          timeout: REQUEST_TIMEOUT
-        });
-        
-        // 请求成功后，将响应时间放入队列，异步处理
-        process.nextTick(() => {
-          const responseTime = Date.now() - startTime;
-          weightUpdateQueue.push({
-            server,
-            responseTime,
-            timestamp: Date.now()
-          });
-        });
-
-        return response.data;
-
+        const data = await handleSingleRequest(server, req);
+        return data;
       } catch (error) {
-        retryCount++;
-        
-        // 请求失败后，将失败信息放入队列，异步处理
-        process.nextTick(() => {
-          weightUpdateQueue.push({
-            server,
-            responseTime: Infinity,
-            timestamp: Date.now(),
-            error: error.message
-          });
-        });
-
-        // 只在最后一次重试时显示错误
-        if (retryCount === maxRetries) {
-          console.error(LOG_PREFIX.ERROR, `所有重试都失败了 - 最后错误: ${error.message}`);
+        if (retryCount === maxRetries - 1) {
+          console.error(LOG_PREFIX.ERROR, `所有重试都失败了`);
           throw error;
         }
       }
     }
   }
 
-  // 权重更新队列
+  // 权重更新队列处理
   const weightUpdateQueue = [];
 
-  /**
-   * 异步处理权重更新队列
-   */
   function processWeightUpdateQueue() {
     while (weightUpdateQueue.length > 0) {
-      const update = weightUpdateQueue.shift();
-      updateWeightDataAsync(update.server, update.responseTime).catch(err => {
-        console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
-      });
+      const { server, responseTime } = weightUpdateQueue.shift();
+      if (!server || responseTime === undefined) continue;
+      
+      // 更新服务器权重
+      const cachedData = weightCache.get(server.url) || {
+        responseTimes: [],
+        dynamicWeight: 0,
+        ewma: 0
+      };
+      
+      // 更新响应时间记录
+      cachedData.responseTimes.push(responseTime);
+      if (cachedData.responseTimes.length > RECENT_RESPONSES_LIMIT) {
+        cachedData.responseTimes.shift();
+      }
+      
+      // 计算新的 EWMA
+      const avgTime = cachedData.responseTimes.reduce((a, b) => a + b, 0) / 
+                     cachedData.responseTimes.length;
+      
+      cachedData.ewma = cachedData.ewma ? 
+        EWMA_BETA * cachedData.ewma + (1 - EWMA_BETA) * avgTime : 
+        avgTime;
+      
+      // 计算动态权重
+      if (cachedData.ewma === Infinity || !server.healthy) {
+        cachedData.dynamicWeight = 0;
+      } else {
+        const baseScore = 1000 / cachedData.ewma;
+        const weight = Math.log10(baseScore + 1) * 20;
+        cachedData.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
+      }
+      
+      // 更新缓存
+      weightCache.set(server.url, cachedData);
     }
   }
 
@@ -409,12 +434,16 @@ function startServer() {
           }
 
           const responseTime = Date.now() - start;
-          targetServer.responseTimes.push(responseTime);
-          if (targetServer.responseTimes.length > RECENT_REQUEST_LIMIT) {
-            targetServer.responseTimes.shift(); // 保持最近的记录
-          }
 
-          adjustDynamicWeight(targetServer);
+          // 异步更新权重数据
+          process.nextTick(() => {
+            weightUpdateQueue.push({
+              server: targetServer,
+              responseTime,
+              timestamp: Date.now()
+            });
+          });
+
           const buffer = Buffer.from(proxyRes.data); // 缓存响应数据
           // 使用之前声明的 contentType 变量,不再重复声明
           cache[cacheKey] = { data: buffer, contentType };
