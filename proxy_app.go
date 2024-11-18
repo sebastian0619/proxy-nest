@@ -272,6 +272,14 @@ func (l *LocalCache) GetStats() CacheStats {
 	}
 }
 
+func (l *LocalCache) GetUnderlyingCache() *bigcache.BigCache {
+	return l.cache
+}
+
+func (l *LocalCache) GetMutex() *sync.RWMutex {
+	return &l.mutex
+}
+
 // 初始化缓存
 var redisCache GeneralCache
 var localCache LocalCacheInterface
@@ -576,7 +584,7 @@ func calculateCombinedWeight(server *Server) int {
 		weight = 100
 	}
 	
-	logDebug(fmt.Sprintf("服务器 %s 综合权重计算: 基础权重=%d, 动态权重=%d, Alpha=%.2f, 最终权重=%d",
+	logDebug(fmt.Sprintf("服务器 %s 综合权���计算: 基础��重=%d, 动态权重=%d, Alpha=%.2f, 最终权重=%d",
 		server.URL,
 		server.BaseWeight,
 		server.DynamicWeight,
@@ -1356,21 +1364,25 @@ func startCacheCleanup() {
 		ticker := time.NewTicker(10 * time.Minute)
 		for range ticker.C {
 			if localCache != nil {  // 再次检查以确保安全
-				localCache.mutex.Lock()
-				before := len(localCache.cache)
-				for key, item := range localCache.cache {
+				
+				mutex := localCache.GetMutex()
+				cache := localCache.GetUnderlyingCache()
+				mutex.Lock()
+				defer mutex.Unlock()
+    
+				before := len(cache)
+				for key, item := range cache {
 					// 计算命中率
 					duration := time.Since(item.LastAccess).Minutes()
 					hitRate := float64(item.HitCount) / duration
 
 					// 清理命中率低于阈值的项目
 					if hitRate < 0.1 { // 设定命中率阈值
-						delete(localCache.cache, key)
+						delete(cache, key)
 						logInfo(fmt.Sprintf("清理低命中率缓存项: %s, 命中率: %.2f", key, hitRate))
 					}
 				}
-				after := len(localCache.cache)
-				localCache.mutex.Unlock()
+				after := len(cache)
 				logInfo(fmt.Sprintf("本地缓存清理完成: 清理前 %d 项, 清理后 %d 项", before, after))
 			}
 		}
