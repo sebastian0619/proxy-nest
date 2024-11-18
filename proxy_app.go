@@ -405,7 +405,7 @@ func initUpstreamServers() error {
 
 // 权重更新和健康检查
 func updateBaseWeights() {
-	logInfo("开始服务器健康检查和基础权重更新...")
+	logInfo("开始服务健康检查和基础权重更新...")
 	
 	var wg sync.WaitGroup
 	for _, server := range upstreamServers {
@@ -626,9 +626,7 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		url  string
 	}, len(upstreamServers))
 
-	// 遍历所健康的上游服务器（除了刚刚失败的那个）
 	for _, server := range upstreamServers {
-		// 跳过不健康的服务器和刚刚失败的服务器
 		if !server.Healthy || server.URL == failedURL {
 			continue
 		}
@@ -636,57 +634,59 @@ func tryOtherUpstreams(uri string, r *http.Request, failedURL string) (*http.Res
 		wg.Add(1)
 		go func(s *Server) {
 			defer wg.Done()
-			client := &http.Client{Timeout: RequestTimeout}
-			url := s.URL + uri
-			req, err := http.NewRequest(r.Method, url, r.Body)
-			if err != nil {
-				logError(fmt.Sprintf("创建请求失败: %v", err))
-				return
-			}
-			req.Header = r.Header
+			for i := 0; i < MaxRetryAttempts; i++ {
+				client := &http.Client{Timeout: RequestTimeout}
+				url := s.URL + uri
+				req, err := http.NewRequest(r.Method, url, r.Body)
+				if err != nil {
+					logError(fmt.Sprintf("创建请求失败: %v", err))
+					return
+				}
+				req.Header = r.Header
 
-			resp, err := client.Do(req)
-			if err != nil {
-				logError(fmt.Sprintf("请求上游服务器失败: %v", err))
-				return
-			}
-			defer resp.Body.Close()
+				resp, err := client.Do(req)
+				if err != nil {
+					logError(fmt.Sprintf("请求上游服务器失败: %v", err))
+					continue
+				}
+				defer resp.Body.Close()
 
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				logError(fmt.Sprintf("读取响应体失败: %v", err))
-				return
-			}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					logError(fmt.Sprintf("读取响应体失败: %v", err))
+					continue
+				}
 
-			contentType := resp.Header.Get("Content-Type")
-			if isValidResponse(body, contentType) {
-				responses <- struct {
-					resp *http.Response
-					body []byte
-					url  string
-				}{resp, body, s.URL}
-				logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取预期格式响应", s.URL))
-			} else {
-				incrementRetryCount(s)
-				if getRetryCount(s) >= 3 {
-					s.mutex.Lock()
-					s.Healthy = false
-					s.mutex.Unlock()
-					logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期格式响应，标记为不健康", s.URL, getRetryCount(s)))
+				contentType := resp.Header.Get("Content-Type")
+				if isValidResponse(body, contentType) {
+					responses <- struct {
+						resp *http.Response
+						body []byte
+						url  string
+					}{resp, body, s.URL}
+					logInfo(fmt.Sprintf("成功从其他上游服务器 %s 获取预期格式响应", s.URL))
+					return
 				} else {
-					logError(fmt.Sprintf("上游服务器 %s 返回非预期格式响应 (重试次数: %d/3)", s.URL, getRetryCount(s)))
+					incrementRetryCount(s)
+					if getRetryCount(s) >= 3 {
+						s.mutex.Lock()
+						s.Healthy = false
+						s.mutex.Unlock()
+						logError(fmt.Sprintf("上游服务器 %s 连续 %d 次返回非预期格式响应，标记为不健康", s.URL, getRetryCount(s)))
+						return
+					} else {
+						logError(fmt.Sprintf("上游服务器 %s 返回非预期格式响应 (重试次数: %d/3)", s.URL, getRetryCount(s)))
+					}
 				}
 			}
 		}(server)
 	}
 
-	// 等待所有请求完成或者收到第一个成功的响应
 	go func() {
 		wg.Wait()
 		close(responses)
 	}()
 
-	// 获取第一个成功的响应
 	for resp := range responses {
 		return resp.resp, resp.body
 	}
@@ -719,17 +719,14 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	metrics.RequestCount.Add(1)
 	requestID := generateRequestID()
 	uri := r.RequestURI
-	
-	// 只记录初始请求日志
+
 	logInfo(fmt.Sprintf("[%s] 收到请求: %s", requestID, uri))
 
-	// 检查缓存
 	if data, hit := checkCaches(r); hit {
 		w.Write(data)
 		return
 	}
 
-	// 获取服务器并尝试请求
 	server := getWeightedRandomServer()
 	if server == nil {
 		metrics.ErrorCount.Add(1)
@@ -738,24 +735,32 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 只记录选中的服务器
 	logInfo(fmt.Sprintf("[%s] 使用服务器: %s", requestID, server.URL))
 
-	// 尝试请求
 	var lastErr error
 	for i := 0; i < MaxRetryAttempts; i++ {
-		resp, err := tryRequest(server, r)
+		resp, body, err := tryRequest(server, r)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		handleSuccessResponse(w, resp, requestID, r)
-		resetRetryCount(server)
-		return
+		// 如果响应体格式不符合预期，尝试其他上游服务器
+		if !isValidResponse(body, resp.Header.Get("Content-Type")) {
+			logError(fmt.Sprintf("服务器 %s 返回非预期格式响应，尝试其他上游", server.URL))
+			resp, body = tryOtherUpstreams(uri, r, server.URL)
+			if resp != nil {
+				handleSuccessResponse(w, resp, requestID, r)
+				resetRetryCount(server)
+				return
+			}
+		} else {
+			handleSuccessResponse(w, resp, requestID, r)
+			resetRetryCount(server)
+			return
+		}
 	}
 
-	// 请求失败处理
 	markServerUnhealthy(server)
 	metrics.ErrorCount.Add(1)
 	http.Error(w, fmt.Sprintf("请求失败: %v", lastErr), http.StatusBadGateway)
@@ -860,9 +865,9 @@ func calculateAverageResponseTime(server *Server) time.Duration {
 }
 
 // 尝试请求函数
-func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
+func tryRequest(server *Server, r *http.Request) (*http.Response, []byte, error) {
 	if !server.Healthy {
-		return nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
+		return nil, nil, fmt.Errorf("服务器 %s 当前不健康", server.URL)
 	}
 	
 	client := &http.Client{Timeout: RequestTimeout}
@@ -870,7 +875,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 	
 	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	
 	start := time.Now()
@@ -887,7 +892,7 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 			server.DynamicWeight = 1
 			logError(fmt.Sprintf("服务器 %s 连续失败次数过多，标记为不健康", server.URL))
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	
 	// 请求成功，更新服务器状态
@@ -907,16 +912,20 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 			server.DynamicWeight))
 	}
 	
-	// 验证响应体是否为合法的 JSON
+	// 根据 UPSTREAM_TYPE 验证响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应体失败: %v", err)
+		return nil, nil, fmt.Errorf("读取响应体失败: %v", err)
 	}
-	if !isValidJSON(body) {
-		return nil, fmt.Errorf("响应体不是合法的 JSON")
+
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	if upstreamType == "tmdb-api" && !isValidJSON(body) {
+		return nil, nil, fmt.Errorf("响应体不是合法的 JSON")
+	} else if upstreamType == "tmdb-image" && !isValidImage(body) {
+		return nil, nil, fmt.Errorf("响应体不是合法的图片")
 	}
 	
-	return resp, nil
+	return resp, body, nil
 }
 
 // 处理成功响应
@@ -929,9 +938,13 @@ func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID
 		return
 	}
 	
-	// 验证响应体是否为合法的 JSON
-	if !isValidJSON(body) {
+	// 根据 UPSTREAM_TYPE 验证响应体
+	upstreamType := os.Getenv("UPSTREAM_TYPE")
+	if upstreamType == "tmdb-api" && !isValidJSON(body) {
 		http.Error(w, "响应体不是合法的 JSON", http.StatusInternalServerError)
+		return
+	} else if upstreamType == "tmdb-image" && !isValidImage(body) {
+		http.Error(w, "响应体不是合法的图片", http.StatusInternalServerError)
 		return
 	}
 	
@@ -1225,7 +1238,7 @@ func main() {
 	if role == "host" {
 		// 执行健康检查并写入 Redis
 		go func() {
-			// 首次健康检查
+			// 首次健康检���
 			updateBaseWeights()
 			
 			// 定期健康检查
@@ -1367,7 +1380,7 @@ func loadHealthData() error {
 			continue
 		}
 		
-		// 更新服务器状
+		// 更新服务��状
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
 				server := upstreamServers[i]
