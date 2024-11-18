@@ -907,6 +907,15 @@ func tryRequest(server *Server, r *http.Request) (*http.Response, error) {
 			server.DynamicWeight))
 	}
 	
+	// 验证响应体是否为合法的 JSON
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %v", err)
+	}
+	if !isValidJSON(body) {
+		return nil, fmt.Errorf("响应体不是合法的 JSON")
+	}
+	
 	return resp, nil
 }
 
@@ -917,6 +926,12 @@ func handleSuccessResponse(w http.ResponseWriter, resp *http.Response, requestID
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "读取响应失败", http.StatusInternalServerError)
+		return
+	}
+	
+	// 验证响应体是否为合法的 JSON
+	if !isValidJSON(body) {
+		http.Error(w, "响应体不是合法的 JSON", http.StatusInternalServerError)
 		return
 	}
 	
@@ -1352,7 +1367,7 @@ func loadHealthData() error {
 			continue
 		}
 		
-		// 更新服务器状���
+		// 更新服务器状
 		for i := range upstreamServers {
 			if upstreamServers[i].URL == health.URL {
 				server := upstreamServers[i]
