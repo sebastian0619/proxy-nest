@@ -189,7 +189,6 @@ type LocalCacheInterface interface {
 	GetStats() CacheStats
 	GetAllKeys() []string
 	CleanupOldItems(duration time.Duration) int
-	GetIterator() *bigcache.Iterator
 }
 
 // Redis缓存实现
@@ -488,7 +487,7 @@ func updateBaseWeights() {
 				logError(fmt.Sprintf("保存健康数据失败: %v", err))
 			}
 			
-			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 响应时���=%v, 基础权重=%d", 
+			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 响应时=%v, 基础权重=%d", 
 				server.URL, healthy, responseTime, server.BaseWeight))
 		}(server)
 	}
@@ -1871,15 +1870,6 @@ type CacheStats struct {
 
 // 修改接口定义，添加需要的方法
 
-
-// 修改 LocalCache 实现
-type LocalCache struct {
-    cache     *bigcache.BigCache
-    hitCount  int64
-    missCount int64
-    mutex     sync.RWMutex
-}
-
 // 添加获取所有键的方法
 func (l *LocalCache) GetAllKeys() []string {
     l.mutex.RLock()
@@ -1901,7 +1891,7 @@ func (l *LocalCache) CleanupOldItems(duration time.Duration) int {
     defer l.mutex.Unlock()
     
     cleanupCount := 0
-    iterator := l.GetIterator()
+    iterator := l.cache.Iterator()
     for iterator.SetNext() {
         if entry, err := iterator.Value(); err == nil {
             timestamp := int64(entry.Timestamp())
@@ -1912,8 +1902,4 @@ func (l *LocalCache) CleanupOldItems(duration time.Duration) int {
         }
     }
     return cleanupCount
-}
-// 实现新的接口方法
-func (l *LocalCache) GetIterator() *bigcache.Iterator {
-    return l.cache.Iterator()
 }
