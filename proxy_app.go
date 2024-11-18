@@ -1755,12 +1755,6 @@ func getLogLevelFromEnv() int {
 var goroutinePool = make(chan struct{}, 100) // 例如，限制最大并发 Goroutine 数量为 100
 
 // 添加 swap 监控相关常量和结构体
-const (
-    SwapCheckInterval   = 30 * time.Second
-    HighSwapThreshold  = 70.0  // swap 使用率超过70%触发清理
-    CriticalSwapThreshold = 85.0 // swap 使用率超过85%触发紧急清理
-    SwapCleanupInterval = 5 * time.Minute
-)
 
 type SwapController struct {
     mu            sync.RWMutex
