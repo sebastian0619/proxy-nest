@@ -1847,22 +1847,21 @@ func emergencyCleanup() {
         return
     }
 
-    keys := localCache.GetAllKeys()
-    before := localCache.Len()
-    
-    // 获取底层缓存和互斥锁
     cache := localCache.GetUnderlyingCache()
     mutex := localCache.GetMutex()
-
+    
     mutex.Lock()
     defer mutex.Unlock()
+    
+    before := cache.Len()
+    keys := localCache.GetAllKeys()
     
     // 删除一半的缓存项
     for i := 0; i < len(keys)/2; i++ {
         cache.Delete(keys[i])
     }
-
-    after := localCache.Len()
+    
+    after := cache.Len()
     logWarning(fmt.Sprintf("紧急清理完成: 从 %d 项减少到 %d 项", before, after))
     runtime.GC()
 }
@@ -1892,16 +1891,21 @@ type CacheStats struct {
 
 // 添加获取所有键的方法
 func (l *LocalCache) GetAllKeys() []string {
-    l.mutex.RLock()
-    defer l.mutex.RUnlock()
+    cache := l.GetUnderlyingCache()
+    mutex := l.GetMutex()
     
-    keys := make([]string, 0)
-    iterator := l.cache.Iterator()
+    mutex.RLock()
+    defer mutex.RUnlock()
+    
+    keys := make([]string, 0, cache.Len())
+    iterator := cache.Iterator()
+    
     for iterator.SetNext() {
         if entry, err := iterator.Value(); err == nil {
             keys = append(keys, entry.Key())
         }
     }
+    
     return keys
 }
 
