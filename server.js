@@ -12,10 +12,17 @@ const REQUEST_TIMEOUT = 5000;
 const RECENT_REQUEST_LIMIT = 10; // 扩大记录数以更平滑动态权重
 const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
 const ALPHA_ADJUSTMENT_STEP = 0.05; // 每次非缓存请求或健康检查调整的 α 增减值
+const WEIGHT_UPDATE_INTERVAL = 30000; // 每30秒更新一次权重
 const UPSTREAM_TYPE = process.env.UPSTREAM_TYPE || 'tmdb-api';
 const CUSTOM_CONTENT_TYPE = process.env.CUSTOM_CONTENT_TYPE;
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const TMDB_IMAGE_TEST_URL = process.env.TMDB_IMAGE_TEST_URL || '';
+
+// 基础权重更新间隔（每5分钟）
+const BASE_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.BASE_WEIGHT_UPDATE_INTERVAL, 10) || 300000;
+
+// 动态权重更新间隔（每30秒）
+const DYNAMIC_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.DYNAMIC_WEIGHT_UPDATE_INTERVAL, 10) || 30000;
 
 let chalk;
 let LOG_PREFIX; // 声明 LOG_PREFIX 变量
@@ -106,13 +113,35 @@ function startServer() {
     ).join(', '));
   }
 
-  // 确保定时执行健康检查和权重更新
-  setInterval(updateBaseWeights, WEIGHT_UPDATE_INTERVAL);
+  // 分别设置两种权重的更新定时器
+  setInterval(updateBaseWeights, BASE_WEIGHT_UPDATE_INTERVAL);
+  setInterval(updateDynamicWeights, DYNAMIC_WEIGHT_UPDATE_INTERVAL);
 
   // 初始启动时也执行一次
   updateBaseWeights().catch(error => {
     console.error(LOG_PREFIX.ERROR, '初始权重更新失败:', error.message);
   });
+
+  // 更新动态权重的函数
+  async function updateDynamicWeights() {
+    console.log(LOG_PREFIX.WEIGHT, "开始更新服务器动态权重");
+    
+    for (const server of upstreamServers) {
+      if (!server.healthy) continue;
+      
+      // 基于最近的响应时间计算动态权重
+      const recentAvgTime = server.responseTimes.length > 0
+        ? server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length
+        : Infinity;
+        
+      server.dynamicWeight = calculateDynamicWeight(recentAvgTime);
+      
+      console.log(
+        LOG_PREFIX.WEIGHT,
+        `服务器: ${server.url}, 动态权重: ${server.dynamicWeight}, Alpha值: ${server.alpha.toFixed(2)}`
+      );
+    }
+  }
 
   // 动态权重的指数加权平均计算
   function adjustDynamicWeight(server) {
