@@ -189,6 +189,7 @@ type LocalCacheInterface interface {
 	GetStats() CacheStats
 	GetAllKeys() []string
 	CleanupOldItems(duration time.Duration) int
+	GetIterator() *bigcache.Iterator
 }
 
 // Redis缓存实现
@@ -487,7 +488,7 @@ func updateBaseWeights() {
 				logError(fmt.Sprintf("保存健康数据失败: %v", err))
 			}
 			
-			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 响应时间=%v, 基础权重=%d", 
+			logDebug(fmt.Sprintf("服务器 %s 基础权重更新完成: 健康状态=%v, 响应时���=%v, 基础权重=%d", 
 				server.URL, healthy, responseTime, server.BaseWeight))
 		}(server)
 	}
@@ -1185,7 +1186,7 @@ func generateRequestID() string {
 // 添加定期健康状态报函数
 func startHealthStatusReporting() {
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)  // ���五分钟报告一次
+		ticker := time.NewTicker(5 * time.Minute)  // 五分钟报告一次
 		for range ticker.C {
 			reportHealthStatus()
 		}
@@ -1527,15 +1528,15 @@ func checkServerHealth(server *Server) (bool, time.Duration, error) {
 	case "tmdb-image":
 		isValid = isValidImage(body)
 	case "custom":
-		customResponseCheck := os.Getenv("CUSTOM_RESPONSE_CHECK") == "true"
-		customContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
+			customResponseCheck := os.Getenv("CUSTOM_RESPONSE_CHECK") == "true"
+			customContentType := os.Getenv("CUSTOM_CONTENT_TYPE")
 
-		if customResponseCheck {
-			isValid = resp.StatusCode == http.StatusOK
-		}
-		if customContentType != "" {
-			isValid = strings.Contains(resp.Header.Get("Content-Type"), customContentType)
-		}
+			if customResponseCheck {
+				isValid = resp.StatusCode == http.StatusOK
+			}
+			if customContentType != "" {
+				isValid = strings.Contains(resp.Header.Get("Content-Type"), customContentType)
+			}
 	}
 
 	return isValid, responseTime, nil
@@ -1645,11 +1646,11 @@ func monitorCacheSize() {
 	ticker := time.NewTicker(5 * time.Minute)
 	for range ticker.C {
 		if localCache != nil {
-				stats := localCache.GetStats()
-				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
-					stats.ItemCount,
-					stats.Hits,
-					stats.Misses))
+			stats := localCache.GetStats()
+			logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
+				stats.ItemCount,
+				stats.Hits,
+				stats.Misses))
 		}
 	}
 }
@@ -1835,7 +1836,7 @@ func emergencyCleanup() {
     }
 
     keys := localCache.GetAllKeys()
-    before := len(keys)
+    before := localCache.Len()
     
     // 删除一半的缓存项
     for i := 0; i < len(keys)/2; i++ {
@@ -1869,16 +1870,7 @@ type CacheStats struct {
 }
 
 // 修改接口定义，添加需要的方法
-type LocalCacheInterface interface {
-    Get(key string) ([]byte, error)
-    Set(key string, value []byte) error
-    Delete(key string) error
-    Len() int
-    Reset()
-    GetStats() CacheStats
-    GetAllKeys() []string
-    CleanupOldItems(duration time.Duration) int
-}
+
 
 // 修改 LocalCache 实现
 type LocalCache struct {
@@ -1909,14 +1901,19 @@ func (l *LocalCache) CleanupOldItems(duration time.Duration) int {
     defer l.mutex.Unlock()
     
     cleanupCount := 0
-    iterator := l.cache.Iterator()
+    iterator := l.GetIterator()
     for iterator.SetNext() {
         if entry, err := iterator.Value(); err == nil {
-            if time.Since(time.Unix(0, entry.Timestamp())) > duration {
-                l.cache.Delete(entry.Key())
+            timestamp := int64(entry.Timestamp())
+            if time.Since(time.Unix(0, timestamp)) > duration {
+                l.Delete(entry.Key())
                 cleanupCount++
             }
         }
     }
     return cleanupCount
+}
+// 实现新的接口方法
+func (l *LocalCache) GetIterator() *bigcache.Iterator {
+    return l.cache.Iterator()
 }
