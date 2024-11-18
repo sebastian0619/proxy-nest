@@ -1615,8 +1615,8 @@ func monitorCacheSize() {
 		if localCache != nil {
 			if cache, ok := localCache.(*LocalCache); ok {
 				stats := cache.cache.Stats()
-				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 命中数: %d",
-					cache.cache.Len(),  // 使用 Len() 替代 stats.Capacity
+				logInfo(fmt.Sprintf("缓存统计 - 条目数: %d, 命中数: %d, 未命中数: %d",
+					cache.cache.Len(),
 					stats.Hits,
 					stats.Misses))
 			}
@@ -1723,3 +1723,5 @@ func getLogLevelFromEnv() int {
 		return LogLevelInfo
 	}
 }
+
+var goroutinePool = make(chan struct{}, 100) // 例如，限制最大并发 Goroutine 数量为 100
