@@ -132,7 +132,7 @@ function startServer() {
 
   // 4. 修改缓存读取函数
   async function getCacheItem(key) {
-    // 首先检查内存缓存
+    // 首先检查 LRU 缓存
     const memoryItem = lruCache.get(key);
     if (memoryItem && Date.now() - memoryItem.timestamp <= MEMORY_CACHE_TTL) {
       console.log(LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${key}`);
@@ -142,6 +142,7 @@ function startServer() {
     // 检查磁盘缓存
     const diskItem = diskCache.get(key);
     if (!diskItem || Date.now() - diskItem.timestamp > CACHE_TTL) {
+      console.log(LOG_PREFIX.CACHE.MISS, `缓存未命中: ${key}`);
       return null;
     }
 
@@ -153,17 +154,18 @@ function startServer() {
       const cacheItem = {
         data,
         contentType: diskItem.contentType,
-        timestamp: Date.now()  // 更新访问时间
+        timestamp: Date.now()
       };
 
-      // 放入内存缓存
+      // 放入 LRU 缓存
       lruCache.set(key, cacheItem);
-      console.log(LOG_PREFIX.CACHE.HIT, `磁盘缓存命中并加入内存: ${key}`);
+      console.log(LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${key}`);
       
       return cacheItem;
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `缓存读取失败: ${error.message}`);
       await deleteCacheItem(key);
+      console.log(LOG_PREFIX.CACHE.MISS, `缓存读取失败，视为未命中: ${key}`);
       return null;
     }
   }
@@ -184,7 +186,7 @@ function startServer() {
         timestamp
       });
 
-      // 同时写入内存缓存
+      // 写入 LRU 缓存
       lruCache.set(key, {
         data,
         contentType,
@@ -192,6 +194,13 @@ function startServer() {
       });
 
       await saveIndex();
+      
+      // 添加日志
+      console.log(LOG_PREFIX.CACHE.INFO, 
+        `缓存写入成功 - 键值: ${key}, ` +
+        `内存缓存数: ${lruCache.cache.size}, ` +
+        `磁盘缓存数: ${diskCache.size}`
+      );
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
     }
@@ -438,56 +447,28 @@ function startServer() {
   // 修改主路由中的请求处理逻辑
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
-    const cachedItem = getCacheItem(cacheKey);
-
-    if (cachedItem) {
-      console.log(LOG_PREFIX.CACHE.HIT, `键值: ${cacheKey}`);
-      return res.send(cachedItem);
-    }
     
-    console.log(LOG_PREFIX.CACHE.MISS, `键值: ${cacheKey}`);
-
-    let serverSwitchCount = 0;
-    let targetServer = selectUpstreamServer();
-
-    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
-      try {
-        const result = await tryRequestWithRetries(targetServer, req);
-        
-        // 成功处理响应
-        const { buffer, contentType, responseTime } = result;
-        
-        // 异步更新权重
-        addWeightUpdate(targetServer, responseTime);
-        
-        // 缓存响应
-        setCacheItem(cacheKey, buffer, contentType);
-        
-        console.log(LOG_PREFIX.SUCCESS, `代理请求成功 - 路径: ${req.originalUrl}, 服务器: ${targetServer.url}, 响应时间: ${responseTime}ms, 内容类型: ${contentType}`);
-        
-        res.setHeader('Content-Type', contentType);
-        return res.send(buffer);
-        
-      } catch (error) {
-        console.log(LOG_PREFIX.WARN, `服务器 ${targetServer.url} 请求失败: ${error.message}`);
-        
-        // 如果是验证错误或超时，切换到下一个服务器
-        if (error.isValidationError || error.isTimeout) {
-          serverSwitchCount++;
-          // 异步进行失败服务器的重试检查
-          checkFailedServer(targetServer);
-          // 选择新的服务器
-          targetServer = selectUpstreamServer();
-          continue;
-        }
-        
-        // 其他错误直接返回
-        return res.status(502).send('Proxy request failed');
+    try {
+      const cachedItem = await getCacheItem(cacheKey);
+      if (cachedItem) {
+        res.setHeader('Content-Type', cachedItem.contentType);
+        return res.send(cachedItem.data);
       }
-    }
 
-    console.error(chalk.red('所有可用服务器都无法完成请求'));
-    res.status(502).send('No healthy upstream servers available.');
+      // 缓存未命中，处理请求
+      const response = await handleRequest(req);
+      
+      // 缓存响应
+      if (response && response.data) {
+        await setCacheItem(cacheKey, response.data, response.contentType);
+        console.log(LOG_PREFIX.CACHE.INFO, `已缓存响应: ${cacheKey}`);
+      }
+
+      res.setHeader('Content-Type', response.contentType);
+      res.send(response.data);
+    } catch (error) {
+      next(error);
+    }
   });
 
   // 修改内容类型验证函数， JSON 验证
@@ -652,6 +633,68 @@ function startServer() {
   initialize().catch(error => {
     console.error(LOG_PREFIX.ERROR, `初始化失败: ${error.message}`);
     process.exit(1);
+  });
+
+  // 添加主要的请求处理函数
+  async function handleRequest(req) {
+    let lastError = null;
+    let serverSwitchCount = 0;
+
+    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
+      const server = selectUpstreamServer();
+      
+      try {
+        const result = await tryRequestWithRetries(server, req);
+        
+        // 成功后更新服务器权重
+        addWeightUpdate(server, result.responseTime);
+        
+        return {
+          data: result.buffer,
+          contentType: result.contentType
+        };
+        
+      } catch (error) {
+        lastError = error;
+        console.error(LOG_PREFIX.ERROR, 
+          `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+        );
+
+        // 处理服务器失败
+        if (error.isTimeout || error.code === 'ECONNREFUSED') {
+          server.healthy = false;
+          checkFailedServer(server);
+        }
+
+        serverSwitchCount++;
+        
+        if (serverSwitchCount < MAX_SERVER_SWITCHES) {
+          console.log(LOG_PREFIX.WARN, 
+            `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
+          );
+          continue;
+        }
+      }
+    }
+
+    // 所有重试都失败了
+    throw new Error(
+      `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
+    );
+  }
+
+  // 添加错误处理中间件
+  app.use((err, req, res, next) => {
+    console.error(LOG_PREFIX.ERROR, `请求处理错误: ${err.message}`);
+    res.status(502).json({
+      error: '代理请求失败',
+      message: err.message
+    });
+  });
+
+  // 启动服务器
+  app.listen(PORT, () => {
+    console.log(LOG_PREFIX.INFO, `服务器启动在端口 ${PORT}`);
   });
 }
 async function checkServerHealth(server) {
