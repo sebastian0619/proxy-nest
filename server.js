@@ -20,9 +20,6 @@ const TMDB_IMAGE_TEST_URL = process.env.TMDB_IMAGE_TEST_URL || '';
 // 基础权重更新间隔（每5分钟）
 const BASE_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.BASE_WEIGHT_UPDATE_INTERVAL, 10) || 300000;
 
-// 动态权重更新间隔（每30秒）
-const DYNAMIC_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.DYNAMIC_WEIGHT_UPDATE_INTERVAL, 10) || 30000;
-
 // 添加 EWMA 相关常量
 
 let chalk;
@@ -116,7 +113,6 @@ function startServer() {
 
   // 分别设置两种权重的更新定时器
   setInterval(updateBaseWeights, BASE_WEIGHT_UPDATE_INTERVAL);
-  setInterval(updateDynamicWeights, DYNAMIC_WEIGHT_UPDATE_INTERVAL);
 
   // 初始启动时也执行一次
   updateBaseWeights().catch(error => {
@@ -146,27 +142,6 @@ function startServer() {
       // 使用对数函数使权重分布更均匀
       const weight = Math.log10(baseScore + 1) * 20;
       server.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
-    }
-  }
-
-  /**
-   * 更新动态权重
-   */
-  async function updateDynamicWeights() {
-    console.log(LOG_PREFIX.WEIGHT, "开始更新服务器动态权重");
-    
-    for (const server of upstreamServers) {
-      if (!server.healthy) {
-        server.dynamicWeight = 0;
-        continue;
-      }
-      
-      updateServerEWMA(server);
-      
-      console.log(
-        LOG_PREFIX.WEIGHT,
-        `${server.url} [EWMA:${server.ewma.toFixed(0)}ms 响应:${server.responseTime}ms 权重:${server.dynamicWeight} ${server.healthy ? '✓' : '✗'}]`
-      );
     }
   }
 
