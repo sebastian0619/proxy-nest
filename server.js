@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const morgan = require('morgan');
 const url = require('url'); // 用于处理 URL，提取路径和查询参数
+const fs = require('fs').promises;
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -55,10 +57,128 @@ const EWMA_BETA = 0.8;              // EWMA平滑系数
 const MIN_WEIGHT = 1;               // 最小权重
 const MAX_WEIGHT = 100;             // 最大权重
 
+// 1. 添加缓存相关常量
+const CACHE_MAX_SIZE = parseInt(process.env.CACHE_MAX_SIZE || '1000');  // 最大缓存条目
+const CACHE_TTL = parseInt(process.env.CACHE_TTL || '3600000');        // 缓存过期时间(ms)
+const CACHE_CLEANUP_INTERVAL = 300000;                                 // 清理间隔(5分钟)
+
+// 添加内存缓存相关常量
+const MEMORY_CACHE_SIZE = parseInt(process.env.MEMORY_CACHE_SIZE || '100');  // 内存中保留的热点缓存数量
+const MEMORY_CACHE_TTL = parseInt(process.env.MEMORY_CACHE_TTL || '300000'); // 内存缓存过期时间(5分钟)
+
 function startServer() {
   app.use(morgan('combined'));
 
-  const cache = {}; // 缓存对象
+  // 1. 分别创建内存缓存和磁盘缓存的 Map
+  const memoryCache = new Map();  // 热点数据缓存
+  const diskCache = new Map();    // 磁盘缓存索引
+
+  // 2. LRU 缓存实现
+  class LRUCache {
+    constructor(capacity) {
+      this.capacity = capacity;
+      this.cache = new Map();
+    }
+
+    get(key) {
+      if (!this.cache.has(key)) return null;
+      
+      // 访问时更新位置（删除后重新插入到最后）
+      const value = this.cache.get(key);
+      this.cache.delete(key);
+      this.cache.set(key, value);
+      return value;
+    }
+
+    set(key, value) {
+      if (this.cache.has(key)) {
+        this.cache.delete(key);
+      } else if (this.cache.size >= this.capacity) {
+        // 删除最久未使用的项（第一个）
+        const firstKey = this.cache.keys().next().value;
+        this.cache.delete(firstKey);
+      }
+      this.cache.set(key, value);
+    }
+  }
+
+  // 3. 创建 LRU 缓存实例
+  const lruCache = new LRUCache(MEMORY_CACHE_SIZE);
+
+  // 4. 修改缓存读取函数
+  async function getCacheItem(key) {
+    // 首先检查内存缓存
+    const memoryItem = lruCache.get(key);
+    if (memoryItem && Date.now() - memoryItem.timestamp <= MEMORY_CACHE_TTL) {
+      console.log(LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${key}`);
+      return memoryItem;
+    }
+
+    // 检查磁盘缓存
+    const diskItem = diskCache.get(key);
+    if (!diskItem || Date.now() - diskItem.timestamp > CACHE_TTL) {
+      return null;
+    }
+
+    try {
+      // 从磁盘读取数据
+      const data = await fs.readFile(path.join(CACHE_DIR, diskItem.filename));
+      
+      // 构建缓存项
+      const cacheItem = {
+        data,
+        contentType: diskItem.contentType,
+        timestamp: Date.now()  // 更新访问时间
+      };
+
+      // 放入内存缓存
+      lruCache.set(key, cacheItem);
+      console.log(LOG_PREFIX.CACHE.HIT, `磁盘缓存命中并加入内存: ${key}`);
+      
+      return cacheItem;
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `缓存读取失败: ${error.message}`);
+      await deleteCacheItem(key);
+      return null;
+    }
+  }
+
+  // 5. 修改缓存写入函数
+  async function setCacheItem(key, data, contentType) {
+    const timestamp = Date.now();
+    const filename = Buffer.from(key).toString('base64') + CACHE_FILE_EXT;
+
+    try {
+      // 写入磁盘
+      await fs.writeFile(path.join(CACHE_DIR, filename), data);
+      
+      // 更新磁盘缓存索引
+      diskCache.set(key, {
+        filename,
+        contentType,
+        timestamp
+      });
+
+      // 同时写入内存缓存
+      lruCache.set(key, {
+        data,
+        contentType,
+        timestamp
+      });
+
+      await saveIndex();
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
+    }
+  }
+
+  // 6. 添加缓存统计日志
+  setInterval(() => {
+    console.log(LOG_PREFIX.CACHE.INFO, 
+      `缓存统计 - 内存: ${lruCache.cache.size}/${MEMORY_CACHE_SIZE}, ` +
+      `磁盘: ${diskCache.size}/${CACHE_MAX_SIZE}`
+    );
+  }, 60000);  // 每分钟输出一次统计
 
   let upstreamServers = [];
   function loadUpstreamServers() {
@@ -176,7 +296,7 @@ function startServer() {
       if (weightSum > random) {
         console.log(
           LOG_PREFIX.SUCCESS,
-          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 综合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} ���合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
         );
         return server;
       }
@@ -293,11 +413,13 @@ function startServer() {
   // 修改主路由中的请求处理逻辑
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
+    const cachedItem = getCacheItem(cacheKey);
 
-    if (cache[cacheKey]) {
+    if (cachedItem) {
       console.log(LOG_PREFIX.CACHE.HIT, `键值: ${cacheKey}`);
-      return res.send(cache[cacheKey]);
+      return res.send(cachedItem);
     }
+    
     console.log(LOG_PREFIX.CACHE.MISS, `键值: ${cacheKey}`);
 
     let serverSwitchCount = 0;
@@ -314,7 +436,7 @@ function startServer() {
         addWeightUpdate(targetServer, responseTime);
         
         // 缓存响应
-        cache[cacheKey] = { data: buffer, contentType };
+        setCacheItem(cacheKey, buffer, contentType);
         
         console.log(LOG_PREFIX.SUCCESS, `代理请求成功 - 路径: ${req.originalUrl}, 服务器: ${targetServer.url}, 响应时间: ${responseTime}ms, 内容类型: ${contentType}`);
         
