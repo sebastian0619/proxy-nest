@@ -18,4 +18,4 @@ EXPOSE 6635
 ENV FORCE_COLOR=1
 
 # 启动应用
-CMD ["node", "server.js"]
+CMD ["node", "app.js"]
