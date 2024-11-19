@@ -520,48 +520,94 @@ function startServer() {
   }
 
   // 修改请求重试函数
-  async function tryRequestWithRetries(server, req) {
+  async function tryRequestWithRetries(server) {
     let retryCount = 0;
     
     while (retryCount < MAX_RETRY_ATTEMPTS) {
       try {
-        const start = Date.now();
-        const proxyRes = await axios.get(`${server.url}${req.originalUrl}`, {
+        const testUrl = getHealthCheckUrl(server);
+        const proxyRes = await axios.get(`${server.url}${testUrl}`, {
           timeout: REQUEST_TIMEOUT,
-          responseType: 'arraybuffer',
         });
         
-        // 验证响应内容类型和内容
-        const contentType = proxyRes.headers['content-type'];
-        await validateResponse(proxyRes.data, contentType);
-        
-        return {
-          buffer: Buffer.from(proxyRes.data),
-          contentType,
-          responseTime: Date.now() - start
-        };
+        // 如果请求成功，标记服务器为健康
+        server.healthy = true;
+        console.log(LOG_PREFIX.SUCCESS, `服务器 ${server.url} 恢复健康`);
+        return;
         
       } catch (error) {
         retryCount++;
         
-        if (error.code === 'ECONNABORTED') {
-          error.isTimeout = true;
-        } else if (error.message.includes('Invalid JSON response') || 
-                  error.message.includes('TMDB API Error')) {
-          error.isValidationError = true;
-        }
-        
         if (retryCount === MAX_RETRY_ATTEMPTS) {
           server.healthy = false; // 直接标记为不健康
           console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
-          throw error;
+          return;
         }
         
         await delay(RETRY_DELAY);
-        console.log(LOG_PREFIX.WARN, `重试请求 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
+        console.log(LOG_PREFIX.WARN, `重试健康检查 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
       }
     }
   }
+
+  // 获取健康检查的 URL
+  function getHealthCheckUrl(server) {
+    switch (UPSTREAM_TYPE) {
+      case 'tmdb-api':
+        return `/3/configuration?api_key=${TMDB_API_KEY}`;
+      case 'tmdb-image':
+        return TMDB_IMAGE_TEST_URL;
+      case 'custom':
+        return '/';
+      default:
+        throw new Error(`未知的上游类型: ${UPSTREAM_TYPE}`);
+    }
+  }
+
+  // 在独立线程中运行重试逻辑
+  function startHealthCheck() {
+    setInterval(() => {
+      for (const server of upstreamServers) {
+        if (!server.healthy) {
+          tryRequestWithRetries(server);
+        }
+      }
+    }, BASE_WEIGHT_UPDATE_INTERVAL);
+  }
+
+  // 修改 handleRequest 函数以并发请求所有健康的上游服务器
+  async function handleRequest(req) {
+    const healthyServers = upstreamServers.filter(server => server.healthy);
+    if (healthyServers.length === 0) {
+      throw new Error('没有健康的上游服务器可用');
+    }
+
+    const requests = healthyServers.map(server => 
+      axios.get(`${server.url}${req.originalUrl}`, {
+        timeout: REQUEST_TIMEOUT,
+        responseType: 'arraybuffer',
+      }).then(response => ({
+        server,
+        data: response.data,
+        contentType: response.headers['content-type'],
+        responseTime: Date.now()
+      }))
+    );
+
+    try {
+      const result = await Promise.any(requests);
+      console.log(LOG_PREFIX.SUCCESS, `最快响应来自: ${result.server.url}`);
+      return {
+        data: result.data,
+        contentType: result.contentType
+      };
+    } catch (error) {
+      throw new Error('所有请求都失败了');
+    }
+  }
+
+  // 启动健康检查
+  startHealthCheck();
 
   // 4. 初始化缓存目录和启动服务器
   async function initialize() {
