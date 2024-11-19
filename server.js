@@ -1,4 +1,3 @@
-const https = require('https');
 const express = require('express');
 const axios = require('axios');
 const morgan = require('morgan');
@@ -6,7 +5,8 @@ const url = require('url'); // 用于处理 URL，提取路径和查询参数
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const BASE_WEIGHT_MULTIPLIER = 30;
+const BASE_WEIGHT_MULTIPLIER = parseInt(process.env.BASE_WEIGHT_MULTIPLIER || '20');
+const DYNAMIC_WEIGHT_MULTIPLIER = parseInt(process.env.DYNAMIC_WEIGHT_MULTIPLIER || '50');
 const REQUEST_TIMEOUT = 5000;
 const RECENT_REQUEST_LIMIT = 10; // 扩大记录数以更平滑动态权重
 const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
@@ -140,7 +140,7 @@ function startServer() {
       // 响应时间越短，权重越高
       const baseScore = 1000 / server.ewma;
       // 使用对数函数使权重分布更均匀
-      const weight = Math.log10(baseScore + 1) * 20;
+      const weight = Math.log10(baseScore + 1) * 50;
       server.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
     }
   }
@@ -196,7 +196,7 @@ function startServer() {
     const selected = healthyServers[0];
     console.log(
       LOG_PREFIX.SUCCESS,
-      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综��:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
     );
     return selected;
   }
@@ -222,28 +222,6 @@ function startServer() {
     const parsedUrl = url.parse(req.originalUrl, true);
     return `${parsedUrl.pathname}?${new URLSearchParams(parsedUrl.query)}`;
   }
-
-  /**
-   * 处理请求失败时的权重调整
-   */
-  async function handleRequestError(server, error) {
-    // 异步更新权重数据
-    setImmediate(() => {
-      updateWeightDataAsync(server, Infinity).catch(err => {
-        console.error(LOG_PREFIX.ERROR, `更新权重数据失败: ${err.message}`);
-      });
-    });
-
-    // 标记服务器状态
-    server.healthy = false;
-    
-    // 记录错误日志
-    console.warn(
-      LOG_PREFIX.WARN,
-      `代理请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
-    );
-  }
-
   /**
    * 处理单个请求
    */
@@ -269,25 +247,6 @@ function startServer() {
       });
       
       throw error;
-    }
-  }
-
-  /**
-   * 带重试的请求处理
-   */
-  async function handleRequestWithRetry(req, res, maxRetries = 9) {
-    for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-      const server = selectUpstreamServer();
-      
-      try {
-        const data = await handleSingleRequest(server, req);
-        return data;
-      } catch (error) {
-        if (retryCount === maxRetries - 1) {
-          console.error(LOG_PREFIX.ERROR, `所有重试都失败了`);
-          throw error;
-        }
-      }
     }
   }
 
@@ -345,101 +304,181 @@ function startServer() {
   // 定期处理权重更新队列
   setInterval(processWeightUpdateQueue, 1000);
 
-  // 代理请求
-  app.use(
-    '/',
-    async (req, res, next) => {
-      const cacheKey = getCacheKey(req);
+  // 添加重试相关常量
+  const MAX_RETRY_ATTEMPTS = 3;        // 单个服务器最大重试次数
+  const MAX_SERVER_SWITCHES = 3;       // 最大切换服务器次数
+  const RETRY_DELAY = 1000;            // 重试间隔时间(ms)
 
-      if (cache[cacheKey]) {
-        console.log(LOG_PREFIX.CACHE.HIT, `键值: ${cacheKey}`);
-        return res.send(cache[cacheKey]);
-      }
-      console.log(LOG_PREFIX.CACHE.MISS, `键值: ${cacheKey}`);
+  // 添加延时函数
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-      let targetServer = selectUpstreamServer();
-      let retryCount = 0;
+  // 修改主路由中的请求处理逻辑
+  app.use('/', async (req, res, next) => {
+    const cacheKey = getCacheKey(req);
 
-      while (targetServer && retryCount < upstreamServers.length) {
-        try {
-          req.targetServer = targetServer.url;
+    if (cache[cacheKey]) {
+      console.log(LOG_PREFIX.CACHE.HIT, `键值: ${cacheKey}`);
+      return res.send(cache[cacheKey]);
+    }
+    console.log(LOG_PREFIX.CACHE.MISS, `键值: ${cacheKey}`);
 
-          const start = Date.now();
-          const proxyRes = await axios.get(`${req.targetServer}${req.originalUrl}`, {
-            timeout: REQUEST_TIMEOUT,
-            responseType: 'arraybuffer', // 支持二进制数据
-          });
+    let serverSwitchCount = 0;
+    let targetServer = selectUpstreamServer();
 
-          // 验证响应内容类型
-          const contentType = proxyRes.headers['content-type'];
-          let isValidResponse = false;
-
-          switch (UPSTREAM_TYPE) {
-            case 'tmdb-api':
-              isValidResponse = contentType.includes('application/json');
-              if (!isValidResponse) {
-                console.error(chalk.red(`Invalid content type for TMDB API: ${contentType}`));
-                throw new Error('Invalid content type for TMDB API');
-              }
-              break;
-
-            case 'tmdb-image':
-              isValidResponse = contentType.includes('image/');
-              if (!isValidResponse) {
-                console.error(chalk.red(`Invalid content type for TMDB Image: ${contentType}`));
-                throw new Error('Invalid content type for TMDB Image');
-              }
-              break;
-
-            case 'custom':
-              if (!CUSTOM_CONTENT_TYPE) {
-                console.error(chalk.red('CUSTOM_CONTENT_TYPE environment variable is required when UPSTREAM_TYPE is custom'));
-                throw new Error('CUSTOM_CONTENT_TYPE not configured');
-              }
-              isValidResponse = contentType.includes(CUSTOM_CONTENT_TYPE);
-              if (!isValidResponse) {
-                console.error(chalk.red(`Invalid content type for Custom type: ${contentType}`));
-                throw new Error('Invalid content type for Custom type');
-              }
-              break;
-
-            default:
-              console.error(chalk.red(`Unknown UPSTREAM_TYPE: ${UPSTREAM_TYPE}`));
-              throw new Error('Unknown UPSTREAM_TYPE');
-          }
-
-          const responseTime = Date.now() - start;
-
-          // 异步更新权重数据
-          process.nextTick(() => {
-            weightUpdateQueue.push({
-              server: targetServer,
-              responseTime,
-              timestamp: Date.now()
-            });
-          });
-
-          const buffer = Buffer.from(proxyRes.data); // 缓存响应数据
-          // 使用之前声明的 contentType 变量,不再重复声明
-          cache[cacheKey] = { data: buffer, contentType };
-
-          console.log(LOG_PREFIX.SUCCESS, `代理请求成功 - 路径: ${req.originalUrl}, 服务器: ${targetServer.url}, 响应时间: ${responseTime}ms, 内容类型: ${contentType}`);
-
-          res.setHeader('Content-Type', contentType);
-          return res.send(buffer);
-
-        } catch (error) {
-          console.log(LOG_PREFIX.WARN, `代理请求失败 - 服务器: ${targetServer.url}, 错误: ${error.message}, 重试次数: ${retryCount + 1}/${upstreamServers.length}`);
-          targetServer.healthy = false;
+    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
+      try {
+        const result = await tryRequestWithRetries(targetServer, req);
+        
+        // 成功处理响应
+        const { buffer, contentType, responseTime } = result;
+        
+        // 异步更新权重
+        addWeightUpdate(targetServer, responseTime);
+        
+        // 缓存响应
+        cache[cacheKey] = { data: buffer, contentType };
+        
+        console.log(LOG_PREFIX.SUCCESS, `代理请求成功 - 路径: ${req.originalUrl}, 服务器: ${targetServer.url}, 响应时间: ${responseTime}ms, 内容类型: ${contentType}`);
+        
+        res.setHeader('Content-Type', contentType);
+        return res.send(buffer);
+        
+      } catch (error) {
+        console.log(LOG_PREFIX.WARN, `服务器 ${targetServer.url} 请求失败: ${error.message}`);
+        
+        // 如果是验证错误或超时，切换到下一个服务器
+        if (error.isValidationError || error.isTimeout) {
+          serverSwitchCount++;
+          // 异步进行失败服务器的重试检查
+          checkFailedServer(targetServer);
+          // 选择新的服务器
           targetServer = selectUpstreamServer();
+          continue;
+        }
+        
+        // 其他错误直接返回
+        return res.status(502).send('Proxy request failed');
+      }
+    }
+
+    console.error(chalk.red('所有可用服务器都无法完成请求'));
+    res.status(502).send('No healthy upstream servers available.');
+  });
+
+  // 修改内容类型验证函数，增加 JSON 验证
+  async function validateResponse(response, contentType) {
+    let isValidResponse = false;
+    
+    switch (UPSTREAM_TYPE) {
+      case 'tmdb-api':
+        // 首先验证 content-type
+        if (!contentType.includes('application/json')) {
+          throw new Error('Invalid content type: expected application/json');
+        }
+        
+        // 验证 JSON 响应的合法性
+        try {
+          // 如果响应是 Buffer，先转换为字符串
+          const jsonStr = response instanceof Buffer ? 
+            response.toString('utf-8') : response;
+          
+          // 尝试解析 JSON
+          const jsonData = JSON.parse(jsonStr);
+          
+          // 验证 TMDB API 的特定结构
+          // 检查是否包含必要的字段，或者是否有错误信息
+          if (jsonData.success === false || jsonData.status_code) {
+            throw new Error(`TMDB API Error: ${jsonData.status_message || 'Unknown error'}`);
+          }
+          
+          isValidResponse = true;
+        } catch (error) {
+          throw new Error(`Invalid JSON response: ${error.message}`);
+        }
+        break;
+        
+      case 'tmdb-image':
+        isValidResponse = contentType.includes('image/');
+        break;
+        
+      case 'custom':
+        isValidResponse = CUSTOM_CONTENT_TYPE ? 
+          contentType.includes(CUSTOM_CONTENT_TYPE) : true;
+        break;
+        
+      default:
+        throw new Error(`Unknown UPSTREAM_TYPE: ${UPSTREAM_TYPE}`);
+    }
+    
+    if (!isValidResponse) {
+      throw new Error(`Invalid response for ${UPSTREAM_TYPE}`);
+    }
+  }
+
+  // 修改请求重试函数
+  async function tryRequestWithRetries(server, req) {
+    let retryCount = 0;
+    
+    while (retryCount < MAX_RETRY_ATTEMPTS) {
+      try {
+        const start = Date.now();
+        const proxyRes = await axios.get(`${server.url}${req.originalUrl}`, {
+          timeout: REQUEST_TIMEOUT,
+          responseType: 'arraybuffer',
+        });
+        
+        // 验证响应内容类型和内容
+        const contentType = proxyRes.headers['content-type'];
+        await validateResponse(proxyRes.data, contentType);
+        
+        return {
+          buffer: Buffer.from(proxyRes.data),
+          contentType,
+          responseTime: Date.now() - start
+        };
+        
+      } catch (error) {
+        retryCount++;
+        
+        // 细化错误类型
+        if (error.code === 'ECONNABORTED') {
+          error.isTimeout = true;
+        } else if (error.message.includes('Invalid JSON response') || 
+                  error.message.includes('TMDB API Error')) {
+          error.isValidationError = true;
+        }
+        
+        if (retryCount === MAX_RETRY_ATTEMPTS) {
+          throw error;
+        }
+        
+        // 等待一段时间后重试
+        await delay(RETRY_DELAY);
+        console.log(LOG_PREFIX.WARN, `重试请求 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
+      }
+    }
+  }
+
+  // 添加失败服务器检查函数
+  async function checkFailedServer(server) {
+    process.nextTick(async () => {
+      let retryCount = 0;
+      while (retryCount < MAX_RETRY_ATTEMPTS) {
+        try {
+          await checkServerHealth(server);
+          // 如果健康检查成功，恢复服务器状态
+          server.healthy = true;
+          return;
+        } catch (error) {
           retryCount++;
+          await delay(RETRY_DELAY);
         }
       }
-
-      console.error(chalk.red('No healthy upstream servers available after retries.'));
-      res.status(502).send('No healthy upstream servers available.');
-    }
-  );
+      // 多次重试失败后标记为不健康
+      server.healthy = false;
+      console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
+    });
+  }
 
   app.listen(PORT, () => {
     console.log(LOG_PREFIX.SUCCESS, `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, 自定义内容类型: ${CUSTOM_CONTENT_TYPE || '无'}`);
@@ -498,4 +537,14 @@ function calculateBaseWeight(responseTime) {
     100, // 设置最大权重上为100
     Math.max(1, Math.floor((1000 / responseTime) * BASE_WEIGHT_MULTIPLIER))
   );
+}
+
+function addWeightUpdate(server, responseTime) {
+  process.nextTick(() => {
+    weightUpdateQueue.push({
+      server,
+      responseTime,
+      timestamp: Date.now()
+    });
+  });
 }
