@@ -330,7 +330,7 @@ function startServer() {
       if (weightSum > random) {
         console.log(
           LOG_PREFIX.SUCCESS,
-          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 综合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
         );
         return server;
       }
@@ -340,7 +340,7 @@ function startServer() {
     const selected = healthyServers[0];
     console.log(
       LOG_PREFIX.SUCCESS,
-      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+      `已选择: ${selected.url} [基础:${selected.baseWeight.toFixed(0)} 动态:${selected.dynamicWeight.toFixed(0)} 综合:${selected.combinedWeight.toFixed(0)} 概率:${((selected.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
     );
     return selected;
   }
@@ -484,7 +484,7 @@ function startServer() {
         
         // 验证 JSON 响应的合法性
         try {
-          // 如果响��是 Buffer，先转换为字符串
+          // 如果响应是 Buffer，先转换为字符串
           const jsonStr = response instanceof Buffer ? 
             response.toString('utf-8') : response;
           
@@ -555,6 +555,9 @@ function startServer() {
         }
         
         if (retryCount === MAX_RETRY_ATTEMPTS) {
+          // 在达到最大重试次数后，将服务器标记为不健康
+          server.healthy = false;
+          console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
           throw error;
         }
         
@@ -607,7 +610,7 @@ function startServer() {
         await saveIndex();
       }
 
-      // ���动 HTTP 服务器（只在这里启动一次）
+      // 动 HTTP 服务器（只在这里启动一次）
       app.listen(PORT, () => {
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, ` +
