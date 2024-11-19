@@ -39,7 +39,8 @@ import('chalk').then((module) => {
     SUCCESS: chalk.green('[ 成功 ]'),
     CACHE: {
       HIT: chalk.green('[ 缓存命中 ]'),
-      MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]')
+      MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]'),
+      INFO: chalk.cyan('[ 缓存信息 ]')  // 添加缓存信息前缀
     },
     PROXY: chalk.cyan('[ 代理 ]'),
     WEIGHT: chalk.magenta('[ 权重 ]')
@@ -172,13 +173,13 @@ function startServer() {
     }
   }
 
-  // 6. 添加缓存统计日志
+  // 缓存统计
   setInterval(() => {
     console.log(LOG_PREFIX.CACHE.INFO, 
       `缓存统计 - 内存: ${lruCache.cache.size}/${MEMORY_CACHE_SIZE}, ` +
       `磁盘: ${diskCache.size}/${CACHE_MAX_SIZE}`
     );
-  }, 60000);  // 每分钟输出一次统计
+  }, 60000);
 
   let upstreamServers = [];
   function loadUpstreamServers() {
@@ -296,7 +297,7 @@ function startServer() {
       if (weightSum > random) {
         console.log(
           LOG_PREFIX.SUCCESS,
-          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} ���合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
+          `已选择: ${server.url} [基础:${server.baseWeight.toFixed(0)} 动态:${server.dynamicWeight.toFixed(0)} 合:${server.combinedWeight.toFixed(0)} 概率:${((server.combinedWeight / totalWeight) * 100).toFixed(1)}%]`
         );
         return server;
       }
@@ -465,7 +466,7 @@ function startServer() {
     res.status(502).send('No healthy upstream servers available.');
   });
 
-  // 修改内容类型验证函数，增加 JSON 验证
+  // 修改内容类型验证函数，���加 JSON 验证
   async function validateResponse(response, contentType) {
     let isValidResponse = false;
     
@@ -580,8 +581,53 @@ function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(LOG_PREFIX.SUCCESS, `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, 自定义内容类型: ${CUSTOM_CONTENT_TYPE || '无'}`);
+  // 4. 初始化缓存目录和启动服务器
+  async function initialize() {
+    try {
+      // 初始化缓存目录
+      await fs.mkdir(CACHE_DIR, { recursive: true });
+      console.log(LOG_PREFIX.INFO, `缓存目录初始化成功: ${CACHE_DIR}`);
+      
+      // 加载缓存索引
+      try {
+        const indexData = await fs.readFile(path.join(CACHE_DIR, CACHE_INDEX_FILE));
+        const index = JSON.parse(indexData);
+        for (const [key, meta] of Object.entries(index)) {
+          if (Date.now() - meta.timestamp <= CACHE_TTL) {
+            diskCache.set(key, meta);
+          }
+        }
+        console.log(LOG_PREFIX.CACHE.INFO, `已加载 ${diskCache.size} 个缓存项`);
+      } catch (error) {
+        await saveIndex();
+      }
+
+      // 启动 HTTP 服务器
+      app.listen(PORT, () => {
+        console.log(LOG_PREFIX.SUCCESS, 
+          `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, ` +
+          `自定义内容类型: ${CUSTOM_CONTENT_TYPE || '无'}`
+        );
+        
+        // 5. 在服务器启动后开始缓存统计
+        setInterval(() => {
+          console.log(LOG_PREFIX.CACHE.INFO, 
+            `缓存统计 - 内存: ${lruCache.cache.size}/${MEMORY_CACHE_SIZE}, ` +
+            `磁盘: ${diskCache.size}/${CACHE_MAX_SIZE}`
+          );
+        }, 60000);  // 每分钟输出一次统计
+      });
+
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `初始化失败: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  // 6. 启动初始化
+  initialize().catch(error => {
+    console.error(LOG_PREFIX.ERROR, `初始化失败: ${error.message}`);
+    process.exit(1);
   });
 }
 
