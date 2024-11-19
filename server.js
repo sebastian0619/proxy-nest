@@ -72,6 +72,27 @@ const CACHE_DIR = process.env.CACHE_DIR || path.join(process.cwd(), 'cache');  /
 const CACHE_FILE_EXT = '.cache';
 const CACHE_INDEX_FILE = 'cache_index.json';
 
+// 错误记录队列
+const errorLogQueue = [];
+
+// 最大错误记录数
+const MAX_ERROR_LOGS = 10;
+
+// 添加错误记录
+function logError(requestUrl, errorCode) {
+  errorLogQueue.push({ requestUrl, errorCode, timestamp: Date.now() });
+  if (errorLogQueue.length > MAX_ERROR_LOGS) {
+    errorLogQueue.shift(); // 保持队列长度
+  }
+}
+
+// 检查错误是否集中在某些请求上
+function isServerError(errorCode) {
+  const recentErrors = errorLogQueue.filter(log => log.errorCode === errorCode);
+  const uniqueRequests = new Set(recentErrors.map(log => log.requestUrl));
+  return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能是服务器问题
+}
+
 function startServer() {
   app.use(morgan('combined'));
 
@@ -533,7 +554,6 @@ function startServer() {
           responseType: 'arraybuffer',
         });
         
-        // 如果请求成功，标记服务器为健康
         server.healthy = true;
         console.log(LOG_PREFIX.SUCCESS, `服务器 ${server.url} 恢复健康`);
         return {
@@ -544,10 +564,13 @@ function startServer() {
         
       } catch (error) {
         retryCount++;
+        logError(req.originalUrl, error.response ? error.response.status : 'UNKNOWN');
         
         if (retryCount === MAX_RETRY_ATTEMPTS) {
-          server.healthy = false; // 直接标记为不健康
-          console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
+          if (isServerError(error.response ? error.response.status : 'UNKNOWN')) {
+            server.healthy = false; // 只有在确认是服务器问题时才标记为不健康
+            console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
+          }
           throw error;
         }
         

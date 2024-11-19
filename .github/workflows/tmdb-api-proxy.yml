@@ -2,7 +2,7 @@ name: Build and Push TMDB Proxy JS
 
 on:
   push:
-    branches: [ JS-branch ]
+    branches: [ JS-branch2 ]
     paths:
       - '**'
   release:
@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/proxy-nest-js
+  IMAGE_NAME: ${{ github.repository }}/proxy-nest-js-2
 
 jobs:
   build-and-push:
