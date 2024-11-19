@@ -484,7 +484,7 @@ function startServer() {
         
         // 验证 JSON 响应的合法性
         try {
-          // 如果响应是 Buffer，先转换为字符串
+          // 如果响��是 Buffer，先转换为字符串
           const jsonStr = response instanceof Buffer ? 
             response.toString('utf-8') : response;
           
@@ -607,20 +607,20 @@ function startServer() {
         await saveIndex();
       }
 
-      // 启动 HTTP 服务器
+      // ���动 HTTP 服务器（只在这里启动一次）
       app.listen(PORT, () => {
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, ` +
           `自定义内容类型: ${CUSTOM_CONTENT_TYPE || '无'}`
         );
         
-        // 5. 在服务器启动后开始缓存统计
+        // 启动缓存统计
         setInterval(() => {
           console.log(LOG_PREFIX.CACHE.INFO, 
             `缓存统计 - 内存: ${lruCache.cache.size}/${MEMORY_CACHE_SIZE}, ` +
             `磁盘: ${diskCache.size}/${CACHE_MAX_SIZE}`
           );
-        }, 60000);  // 每分钟输出一次统计
+        }, 60000);
       });
 
     } catch (error) {
@@ -629,7 +629,7 @@ function startServer() {
     }
   }
 
-  // 6. 启动初始化
+  // 启动初始化
   initialize().catch(error => {
     console.error(LOG_PREFIX.ERROR, `初始化失败: ${error.message}`);
     process.exit(1);
@@ -690,11 +690,6 @@ function startServer() {
       error: '代理请求失败',
       message: err.message
     });
-  });
-
-  // 启动服务器
-  app.listen(PORT, () => {
-    console.log(LOG_PREFIX.INFO, `服务器启动在端口 ${PORT}`);
   });
 }
 async function checkServerHealth(server) {
