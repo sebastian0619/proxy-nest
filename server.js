@@ -46,6 +46,15 @@ import('chalk').then((module) => {
   startServer();
 });
 
+// 1. 将 weightUpdateQueue 移到全局作用域
+const weightUpdateQueue = [];
+
+// 2. 将所有权重更新相关的常量也移到全局作用域
+const RECENT_RESPONSES_LIMIT = 3;    // 保留最近3条响应时间记录
+const EWMA_BETA = 0.8;              // EWMA平滑系数
+const MIN_WEIGHT = 1;               // 最小权重
+const MAX_WEIGHT = 100;             // 最大权重
+
 function startServer() {
   app.use(morgan('combined'));
 
@@ -250,17 +259,7 @@ function startServer() {
     }
   }
 
-  // 权重更新队列处理
-  const weightUpdateQueue = [];
-
-  // 添加常量定义
-  const RECENT_RESPONSES_LIMIT = 3;    // 保留最近3条响应时间记录
-  const EWMA_BETA = 0.8;              // EWMA平滑系数
-  const MIN_WEIGHT = 1;               // 最小权重
-  const MAX_WEIGHT = 100;             // 最大权重
-  const REQUEST_TIMEOUT = 5000;       // 请求超时时间（毫秒）
-
-  // 权重更新队列处理
+  // 3. 保留权重更新队列处理逻辑在 startServer 中
   function processWeightUpdateQueue() {
     while (weightUpdateQueue.length > 0) {
       const { server, responseTime } = weightUpdateQueue.shift();
@@ -301,7 +300,7 @@ function startServer() {
     }
   }
 
-  // 定期处理权重更新队列
+  // 4. 设置定时器处理权重更新队列
   setInterval(processWeightUpdateQueue, 1000);
 
   // 添加重试相关常量
@@ -539,6 +538,7 @@ function calculateBaseWeight(responseTime) {
   );
 }
 
+// 5. 修改 addWeightUpdate 函数以使用全局 weightUpdateQueue
 function addWeightUpdate(server, responseTime) {
   process.nextTick(() => {
     weightUpdateQueue.push({
