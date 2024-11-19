@@ -76,40 +76,33 @@ function startServer() {
   app.use(morgan('combined'));
 
   // 1. 分别创建内存缓存和磁盘缓存的 Map
-  const memoryCache = new Map();  // 热点数据缓存
   const diskCache = new Map();    // 磁盘缓存索引
+  const lruCache = new LRUCache(MEMORY_CACHE_SIZE);
 
-  // 2. LRU 缓存实现
-  class LRUCache {
-    constructor(capacity) {
-      this.capacity = capacity;
-      this.cache = new Map();
-    }
-
-    get(key) {
-      if (!this.cache.has(key)) return null;
-      
-      // 访问时更新位置（删除后重新插入到最后）
-      const value = this.cache.get(key);
-      this.cache.delete(key);
-      this.cache.set(key, value);
-      return value;
-    }
-
-    set(key, value) {
-      if (this.cache.has(key)) {
-        this.cache.delete(key);
-      } else if (this.cache.size >= this.capacity) {
-        // 删除最久未使用的项（第一个）
-        const firstKey = this.cache.keys().next().value;
-        this.cache.delete(firstKey);
+  // 2. 将 saveIndex 函数移到这里
+  async function saveIndex() {
+    try {
+      const index = {};
+      for (const [key, value] of diskCache.entries()) {
+        index[key] = {
+          filename: value.filename,
+          contentType: value.contentType,
+          timestamp: value.timestamp
+        };
       }
-      this.cache.set(key, value);
+      
+      await fs.writeFile(
+        path.join(CACHE_DIR, CACHE_INDEX_FILE),
+        JSON.stringify(index, null, 2)
+      );
+      
+      console.log(LOG_PREFIX.CACHE.INFO, `缓存索引已保存，共 ${diskCache.size} 项`);
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `保存缓存索引失败: ${error.message}`);
+      throw error;
     }
   }
 
-  // 3. 创建 LRU 缓存实例
-  const lruCache = new LRUCache(MEMORY_CACHE_SIZE);
 
   // 4. 修改缓存读取函数
   async function getCacheItem(key) {
@@ -635,7 +628,6 @@ function startServer() {
     process.exit(1);
   });
 }
-
 async function checkServerHealth(server) {
   let testUrl = '';
   
@@ -701,30 +693,6 @@ function addWeightUpdate(server, responseTime) {
   });
 }
 
-// 添加保存索引函数
-async function saveIndex() {
-  try {
-    const index = {};
-    for (const [key, value] of diskCache.entries()) {
-      index[key] = {
-        filename: value.filename,
-        contentType: value.contentType,
-        timestamp: value.timestamp
-      };
-    }
-    
-    await fs.writeFile(
-      path.join(CACHE_DIR, CACHE_INDEX_FILE),
-      JSON.stringify(index, null, 2)
-    );
-    
-    console.log(LOG_PREFIX.CACHE.INFO, `缓存索引已保存，共 ${diskCache.size} 项`);
-  } catch (error) {
-    console.error(LOG_PREFIX.ERROR, `保存缓存索引失败: ${error.message}`);
-    throw error;
-  }
-}
-
 // 修改 deleteCacheItem 函数，确保调用 saveIndex
 async function deleteCacheItem(key) {
   const item = diskCache.get(key);
@@ -742,3 +710,4 @@ async function deleteCacheItem(key) {
     }
   }
 }
+
