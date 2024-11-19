@@ -133,26 +133,7 @@ function startServer() {
    * @param {Object} server 服务器对象
    * @param {number} newResponseTime 新的响应时间
    */
-  function updateServerEWMA(server) {
-    if (!server.ewma) {
-      // 首次计算，直接使用当前响应时间
-      server.ewma = server.responseTime;
-    } else {
-      // 使用 EWMA 计算平均响应时间
-      server.ewma = EWMA_BETA * server.ewma + (1 - EWMA_BETA) * server.responseTime;
-    }
 
-    // 基于 EWMA 计算动态权重
-    if (server.ewma <= 0 || !server.healthy) {
-      server.dynamicWeight = 0;
-    } else {
-      // 响应时间越短，权重越高
-      const baseScore = 1000 / server.ewma;
-      // 使用对数函数使权重分布更均匀
-      const weight = Math.log10(baseScore + 1) * 50;
-      server.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
-    }
-  }
 
   /**
    * 存储上一次计算的权重数据
@@ -265,7 +246,6 @@ function startServer() {
       const { server, responseTime } = weightUpdateQueue.shift();
       if (!server || responseTime === undefined) continue;
       
-      // 更新服务器权重
       const cachedData = weightCache.get(server.url) || {
         responseTimes: [],
         dynamicWeight: 0,
@@ -286,16 +266,15 @@ function startServer() {
         EWMA_BETA * cachedData.ewma + (1 - EWMA_BETA) * avgTime : 
         avgTime;
       
-      // 计算动态权重
+      // 使用环境变量 DYNAMIC_WEIGHT_MULTIPLIER
       if (cachedData.ewma === Infinity || !server.healthy) {
         cachedData.dynamicWeight = 0;
       } else {
         const baseScore = 1000 / cachedData.ewma;
-        const weight = Math.log10(baseScore + 1) * 20;
+        const weight = Math.log10(baseScore + 1) * DYNAMIC_WEIGHT_MULTIPLIER;  // 使用环境变量
         cachedData.dynamicWeight = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, Math.floor(weight)));
       }
       
-      // 更新缓存
       weightCache.set(server.url, cachedData);
     }
   }
