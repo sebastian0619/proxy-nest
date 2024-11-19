@@ -1,5 +1,5 @@
 const { getCacheItem, setCacheItem } = require('./cache');
-const { handleRequest } = require('./requestHandler');
+const { handleRequestWithRetries } = require('./requestHandler');
 const { LOG_PREFIX } = require('./utils');
 const url = require('url');
 
@@ -22,7 +22,7 @@ async function handleRequest(req, res, next) {
     }
 
     console.log(LOG_PREFIX.CACHE.MISS, `缓存未命中: ${cacheKey}`);
-    const response = await handleRequest(req);
+    const response = await handleRequestWithRetries(req);
 
     if (response && response.data) {
       await setCacheItem(cacheKey, response.data, response.contentType);
