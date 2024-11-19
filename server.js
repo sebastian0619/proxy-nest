@@ -67,6 +67,11 @@ const CACHE_CLEANUP_INTERVAL = 300000;                                 // 清理
 const MEMORY_CACHE_SIZE = parseInt(process.env.MEMORY_CACHE_SIZE || '100');  // 内存中保留的热点缓存数量
 const MEMORY_CACHE_TTL = parseInt(process.env.MEMORY_CACHE_TTL || '300000'); // 内存缓存过期时间(5分钟)
 
+// 添加缓存目录相关常量
+const CACHE_DIR = process.env.CACHE_DIR || path.join(process.cwd(), 'cache');  // 默认在当前目录下的 cache 文件夹
+const CACHE_FILE_EXT = '.cache';
+const CACHE_INDEX_FILE = 'cache_index.json';
+
 function startServer() {
   app.use(morgan('combined'));
 
@@ -466,7 +471,7 @@ function startServer() {
     res.status(502).send('No healthy upstream servers available.');
   });
 
-  // 修改内容类型验证函数，���加 JSON 验证
+  // 修改内容类型验证函数， JSON 验证
   async function validateResponse(response, contentType) {
     let isValidResponse = false;
     
