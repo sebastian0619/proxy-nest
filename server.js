@@ -520,20 +520,27 @@ function startServer() {
   }
 
   // 修改请求重试函数
-  async function tryRequestWithRetries(server) {
+  async function tryRequestWithRetries(server, req) {
     let retryCount = 0;
     
     while (retryCount < MAX_RETRY_ATTEMPTS) {
       try {
-        const testUrl = getHealthCheckUrl(server);
-        const proxyRes = await axios.get(`${server.url}${testUrl}`, {
+        const requestUrl = `${server.url}${req.originalUrl}`;
+        console.log(LOG_PREFIX.INFO, `重试请求: ${requestUrl}`);
+        
+        const proxyRes = await axios.get(requestUrl, {
           timeout: REQUEST_TIMEOUT,
+          responseType: 'arraybuffer',
         });
         
         // 如果请求成功，标记服务器为健康
         server.healthy = true;
         console.log(LOG_PREFIX.SUCCESS, `服务器 ${server.url} 恢复健康`);
-        return;
+        return {
+          buffer: Buffer.from(proxyRes.data),
+          contentType: proxyRes.headers['content-type'],
+          responseTime: Date.now()
+        };
         
       } catch (error) {
         retryCount++;
@@ -541,28 +548,15 @@ function startServer() {
         if (retryCount === MAX_RETRY_ATTEMPTS) {
           server.healthy = false; // 直接标记为不健康
           console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
-          return;
+          throw error;
         }
         
         await delay(RETRY_DELAY);
-        console.log(LOG_PREFIX.WARN, `重试健康检查 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
+        console.log(LOG_PREFIX.WARN, `重试请求 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
       }
     }
   }
 
-  // 获取健康检查的 URL
-  function getHealthCheckUrl(server) {
-    switch (UPSTREAM_TYPE) {
-      case 'tmdb-api':
-        return `/3/configuration?api_key=${TMDB_API_KEY}`;
-      case 'tmdb-image':
-        return TMDB_IMAGE_TEST_URL;
-      case 'custom':
-        return '/';
-      default:
-        throw new Error(`未知的上游类型: ${UPSTREAM_TYPE}`);
-    }
-  }
 
   // 在独立线程中运行重试逻辑
   function startHealthCheck() {
