@@ -700,3 +700,45 @@ function addWeightUpdate(server, responseTime) {
     });
   });
 }
+
+// 添加保存索引函数
+async function saveIndex() {
+  try {
+    const index = {};
+    for (const [key, value] of diskCache.entries()) {
+      index[key] = {
+        filename: value.filename,
+        contentType: value.contentType,
+        timestamp: value.timestamp
+      };
+    }
+    
+    await fs.writeFile(
+      path.join(CACHE_DIR, CACHE_INDEX_FILE),
+      JSON.stringify(index, null, 2)
+    );
+    
+    console.log(LOG_PREFIX.CACHE.INFO, `缓存索引已保存，共 ${diskCache.size} 项`);
+  } catch (error) {
+    console.error(LOG_PREFIX.ERROR, `保存缓存索引失败: ${error.message}`);
+    throw error;
+  }
+}
+
+// 修改 deleteCacheItem 函数，确保调用 saveIndex
+async function deleteCacheItem(key) {
+  const item = diskCache.get(key);
+  if (item) {
+    try {
+      // 删除缓存文件
+      await fs.unlink(path.join(CACHE_DIR, item.filename));
+      diskCache.delete(key);
+      lruCache.cache.delete(key);
+      
+      // 更新索引
+      await saveIndex();
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `删除缓存失败: ${error.message}`);
+    }
+  }
+}
