@@ -75,9 +75,35 @@ const CACHE_INDEX_FILE = 'cache_index.json';
 function startServer() {
   app.use(morgan('combined'));
 
-  // 1. 分别创建内存缓存和磁盘缓存的 Map
+  // 1. 先定义 LRU 缓存类
+  class LRUCache {
+    constructor(capacity) {
+      this.capacity = capacity;
+      this.cache = new Map();
+    }
+
+    get(key) {
+      if (!this.cache.has(key)) return null;
+      const value = this.cache.get(key);
+      this.cache.delete(key);
+      this.cache.set(key, value);
+      return value;
+    }
+
+    set(key, value) {
+      if (this.cache.has(key)) {
+        this.cache.delete(key);
+      } else if (this.cache.size >= this.capacity) {
+        const firstKey = this.cache.keys().next().value;
+        this.cache.delete(firstKey);
+      }
+      this.cache.set(key, value);
+    }
+  }
+
+  // 2. 然后创建缓存实例
   const diskCache = new Map();    // 磁盘缓存索引
-  const lruCache = new LRUCache(MEMORY_CACHE_SIZE);
+  const lruCache = new LRUCache(MEMORY_CACHE_SIZE);  // 内存缓存（LRU）
 
   // 2. 将 saveIndex 函数移到这里
   async function saveIndex() {
