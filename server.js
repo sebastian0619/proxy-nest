@@ -324,7 +324,6 @@ function startServer() {
     const random = Math.random() * totalWeight;
     let weightSum = 0;
 
-    // 选择服务器
     for (const server of healthyServers) {
       weightSum += server.combinedWeight;
       if (weightSum > random) {
@@ -336,7 +335,6 @@ function startServer() {
       }
     }
 
-    // 如果没有选中任何服务器返回权重最高的并记录日志
     const selected = healthyServers[0];
     console.log(
       LOG_PREFIX.SUCCESS,
@@ -546,7 +544,6 @@ function startServer() {
       } catch (error) {
         retryCount++;
         
-        // 细化错误类型
         if (error.code === 'ECONNABORTED') {
           error.isTimeout = true;
         } else if (error.message.includes('Invalid JSON response') || 
@@ -555,38 +552,15 @@ function startServer() {
         }
         
         if (retryCount === MAX_RETRY_ATTEMPTS) {
-          // 在达到最大重试次数后，将服务器标记为不健康
-          server.healthy = false;
+          server.healthy = false; // 直接标记为不健康
           console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
           throw error;
         }
         
-        // 等待一段时间后重试
         await delay(RETRY_DELAY);
         console.log(LOG_PREFIX.WARN, `重试请求 ${retryCount}/${MAX_RETRY_ATTEMPTS} - 服务器: ${server.url}, 错误: ${error.message}`);
       }
     }
-  }
-
-  // 添加失败服务器检查函数
-  async function checkFailedServer(server) {
-    process.nextTick(async () => {
-      let retryCount = 0;
-      while (retryCount < MAX_RETRY_ATTEMPTS) {
-        try {
-          await checkServerHealth(server);
-          // 如果健康检查成功，恢复服务器状态
-          server.healthy = true;
-          return;
-        } catch (error) {
-          retryCount++;
-          await delay(RETRY_DELAY);
-        }
-      }
-      // 多次重试失败后标记为不健康
-      server.healthy = false;
-      console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
-    });
   }
 
   // 4. 初始化缓存目录和启动服务器
@@ -666,7 +640,6 @@ function startServer() {
         // 处理服务器失败
         if (error.isTimeout || error.code === 'ECONNREFUSED') {
           server.healthy = false;
-          checkFailedServer(server);
         }
 
         serverSwitchCount++;
