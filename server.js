@@ -29,7 +29,7 @@ const {
 } = require('./config');
 
 // 全局变量
-let LOG_PREFIX;
+
 const workers = new Map();
 const weightUpdateQueue = [];
 let upstreamServers;
@@ -63,7 +63,7 @@ async function startServer() {
 
     // 启动服务器
     app.listen(PORT, () => {
-      console.log(LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
+      console.log(global.LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
     });
 
     // 初始化上游服务器列表
@@ -87,21 +87,21 @@ async function startServer() {
       BASE_WEIGHT_MULTIPLIER
     };
 
-    startHealthCheck(upstreamServers, healthCheckConfig, LOG_PREFIX);
+    startHealthCheck(upstreamServers, healthCheckConfig, global.LOG_PREFIX);
 
     // 启动权重更新处理
     setInterval(() => {
       processWeightUpdateQueue(
         weightUpdateQueue, 
         upstreamServers, 
-        LOG_PREFIX, 
+        global.LOG_PREFIX, 
         ALPHA_ADJUSTMENT_STEP,
         BASE_WEIGHT_MULTIPLIER
       );
     }, 1000);
 
   } catch (error) {
-    console.error(LOG_PREFIX?.ERROR || '[ 错误 ]', `服务器启动失败: ${error.message}`);
+    console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]', `服务器启动失败: ${error.message}`);
     process.exit(1);
   }
 }
@@ -151,12 +151,12 @@ function setupWorkerEventHandlers(worker, workerId) {
   });
 
   worker.on('error', (error) => {
-    console.error(LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
+    console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
   });
 
   worker.on('exit', (code) => {
     if (code !== 0) {
-      console.error(LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
+      console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
       setTimeout(() => initializeWorker(workerId), 1000);
     }
   });
@@ -175,11 +175,11 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
         UPSTREAM_TYPE
       );
       if (isValid) {
-        console.log(LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${cacheKey}`);
+        console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${cacheKey}`);
         return cachedItem;
       }
     } catch (error) {
-      console.error(LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
+      console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
     }
   }
 
@@ -194,16 +194,16 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
         UPSTREAM_TYPE
       );
       if (isValid) {
-        console.log(LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${cacheKey}`);
+        console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${cacheKey}`);
         lruCache.set(cacheKey, cachedItem);
         return cachedItem;
       }
     }
   } catch (error) {
-    console.error(LOG_PREFIX.ERROR, `读取缓存失败: ${error.message}`);
+    console.error(global.LOG_PREFIX.ERROR, `读取缓存失败: ${error.message}`);
   }
 
-  console.log(LOG_PREFIX.CACHE.MISS, `缓存未命中: ${cacheKey}`);
+  console.log(global.LOG_PREFIX.CACHE.MISS, `缓存未命中: ${cacheKey}`);
   return null;
 }
 
@@ -268,9 +268,9 @@ function setupRoutes(app, diskCache, lruCache) {
       try {
         await diskCache.set(cacheKey, cacheItem);
         lruCache.set(cacheKey, cacheItem);
-        console.log(LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
+        console.log(global.LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
       } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
+        console.error(global.LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
       }
 
       // 发送响应
@@ -284,7 +284,7 @@ function setupRoutes(app, diskCache, lruCache) {
       }
       
     } catch (error) {
-      console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
+      console.error(global.LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
       next(error);
     }
   });
