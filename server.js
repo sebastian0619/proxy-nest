@@ -37,8 +37,14 @@ let upstreamServers;
 // 主服务器启动函数
 async function startServer() {
   try {
-    // 初始化日志前缀并立即赋值给全局变量
+    // 先初始化日志前缀
     global.LOG_PREFIX = await initializeLogPrefix();
+    if (!global.LOG_PREFIX) {
+      throw new Error('初始化日志前缀失败');
+    }
+
+    // 确保 LOG_PREFIX 已经初始化后再继续
+    console.log(global.LOG_PREFIX.INFO, '日志系统初始化成功');
     
     // 初始化 Express 应用
     const app = express();
@@ -101,18 +107,23 @@ async function startServer() {
 }
 
 // 初始化工作线程池
-async function initializeWorkerPool() {
-  console.log(LOG_PREFIX.INFO, `初始化 ${NUM_WORKERS} 个工作线程`);
+async function initializeWorkerPool(workerData) {
+  if (!global.LOG_PREFIX) {
+    throw new Error('LOG_PREFIX 未初始化');
+  }
+  
+  console.log(global.LOG_PREFIX.INFO, `初始化 ${NUM_WORKERS} 个工作线程`);
   
   for (let i = 0; i < NUM_WORKERS; i++) {
-    await initializeWorker(i);
+    await initializeWorker(i, workerData);
   }
 }
 
 // 初始化单个工作线程
-async function initializeWorker(workerId) {
+async function initializeWorker(workerId, workerData) {
   const worker = new Worker('./worker.js', {
     workerData: {
+      ...workerData,
       workerId,
       upstreamServers: process.env.UPSTREAM_SERVERS,
       UPSTREAM_TYPE,
