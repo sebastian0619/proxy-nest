@@ -15,6 +15,6 @@ services:
       - HTTP_PROXY=http://192.168.11.103:8890
       - UPSTREAM_TYPE=tmdb-api
       - TMDB_API_KEY=59ef6336a19540cd1e254cae0565906e
-      - UPSTREAM_SERVERS=http://141.147.151.154:3333,http://130.162.144.130:3333,http://168.138.9.163:3333,http://129.153.54.140:3333,http://150.230.24.153:3333,https://tmdb.voyka-yuri.workers.dev,https://api.themoviedb.org,https://api.tmdb.org,https://tmdb.movie-pilot.org
+      - UPSTREAM_SERVERS=https://api.tmdb.org
     restart: always
     network_mode: bridge
