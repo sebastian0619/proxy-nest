@@ -4,6 +4,8 @@ const morgan = require('morgan');
 const url = require('url'); // 用于处理 URL，提取路径和查询参数
 const fs = require('fs').promises;
 const path = require('path');
+const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
+const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -67,7 +69,7 @@ const CACHE_CLEANUP_INTERVAL = 300000;                                 // 清理
 const MEMORY_CACHE_SIZE = parseInt(process.env.MEMORY_CACHE_SIZE || '100');  // 内存中保留的热点缓存数量
 const MEMORY_CACHE_TTL = parseInt(process.env.MEMORY_CACHE_TTL || '300000'); // 内存缓存过期时间(5分钟)
 
-// 添加缓存目录相关常量
+// 添加缓存目录相关量
 const CACHE_DIR = process.env.CACHE_DIR || path.join(process.cwd(), 'cache');  // 默认在当前目录下的 cache 文件夹
 const CACHE_FILE_EXT = '.cache';
 const CACHE_INDEX_FILE = 'cache_index.json';
@@ -92,6 +94,10 @@ function isServerError(errorCode) {
   const uniqueRequests = new Set(recentErrors.map(log => log.requestUrl));
   return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能是服务器问题
 }
+
+// 添加线程池相关常量
+const NUM_WORKERS = Math.max(1, os.cpus().length - 1); // 保留一个核心给主线程
+const workers = new Map();
 
 function startServer() {
   app.use(morgan('combined'));
@@ -319,7 +325,7 @@ function startServer() {
   const weightCache = new Map();
 
   /**
-   * 选择上游服务器（使用缓存的权重数据）
+   * 选择上游服���器（使用缓存的权重数据）
    */
   function selectUpstreamServer() {
     const healthyServers = upstreamServers
@@ -465,24 +471,57 @@ function startServer() {
   // 添加延时函数
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-  // 修改主路由中的请求处理逻辑
+  // 统一的请求处理路由
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
     
     try {
+      // 检查缓存
       const cachedItem = await getCacheItem(cacheKey);
       if (cachedItem) {
         res.setHeader('Content-Type', cachedItem.contentType);
         return res.send(cachedItem.data);
       }
 
-      // 缓存未命中，处理请求
-      const response = await handleRequest(req);
-      
+      // 选择工作线程处理请求
+      const workerId = Math.floor(Math.random() * NUM_WORKERS);
+      const worker = workers.get(workerId);
+
+      if (!worker) {
+        throw new Error('没有可用的工作线程');
+      }
+
+      // 等待工作线程响应
+      const response = await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('工作线程响应超时'));
+        }, REQUEST_TIMEOUT);
+
+        const messageHandler = (message) => {
+          if (message.requestId === cacheKey) {
+            clearTimeout(timeoutId);
+            worker.removeListener('message', messageHandler);
+            if (message.error) {
+              reject(new Error(message.error));
+            } else {
+              resolve(message.response);
+            }
+          }
+        };
+
+        worker.on('message', messageHandler);
+
+        // 发送请求到工作线程
+        worker.postMessage({
+          type: 'request',
+          requestId: cacheKey,
+          url: req.originalUrl
+        });
+      });
+
       // 缓存响应
       if (response && response.data) {
         await setCacheItem(cacheKey, response.data, response.contentType);
-        console.log(LOG_PREFIX.CACHE.INFO, `已缓存响应: ${cacheKey}`);
       }
 
       res.setHeader('Content-Type', response.contentType);
@@ -735,7 +774,7 @@ function startServer() {
       }
     }
 
-    // 所有重试都失败了
+    // 所有��试都失败了
     throw new Error(
       `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
     );
@@ -749,7 +788,122 @@ function startServer() {
       message: err.message
     });
   });
+
+  // 添加工作线程池初始化
+  function initializeWorkerPool() {
+    console.log(LOG_PREFIX.INFO, `初始化 ${NUM_WORKERS} 个工作线程`);
+    
+    for (let i = 0; i < NUM_WORKERS; i++) {
+      initializeWorker(i);
+    }
+  }
+
+  // 初始化单个工作线程
+  function initializeWorker(workerId) {
+    const worker = new Worker(__filename, {
+      workerData: {
+        workerId,
+        upstreamServers: process.env.UPSTREAM_SERVERS,
+        UPSTREAM_TYPE,
+        TMDB_API_KEY,
+        TMDB_IMAGE_TEST_URL,
+        REQUEST_TIMEOUT,
+        MAX_RETRY_ATTEMPTS,
+        RETRY_DELAY,
+        // 添加其他必要的配置
+        BASE_WEIGHT_MULTIPLIER,
+        DYNAMIC_WEIGHT_MULTIPLIER,
+        ALPHA_INITIAL,
+        ALPHA_ADJUSTMENT_STEP
+      }
+    });
+
+    worker.on('message', (message) => {
+      if (message.type === 'weight_update') {
+        addWeightUpdate(message.server, message.responseTime);
+      }
+    });
+
+    worker.on('error', (error) => {
+      console.error(LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        console.error(LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
+        setTimeout(() => initializeWorker(workerId), 1000);
+      }
+    });
+
+    workers.set(workerId, worker);
+  }
+
+  // 初始化工作线程池
+  if (isMainThread) {
+    initializeWorkerPool();
+  }
 }
+
+// 工作线程代码
+if (!isMainThread) {
+  let localUpstreamServers = [];
+
+  function initializeWorker() {
+    try {
+      const { upstreamServers } = workerData;
+      if (!upstreamServers) {
+        throw new Error('未配置上游服务器');
+      }
+
+      localUpstreamServers = upstreamServers.split(',').map(url => ({
+        url: url.trim(),
+        healthy: true,
+        baseWeight: 1,
+        dynamicWeight: 1,
+        alpha: workerData.ALPHA_INITIAL,
+        responseTimes: [],
+        responseTime: Infinity,
+      }));
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  parentPort.on('message', async (message) => {
+    if (message.type === 'request') {
+      try {
+        const server = selectUpstreamServer(localUpstreamServers);
+        const result = await tryRequestWithRetries(server, message.url);
+
+        // 通知主线程更新权重
+        parentPort.postMessage({
+          type: 'weight_update',
+          server: server,
+          responseTime: result.responseTime
+        });
+
+        // 返回响应给主线程
+        parentPort.postMessage({
+          requestId: message.requestId,
+          response: {
+            data: result.buffer,
+            contentType: result.contentType
+          }
+        });
+      } catch (error) {
+        parentPort.postMessage({
+          requestId: message.requestId,
+          error: error.message
+        });
+      }
+    }
+  });
+
+  // 初始化工作线程
+  initializeWorker();
+}
+
 async function checkServerHealth(server) {
   let testUrl = '';
   
