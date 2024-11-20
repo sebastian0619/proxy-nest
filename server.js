@@ -110,6 +110,50 @@ if (!isMainThread) {
     console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   });
+
+  // 定义 handleRequest 函数
+  async function handleRequest(url) {
+    let lastError = null;
+    let serverSwitchCount = 0;
+
+    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
+      const server = selectUpstreamServer();
+      
+      try {
+        const result = await tryRequestWithRetries(server, url);
+        
+        // 成功后更新服务器权重
+        addWeightUpdate(server, result.responseTime);
+        
+        return result;
+        
+      } catch (error) {
+        lastError = error;
+        console.error(LOG_PREFIX.ERROR, 
+          `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+        );
+
+        // 处理服务器失败
+        if (error.isTimeout || error.code === 'ECONNREFUSED') {
+          server.healthy = false;
+        }
+
+        serverSwitchCount++;
+        
+        if (serverSwitchCount < MAX_SERVER_SWITCHES) {
+          console.log(LOG_PREFIX.WARN, 
+            `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
+          );
+          continue;
+        }
+      }
+    }
+
+    // 所有尝试都失败了
+    throw new Error(
+      `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
+    );
+  }
 }
 
 // 3. 修改主线程的 LOG_PREFIX 初始化
