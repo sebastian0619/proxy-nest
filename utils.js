@@ -230,7 +230,7 @@ function validateResponse(data, contentType, upstreamType) {
 async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
   let retryCount = 0;
   
-  while (retryCount < 3) {  // 使用固定的重试次数
+  while (retryCount < 3) {
     try {
       const requestUrl = `${server.url}${url}`;
       console.log(LOG_PREFIX.INFO, `请求: ${requestUrl}`);
@@ -238,15 +238,45 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
       const startTime = Date.now();
       const proxyRes = await axios.get(requestUrl, {
         timeout: config.REQUEST_TIMEOUT,
-        responseType: 'arraybuffer'  // 确保获取二进制数据
+        responseType: 'arraybuffer'  // 默认使用二进制数据
       });
       
       const responseTime = Date.now() - startTime;
+
+      // 根据不同的上游类型处理响应
+      let responseData;
+      let contentType;
+
+      switch (config.UPSTREAM_TYPE) {
+        case 'tmdb-api':
+          // API 响应需要解析为 JSON
+          responseData = JSON.parse(proxyRes.data.toString());
+          contentType = 'application/json';
+          break;
+
+        case 'tmdb-image':
+          // 图片数据直接返回 Buffer
+          responseData = proxyRes.data;
+          contentType = proxyRes.headers['content-type'];
+          break;
+
+        case 'custom':
+          // 自定义类型根据 Content-Type 判断
+          contentType = config.CUSTOM_CONTENT_TYPE || proxyRes.headers['content-type'];
+          if (contentType.includes('json')) {
+            responseData = JSON.parse(proxyRes.data.toString());
+          } else {
+            responseData = proxyRes.data;
+          }
+          break;
+
+        default:
+          throw new Error(`未知的上游类型: ${config.UPSTREAM_TYPE}`);
+      }
       
-      // 直接返回响应数据，不做额外处理
       return {
-        data: proxyRes.data,  // 已经是 Buffer 类型
-        contentType: proxyRes.headers['content-type'],
+        data: responseData,
+        contentType,
         responseTime
       };
       
@@ -260,7 +290,6 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
         throw error;
       }
       
-      // 重试前等待 1 秒
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
