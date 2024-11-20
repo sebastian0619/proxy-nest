@@ -594,35 +594,52 @@ function startServer() {
     }, BASE_WEIGHT_UPDATE_INTERVAL);
   }
 
-  // 修改 handleRequest 函数以并发请求所有健康的上游服务器
+  // 修改 handleRequest 函数
   async function handleRequest(req) {
-    const healthyServers = upstreamServers.filter(server => server.healthy);
-    if (healthyServers.length === 0) {
-      throw new Error('没有健康的上游服务器可用');
+    let lastError = null;
+    let serverSwitchCount = 0;
+
+    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
+        const server = selectUpstreamServer();
+        
+        try {
+            // 修改这里：传入 req.originalUrl 而不是整个 req 对象
+            const result = await tryRequestWithRetries(server, req.originalUrl);
+            
+            // 成功后更新服务器权重
+            addWeightUpdate(server, result.responseTime);
+            
+            return {
+                data: result.buffer,
+                contentType: result.contentType
+            };
+            
+        } catch (error) {
+            lastError = error;
+            console.error(LOG_PREFIX.ERROR, 
+                `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+            );
+
+            // 处理服务器失败
+            if (error.isTimeout || error.code === 'ECONNREFUSED') {
+                server.healthy = false;
+            }
+
+            serverSwitchCount++;
+            
+            if (serverSwitchCount < MAX_SERVER_SWITCHES) {
+                console.log(LOG_PREFIX.WARN, 
+                    `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
+                );
+                continue;
+            }
+        }
     }
 
-    const requests = healthyServers.map(server => 
-      axios.get(`${server.url}${req.originalUrl}`, {
-        timeout: REQUEST_TIMEOUT,
-        responseType: 'arraybuffer',
-      }).then(response => ({
-        server,
-        data: response.data,
-        contentType: response.headers['content-type'],
-        responseTime: Date.now()
-      }))
+    // 所有重试都失败了
+    throw new Error(
+        `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
     );
-
-    try {
-      const result = await Promise.any(requests);
-      console.log(LOG_PREFIX.SUCCESS, `最快响应来自: ${result.server.url}`);
-      return {
-        data: result.data,
-        contentType: result.contentType
-      };
-    } catch (error) {
-      throw new Error('所有请求都失败了');
-    }
   }
 
   // 启动健康检查
@@ -686,7 +703,7 @@ function startServer() {
       const server = selectUpstreamServer();
       
       try {
-        const result = await tryRequestWithRetries(server, req);
+        const result = await tryRequestWithRetries(server, req.originalUrl);
         
         // 成功后更新服务器权重
         addWeightUpdate(server, result.responseTime);
