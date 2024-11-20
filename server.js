@@ -1,25 +1,22 @@
 const express = require('express');
 const morgan = require('morgan');
 const { Worker, isMainThread } = require('worker_threads');
-const os = require('os');
 const path = require('path');
 
-// 从 utils 导入通用函数和常量
+// 从 utils 导入实际需要的函数
 const {
   initializeLogPrefix,
   initializeCache,
-  validateResponse,
   getCacheKey,
   processWeightUpdateQueue,
   startHealthCheck,
-  LRUCache
+  validateResponse
 } = require('./utils');
 
 // 配置常量
 const {
   PORT,
   NUM_WORKERS,
-  MEMORY_CACHE_SIZE,
   REQUEST_TIMEOUT,
   UPSTREAM_TYPE,
   TMDB_API_KEY,
@@ -123,7 +120,52 @@ function setupWorkerEventHandlers(worker, workerId) {
   });
 }
 
-// 设置路由
+// 添加缺失的 getCacheItem 函数
+async function getCacheItem(cacheKey, diskCache, lruCache) {
+  // 先检查内存缓存
+  let cachedItem = lruCache.get(cacheKey);
+  if (cachedItem) {
+    // 验证缓存内容
+    try {
+      const isValid = validateResponse(
+        cachedItem.data,
+        cachedItem.contentType,
+        UPSTREAM_TYPE
+      );
+      if (isValid) {
+        console.log(LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${cacheKey}`);
+        return cachedItem;
+      }
+    } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
+    }
+  }
+
+  // 检查磁盘缓存
+  try {
+    cachedItem = await diskCache.get(cacheKey);
+    if (cachedItem) {
+      // 验证缓存内容
+      const isValid = validateResponse(
+        cachedItem.data,
+        cachedItem.contentType,
+        UPSTREAM_TYPE
+      );
+      if (isValid) {
+        console.log(LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${cacheKey}`);
+        lruCache.set(cacheKey, cachedItem);
+        return cachedItem;
+      }
+    }
+  } catch (error) {
+    console.error(LOG_PREFIX.ERROR, `读取缓存失败: ${error.message}`);
+  }
+
+  console.log(LOG_PREFIX.CACHE.MISS, `缓存未命中: ${cacheKey}`);
+  return null;
+}
+
+// 修改 setupRoutes 函数，添加缓存写入
 function setupRoutes(app, diskCache, lruCache) {
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
@@ -138,6 +180,20 @@ function setupRoutes(app, diskCache, lruCache) {
 
       // 选择工作线程处理请求
       const response = await handleRequestWithWorker(req, cacheKey);
+
+      // 写入缓存
+      const cacheItem = {
+        data: response.data,
+        contentType: response.contentType,
+        timestamp: Date.now()
+      };
+      
+      try {
+        await diskCache.set(cacheKey, cacheItem);
+        lruCache.set(cacheKey, cacheItem);
+      } catch (error) {
+        console.error(LOG_PREFIX.ERROR, `写入缓存失败: ${error.message}`);
+      }
 
       // 设置响应
       res.setHeader('Content-Type', response.contentType);

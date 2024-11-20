@@ -150,6 +150,36 @@ function validateResponse(response, contentType, upstreamType) {
     return isValidResponse;
 }
 
+// 添加重试请求函数
+async function tryRequestWithRetries(server, url, workerData) {
+  const MAX_RETRY_ATTEMPTS = 3;
+  const RETRY_DELAY = 1000;
+  
+  for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const start = Date.now();
+      const response = await axios.get(`${server.url}${url}`, {
+        responseType: 'arraybuffer',
+        timeout: workerData.REQUEST_TIMEOUT,
+      });
+      
+      return {
+        data: response.data,
+        contentType: response.headers['content-type'],
+        responseTime: Date.now() - start
+      };
+      
+    } catch (error) {
+      if (attempt === MAX_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      
+      console.error(`重试请求 ${attempt}/${MAX_RETRY_ATTEMPTS}`);
+      await delay(RETRY_DELAY);
+    }
+  }
+}
+
 module.exports = {
   initializeLogPrefix,
   calculateBaseWeight,
@@ -158,5 +188,6 @@ module.exports = {
   isServerError,
   delay,
   checkServerHealth,
-  validateResponse
+  validateResponse,
+  tryRequestWithRetries
 };
