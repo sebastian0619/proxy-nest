@@ -228,24 +228,41 @@ function validateResponse(data, contentType, upstreamType) {
 
 // 添加重试请求函数
 async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
-  const start = Date.now();
+  let retryCount = 0;
   
-  try {
-    const response = await axios.get(`${server.url}${url}`, {
-      timeout: config.REQUEST_TIMEOUT,
-      responseType: 'json'  // 确保返回 JSON 数据
-    });
-    
-    return {
-      data: response.data,
-      contentType: response.headers['content-type'],
-      responseTime: Date.now() - start,
-      server
-    };
-    
-  } catch (error) {
-    console.error(LOG_PREFIX.ERROR, `请求失败: ${error.message}`);
-    throw error;
+  while (retryCount < 3) {  // 使用固定的重试次数
+    try {
+      const requestUrl = `${server.url}${url}`;
+      console.log(LOG_PREFIX.INFO, `请求: ${requestUrl}`);
+      
+      const startTime = Date.now();
+      const proxyRes = await axios.get(requestUrl, {
+        timeout: config.REQUEST_TIMEOUT,
+        responseType: 'arraybuffer'  // 确保获取二进制数据
+      });
+      
+      const responseTime = Date.now() - startTime;
+      
+      // 直接返回响应数据，不做额外处理
+      return {
+        data: proxyRes.data,  // 已经是 Buffer 类型
+        contentType: proxyRes.headers['content-type'],
+        responseTime
+      };
+      
+    } catch (error) {
+      retryCount++;
+      console.error(LOG_PREFIX.ERROR, 
+        `请求失败 (${retryCount}/3) - ${server.url}: ${error.message}`
+      );
+      
+      if (retryCount === 3) {
+        throw error;
+      }
+      
+      // 重试前等待 1 秒
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
 }
 
