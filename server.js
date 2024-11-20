@@ -29,12 +29,13 @@ const BASE_WEIGHT_UPDATE_INTERVAL = parseInt(process.env.BASE_WEIGHT_UPDATE_INTE
 let chalk;
 let LOG_PREFIX; // 声明 LOG_PREFIX 变量
 
-import('chalk').then((module) => {
-  chalk = module.default;
+// 1. 在文件开头添加一个函数来初始化 LOG_PREFIX
+async function initializeLogPrefix() {
+  const chalkModule = await import('chalk');
+  const chalk = chalkModule.default;
   chalk.level = 3; // 支持 16M 色彩输出
   
-  // 将 LOG_PREFIX 的定义移到这里
-  LOG_PREFIX = {
+  return {
     INFO: chalk.blue('[ 信息 ]'),
     ERROR: chalk.red('[ 错误 ]'),
     WARN: chalk.yellow('[ 警告 ]'),
@@ -42,14 +43,85 @@ import('chalk').then((module) => {
     CACHE: {
       HIT: chalk.green('[ 缓存命中 ]'),
       MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]'),
-      INFO: chalk.cyan('[ 缓存信息 ]')  // 添加缓存信息前缀
+      INFO: chalk.cyan('[ 缓存信息 ]')
     },
     PROXY: chalk.cyan('[ 代理 ]'),
     WEIGHT: chalk.magenta('[ 权重 ]')
   };
-  
-  startServer();
-});
+}
+
+// 2. 修改工作线程代码
+if (!isMainThread) {
+  let localUpstreamServers = [];
+  let LOG_PREFIX;
+
+  // 修改工作线程初始化函数
+  async function initializeWorker() {
+    try {
+      // 首先初始化 LOG_PREFIX
+      LOG_PREFIX = await initializeLogPrefix();
+      
+      const { upstreamServers } = workerData;
+      if (!upstreamServers) {
+        throw new Error('未配置上游服务器');
+      }
+
+      localUpstreamServers = upstreamServers.split(',').map(url => ({
+        url: url.trim(),
+        healthy: true,
+        baseWeight: 1,
+        dynamicWeight: 1,
+        alpha: ALPHA_INITIAL,
+        responseTimes: [],
+        responseTime: Infinity,
+      }));
+
+      console.log(LOG_PREFIX.INFO, `工作线程 ${workerData.workerId} 初始化完成`);
+    } catch (error) {
+      console.error(LOG_PREFIX?.ERROR || '[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  // 修改消息处理，使用 async/await
+  parentPort.on('message', async (message) => {
+    if (message.type === 'request') {
+      try {
+        const result = await handleRequest(message.url);
+        parentPort.postMessage({
+          requestId: message.requestId,
+          response: {
+            data: result.buffer,
+            contentType: result.contentType
+          }
+        });
+      } catch (error) {
+        console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
+        parentPort.postMessage({
+          requestId: message.requestId,
+          error: error.message
+        });
+      }
+    }
+  });
+
+  // 初始化工作线程
+  initializeWorker().catch(error => {
+    console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+// 3. 修改主线程的 LOG_PREFIX 初始化
+if (isMainThread) {
+  initializeLogPrefix().then(logPrefix => {
+    LOG_PREFIX = logPrefix;
+    startServer();
+  }).catch(error => {
+    console.error('[ 错误 ]', `LOG_PREFIX 初始化失败: ${error.message}`);
+    process.exit(1);
+  });
+}
 
 // 1. 将 weightUpdateQueue 移到全局作用域
 const weightUpdateQueue = [];
@@ -854,135 +926,6 @@ function startServer() {
   if (isMainThread) {
     initializeWorkerPool();
   }
-}
-
-// 工作线程代码
-if (!isMainThread) {
-  let localUpstreamServers = [];
-
-  // 添加服务器选择函数
-  function selectUpstreamServer() {
-    // 过滤出健康的服务器
-    const healthyServers = localUpstreamServers.filter(server => server.healthy);
-    
-    if (healthyServers.length === 0) {
-      // 如果没有健康的服务器，重置所有服务器状态并重试
-      localUpstreamServers.forEach(server => server.healthy = true);
-      return selectUpstreamServer();
-    }
-
-    // 计算总权重
-    const totalWeight = healthyServers.reduce((sum, server) => 
-      sum + server.baseWeight * server.dynamicWeight, 0);
-
-    // 随机选择一个服务器，权重越高被选中的概率越大
-    let random = Math.random() * totalWeight;
-    
-    for (const server of healthyServers) {
-      random -= server.baseWeight * server.dynamicWeight;
-      if (random <= 0) {
-        return server;
-      }
-    }
-
-    // 保底返回第一个健康的服务器
-    return healthyServers[0];
-  }
-
-  // 修改工作线程初始化
-  function initializeWorker() {
-    try {
-      const { upstreamServers } = workerData;
-      if (!upstreamServers) {
-        throw new Error('未配置上游服务器');
-      }
-
-      localUpstreamServers = upstreamServers.split(',').map(url => ({
-        url: url.trim(),
-        healthy: true,
-        baseWeight: 1,
-        dynamicWeight: 1,
-        alpha: ALPHA_INITIAL,
-        responseTimes: [],
-        responseTime: Infinity,
-      }));
-
-      console.log(LOG_PREFIX.INFO, `工作线程 ${workerData.workerId} 初始化完成`);
-    } catch (error) {
-      console.error(LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
-      process.exit(1);
-    }
-  }
-
-  // 添加请求处理函数
-  async function handleRequest(url) {
-    let lastError = null;
-    let serverSwitchCount = 0;
-
-    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
-      const server = selectUpstreamServer();
-      
-      try {
-        const result = await tryRequestWithRetries(server, url);
-        
-        // 成功后更新服务器权重
-        addWeightUpdate(server, result.responseTime);
-        
-        return result;
-        
-      } catch (error) {
-        lastError = error;
-        console.error(LOG_PREFIX.ERROR, 
-          `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
-        );
-
-        // 处理服务器失败
-        if (error.isTimeout || error.code === 'ECONNREFUSED') {
-          server.healthy = false;
-        }
-
-        serverSwitchCount++;
-        
-        if (serverSwitchCount < MAX_SERVER_SWITCHES) {
-          console.log(LOG_PREFIX.WARN, 
-            `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
-          );
-          continue;
-        }
-      }
-    }
-
-    // 所有尝试都失败了
-    throw new Error(
-      `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
-    );
-  }
-
-  // 修改消息处理
-  parentPort.on('message', async (message) => {
-    if (message.type === 'request') {
-      try {
-        const result = await handleRequest(message.url);
-
-        // 返回响应给主线程
-        parentPort.postMessage({
-          requestId: message.requestId,
-          response: {
-            data: result.buffer,
-            contentType: result.contentType
-          }
-        });
-      } catch (error) {
-        parentPort.postMessage({
-          requestId: message.requestId,
-          error: error.message
-        });
-      }
-    }
-  });
-
-  // 初始化工作线程
-  initializeWorker();
 }
 
 async function checkServerHealth(server) {
