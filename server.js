@@ -112,49 +112,52 @@ if (!isMainThread) {
   });
 
   // 定义 handleRequest 函数
-  async function handleRequest(url) {
+async function handleRequest(req) {
     let lastError = null;
     let serverSwitchCount = 0;
 
     while (serverSwitchCount < MAX_SERVER_SWITCHES) {
-      const server = selectUpstreamServer();
-      
-      try {
-        const result = await tryRequestWithRetries(server, url);
+        const server = selectUpstreamServer();
         
-        // 成功后更新服务器权重
-        addWeightUpdate(server, result.responseTime);
-        
-        return result;
-        
-      } catch (error) {
-        lastError = error;
-        console.error(LOG_PREFIX.ERROR, 
-          `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
-        );
+        try {
+            // 修改这里：传入 req.originalUrl 而不是整个 req 对象
+            const result = await tryRequestWithRetries(server, req.originalUrl);
+            
+            // 成功后更新服务器权重
+            addWeightUpdate(server, result.responseTime);
+            
+            return {
+                data: result.buffer,
+                contentType: result.contentType
+            };
+            
+        } catch (error) {
+            lastError = error;
+            console.error(LOG_PREFIX.ERROR, 
+                `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+            );
 
-        // 处理服务器失败
-        if (error.isTimeout || error.code === 'ECONNREFUSED') {
-          server.healthy = false;
-        }
+            // 处理服务器失败
+            if (error.isTimeout || error.code === 'ECONNREFUSED') {
+                server.healthy = false;
+            }
 
-        serverSwitchCount++;
-        
-        if (serverSwitchCount < MAX_SERVER_SWITCHES) {
-          console.log(LOG_PREFIX.WARN, 
-            `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
-          );
-          continue;
+            serverSwitchCount++;
+            
+            if (serverSwitchCount < MAX_SERVER_SWITCHES) {
+                console.log(LOG_PREFIX.WARN, 
+                    `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
+                );
+                continue;
+            }
         }
-      }
     }
 
-    // 所有尝试都失败了
+    // 所有重试都失败了
     throw new Error(
-      `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
+        `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
     );
   }
-}
 
 // 3. 修改主线程的 LOG_PREFIX 初始化
 if (isMainThread) {
@@ -771,52 +774,7 @@ function startServer() {
   }
 
   // 修改 handleRequest 函数
-  async function handleRequest(req) {
-    let lastError = null;
-    let serverSwitchCount = 0;
-
-    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
-        const server = selectUpstreamServer();
-        
-        try {
-            // 修改这里：传入 req.originalUrl 而不是整个 req 对象
-            const result = await tryRequestWithRetries(server, req.originalUrl);
-            
-            // 成功后更新服务器权重
-            addWeightUpdate(server, result.responseTime);
-            
-            return {
-                data: result.buffer,
-                contentType: result.contentType
-            };
-            
-        } catch (error) {
-            lastError = error;
-            console.error(LOG_PREFIX.ERROR, 
-                `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
-            );
-
-            // 处理服务器失败
-            if (error.isTimeout || error.code === 'ECONNREFUSED') {
-                server.healthy = false;
-            }
-
-            serverSwitchCount++;
-            
-            if (serverSwitchCount < MAX_SERVER_SWITCHES) {
-                console.log(LOG_PREFIX.WARN, 
-                    `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
-                );
-                continue;
-            }
-        }
-    }
-
-    // 所有重试都失败了
-    throw new Error(
-        `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
-    );
-  }
+  
 
   // 启动健康检查
   startHealthCheck();
