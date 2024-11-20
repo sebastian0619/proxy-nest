@@ -200,41 +200,75 @@ function setupRoutes(app, diskCache, lruCache) {
     const cacheKey = getCacheKey(req);
     
     try {
+      // 处理缓存响应
       const cachedItem = await getCacheItem(cacheKey, diskCache, lruCache);
       if (cachedItem) {
-        // 验证缓存的 Content-Type
-        if (!cachedItem.contentType) {
-          throw new Error('Invalid cache content type');
-        }
         res.setHeader('Content-Type', cachedItem.contentType);
-        return res.end(cachedItem.data);
+        if (Buffer.isBuffer(cachedItem.data)) {
+          return res.end(cachedItem.data);
+        }
+        return res.json(cachedItem.data);
       }
 
+      // 处理新请求
       const response = await handleRequestWithWorker(req, cacheKey);
       
       if (!response.contentType) {
-        throw new Error('Invalid response content type');
+        throw new Error('无效的Content-Type');
       }
 
-      const responseData = Buffer.isBuffer(response.data) ? 
-        response.data : 
-        Buffer.from(JSON.stringify(response.data));
-      
+      // 根据内容类型处理响应数据
+      const mimeCategory = response.contentType.split(';')[0].trim().toLowerCase();
+      let responseData;
+
+      if (mimeCategory.includes('application/json')) {
+        // JSON 数据处理
+        responseData = typeof response.data === 'string' ? 
+          JSON.parse(response.data) : response.data;
+      } else if (mimeCategory.startsWith('image/')) {
+        // 图片数据处理
+        responseData = Buffer.isBuffer(response.data) ? 
+          response.data : Buffer.from(response.data);
+      } else if (mimeCategory.startsWith('text/')) {
+        // 文本数据处理
+        responseData = typeof response.data === 'string' ? 
+          response.data : response.data.toString('utf-8');
+      } else {
+        // 其他类型数据处理
+        responseData = Buffer.isBuffer(response.data) ? 
+          response.data : Buffer.from(response.data);
+      }
+
+      // 验证响应
+      const isValid = validateResponse(responseData, response.contentType, UPSTREAM_TYPE);
+      if (!isValid) {
+        throw new Error('响应验证失败');
+      }
+
+      // 保存缓存
       const cacheItem = {
         data: responseData,
         contentType: response.contentType,
         timestamp: Date.now()
       };
       
-      const isValid = validateResponse(responseData, response.contentType, UPSTREAM_TYPE);
-      if (isValid) {
+      try {
         await diskCache.set(cacheKey, cacheItem);
         lruCache.set(cacheKey, cacheItem);
         console.log(LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
+      } catch (error) {
+        console.error(LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
       }
 
+      // 发送响应
       res.setHeader('Content-Type', response.contentType);
-      res.end(responseData);
+      if (Buffer.isBuffer(responseData)) {
+        res.end(responseData);
+      } else if (typeof responseData === 'string') {
+        res.send(responseData);
+      } else {
+        res.json(responseData);
+      }
       
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);

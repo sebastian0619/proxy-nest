@@ -179,12 +179,18 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
  */
 function validateResponse(data, contentType, upstreamType) {
   if (!data || !contentType) {
+    console.error(LOG_PREFIX.ERROR, '无效的响应: 缺少数据或Content-Type');
     return false;
   }
 
+  // 通用的 MIME 类型检查
+  const mimeCategory = contentType.split(';')[0].trim().toLowerCase();
+
   switch (upstreamType) {
     case 'tmdb-api':
-      if (!contentType.includes('application/json')) {
+      // API 响应验证
+      if (!mimeCategory.includes('application/json')) {
+        console.error(LOG_PREFIX.ERROR, `API响应类型错误: ${contentType}`);
         return false;
       }
       try {
@@ -192,20 +198,44 @@ function validateResponse(data, contentType, upstreamType) {
           return true;
         }
         if (Buffer.isBuffer(data)) {
-          data = data.toString('utf-8');
+          JSON.parse(data.toString('utf-8'));
+        } else {
+          JSON.parse(data);
         }
-        JSON.parse(data);
         return true;
       } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `JSON验证失败: ${error.message}`);
+        console.error(LOG_PREFIX.ERROR, `JSON解析失败: ${error.message}`);
         return false;
       }
 
     case 'tmdb-image':
-      if (!contentType.includes('image/')) {
+      // 图片响应验证
+      if (!mimeCategory.startsWith('image/')) {
+        console.error(LOG_PREFIX.ERROR, `图片响应类型错误: ${contentType}`);
         return false;
       }
-      return Buffer.isBuffer(data) && data.length > 0;
+      if (!Buffer.isBuffer(data)) {
+        console.error(LOG_PREFIX.ERROR, '图片数据不是Buffer类型');
+        return false;
+      }
+      return data.length > 0;
+
+    case 'custom':
+      // 自定义类型验证
+      const validTypes = [
+        'application/json',
+        'text/plain',
+        'text/html',
+        'image/',
+        'application/xml',
+        'text/xml'
+      ];
+      
+      if (!validTypes.some(type => mimeCategory.includes(type))) {
+        console.warn(LOG_PREFIX.WARN, `未知的Content-Type: ${contentType}`);
+      }
+      
+      return data.length > 0;
 
     default:
       console.warn(LOG_PREFIX.WARN, `未知的上游类型: ${upstreamType}`);
