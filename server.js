@@ -725,22 +725,13 @@ function startServer() {
       } catch (error) {
         await saveIndex();
       }
-
-      // 动 HTTP 服务器（只在这里启动一次）
-      app.listen(PORT, () => {
-        console.log(LOG_PREFIX.SUCCESS, 
-          `服务器已启动 - 端口: ${PORT}, 上游类型: ${UPSTREAM_TYPE}, ` +
-          `自定义内容类型: ${CUSTOM_CONTENT_TYPE || '无'}`
-        );
-        
         // 启动缓存统计
         setInterval(() => {
           console.log(LOG_PREFIX.CACHE.INFO, 
             `缓存统计 - 内存: ${lruCache.cache.size}/${MEMORY_CACHE_SIZE}, ` +
             `磁盘: ${diskCache.size}/${CACHE_MAX_SIZE}`
           );
-        }, 60000);
-      });
+      }, 60000);
 
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `初始化失败: ${error.message}`);
