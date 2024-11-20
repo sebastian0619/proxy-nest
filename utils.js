@@ -172,14 +172,14 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
 
 /**
  * 验证响应内容
- * @param {Buffer|string} response - 响应内容
+ * @param {Buffer|string|object} response - 响应内容
  * @param {string} contentType - 内容类型
  * @param {string} upstreamType - 上游类型
  * @returns {boolean} - 验证结果
  */
 function validateResponse(data, contentType, upstreamType) {
   if (!data || !contentType) {
-    console.error(LOG_PREFIX.ERROR, '无效的响应: 缺少数据或Content-Type');
+    console.error(global.LOG_PREFIX.ERROR, '无效的响应: 缺少数据或Content-Type');
     return false;
   }
 
@@ -190,56 +190,39 @@ function validateResponse(data, contentType, upstreamType) {
     case 'tmdb-api':
       // API 响应验证
       if (!mimeCategory.includes('application/json')) {
-        console.error(LOG_PREFIX.ERROR, `API响应类型错误: ${contentType}`);
+        console.error(global.LOG_PREFIX.ERROR, `API响应类型错误: ${contentType}`);
         return false;
       }
       try {
         if (typeof data === 'object' && data !== null) {
           return true;
         }
-        if (Buffer.isBuffer(data)) {
-          JSON.parse(data.toString('utf-8'));
-        } else {
-          JSON.parse(data);
+        if (Buffer.isBuffer(data) || typeof data === 'string') {
+          JSON.parse(typeof data === 'string' ? data : data.toString('utf-8'));
+          return true;
         }
-        return true;
+        return false;
       } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `JSON解析失败: ${error.message}`);
+        console.error(global.LOG_PREFIX.ERROR, `JSON解析失败: ${error.message}`);
         return false;
       }
 
     case 'tmdb-image':
-      // 图片响应验证
+      // 图片响应验证 - 只验证基本类型和非空
       if (!mimeCategory.startsWith('image/')) {
-        console.error(LOG_PREFIX.ERROR, `图片响应类型错误: ${contentType}`);
+        console.error(global.LOG_PREFIX.ERROR, `图片响应类型错误: ${contentType}`);
         return false;
       }
-      if (!Buffer.isBuffer(data)) {
-        console.error(LOG_PREFIX.ERROR, '图片数据不是Buffer类型');
-        return false;
-      }
-      return data.length > 0;
-
-    case 'custom':
-      // 自定义类型验证
-      const validTypes = [
-        'application/json',
-        'text/plain',
-        'text/html',
-        'image/',
-        'application/xml',
-        'text/xml'
-      ];
-      
-      if (!validTypes.some(type => mimeCategory.includes(type))) {
-        console.warn(LOG_PREFIX.WARN, `未知的Content-Type: ${contentType}`);
-      }
-      
-      return data.length > 0;
+      // 接受 Buffer 或其他非空数据
+      return data && (Buffer.isBuffer(data) || data.length > 0);
 
     default:
-      console.warn(LOG_PREFIX.WARN, `未知的上游类型: ${upstreamType}`);
-      return data.length > 0;
+      // 默认验证 - 确保数据非空
+      return data && (
+        Buffer.isBuffer(data) || 
+        typeof data === 'string' || 
+        typeof data === 'object'
+      );
   }
 }
 
