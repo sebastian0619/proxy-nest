@@ -72,21 +72,26 @@ function selectUpstreamServer() {
 }
 
 parentPort.on('message', async (message) => {
-  try {
-    const result = await handleRequest(message.url);
-    parentPort.postMessage({
-      type: 'response',
-      requestId: message.requestId,
-      data: result.data,
-      contentType: result.contentType,
-      responseTime: result.responseTime
-    });
-  } catch (error) {
-    parentPort.postMessage({
-      type: 'error',
-      requestId: message.requestId,
-      error: error.message
-    });
+  if (message.type === 'request') {
+    try {
+      const result = await handleRequest(message.url);
+      
+      // 确保返回正确的消息格式
+      parentPort.postMessage({
+        requestId: message.requestId,
+        response: {
+          data: result.data,
+          contentType: result.contentType,
+          responseTime: result.responseTime
+        }
+      });
+      
+    } catch (error) {
+      parentPort.postMessage({
+        requestId: message.requestId,
+        error: error.message
+      });
+    }
   }
 });
 
