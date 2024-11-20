@@ -72,40 +72,21 @@ function selectUpstreamServer() {
 }
 
 parentPort.on('message', async (message) => {
-  if (message.type === 'request') {
-    try {
-      const result = await handleRequest(message.url);
-      
-      // 如果是JSON响应，确保数据已经是对象
-      if (result.contentType.includes('application/json')) {
-        const responseData = Buffer.isBuffer(result.data) ? 
-          result.data.toString('utf-8') : 
-          result.data;
-          
-        parentPort.postMessage({
-          requestId: message.requestId,
-          response: {
-            data: typeof responseData === 'string' ? JSON.parse(responseData) : responseData,
-            contentType: result.contentType
-          }
-        });
-      } else {
-        // 非JSON响应直接传递
-        parentPort.postMessage({
-          requestId: message.requestId,
-          response: {
-            data: result.data,
-            contentType: result.contentType
-          }
-        });
-      }
-    } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
-      parentPort.postMessage({
-        requestId: message.requestId,
-        error: error.message
-      });
-    }
+  try {
+    const result = await handleRequest(message.url);
+    parentPort.postMessage({
+      type: 'response',
+      requestId: message.requestId,
+      data: result.data,
+      contentType: result.contentType,
+      responseTime: result.responseTime
+    });
+  } catch (error) {
+    parentPort.postMessage({
+      type: 'error',
+      requestId: message.requestId,
+      error: error.message
+    });
   }
 });
 
@@ -141,6 +122,16 @@ async function handleRequest(url) {
         throw error;
       }
 
+      // 确保图片数据以 Buffer 形式返回
+      if (result.contentType.startsWith('image/')) {
+        return {
+          data: Buffer.from(result.data),  // 确保是 Buffer
+          contentType: result.contentType,
+          responseTime: result.responseTime
+        };
+      }
+      
+      // 其他类型数据保持原样
       return result;
       
     } catch (error) {
