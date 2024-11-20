@@ -92,7 +92,7 @@ function logError(requestUrl, errorCode) {
 function isServerError(errorCode) {
   const recentErrors = errorLogQueue.filter(log => log.errorCode === errorCode);
   const uniqueRequests = new Set(recentErrors.map(log => log.requestUrl));
-  return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能��服务器问题
+  return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能服务器问题
 }
 
 // 添加线程池相关常量
@@ -319,7 +319,7 @@ function startServer() {
   /**
    * 使用 EWMA 计算动态权重
    * @param {Object} server 服务器对象
-   * @param {number} newResponseTime 新的响应���间
+   * @param {number} newResponseTime 新的响应时间
    */
 
 
@@ -710,7 +710,7 @@ function startServer() {
     try {
       // 初始化缓存目录
       await fs.mkdir(CACHE_DIR, { recursive: true });
-      console.log(LOG_PREFIX.INFO, `缓存目��初始化成功: ${CACHE_DIR}`);
+      console.log(LOG_PREFIX.INFO, `缓存目录初始化成功: ${CACHE_DIR}`);
       
       // 加载缓存索引
       try {
@@ -860,6 +860,36 @@ function startServer() {
 if (!isMainThread) {
   let localUpstreamServers = [];
 
+  // 添加服务器选择函数
+  function selectUpstreamServer() {
+    // 过滤出健康的服务器
+    const healthyServers = localUpstreamServers.filter(server => server.healthy);
+    
+    if (healthyServers.length === 0) {
+      // 如果没有健康的服务器，重置所有服务器状态并重试
+      localUpstreamServers.forEach(server => server.healthy = true);
+      return selectUpstreamServer();
+    }
+
+    // 计算总权重
+    const totalWeight = healthyServers.reduce((sum, server) => 
+      sum + server.baseWeight * server.dynamicWeight, 0);
+
+    // 随机选择一个服务器，权重越高被选中的概率越大
+    let random = Math.random() * totalWeight;
+    
+    for (const server of healthyServers) {
+      random -= server.baseWeight * server.dynamicWeight;
+      if (random <= 0) {
+        return server;
+      }
+    }
+
+    // 保底返回第一个健康的服务器
+    return healthyServers[0];
+  }
+
+  // 修改工作线程初始化
   function initializeWorker() {
     try {
       const { upstreamServers } = workerData;
@@ -872,28 +902,67 @@ if (!isMainThread) {
         healthy: true,
         baseWeight: 1,
         dynamicWeight: 1,
-        alpha: workerData.ALPHA_INITIAL,
+        alpha: ALPHA_INITIAL,
         responseTimes: [],
         responseTime: Infinity,
       }));
+
+      console.log(LOG_PREFIX.INFO, `工作线程 ${workerData.workerId} 初始化完成`);
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
       process.exit(1);
     }
   }
 
+  // 添加请求处理函数
+  async function handleRequest(url) {
+    let lastError = null;
+    let serverSwitchCount = 0;
+
+    while (serverSwitchCount < MAX_SERVER_SWITCHES) {
+      const server = selectUpstreamServer();
+      
+      try {
+        const result = await tryRequestWithRetries(server, url);
+        
+        // 成功后更新服务器权重
+        addWeightUpdate(server, result.responseTime);
+        
+        return result;
+        
+      } catch (error) {
+        lastError = error;
+        console.error(LOG_PREFIX.ERROR, 
+          `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
+        );
+
+        // 处理服务器失败
+        if (error.isTimeout || error.code === 'ECONNREFUSED') {
+          server.healthy = false;
+        }
+
+        serverSwitchCount++;
+        
+        if (serverSwitchCount < MAX_SERVER_SWITCHES) {
+          console.log(LOG_PREFIX.WARN, 
+            `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
+          );
+          continue;
+        }
+      }
+    }
+
+    // 所有尝试都失败了
+    throw new Error(
+      `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
+    );
+  }
+
+  // 修改消息处理
   parentPort.on('message', async (message) => {
     if (message.type === 'request') {
       try {
-        const server = selectUpstreamServer(localUpstreamServers);
-        const result = await tryRequestWithRetries(server, message.url);
-
-        // 通知主线程更新权重
-        parentPort.postMessage({
-          type: 'weight_update',
-          server: server,
-          responseTime: result.responseTime
-        });
+        const result = await handleRequest(message.url);
 
         // 返回响应给主线程
         parentPort.postMessage({
