@@ -92,15 +92,20 @@ function logError(requestUrl, errorCode) {
 function isServerError(errorCode) {
   const recentErrors = errorLogQueue.filter(log => log.errorCode === errorCode);
   const uniqueRequests = new Set(recentErrors.map(log => log.requestUrl));
-  return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能是服务器问题
+  return uniqueRequests.size > 1; // 如果错误分布在多个请求上，可能��服务器问题
 }
 
 // 添加线程池相关常量
 const NUM_WORKERS = Math.max(1, os.cpus().length - 1); // 保留一个核心给主线程
 const workers = new Map();
+const shouldStartServer = isMainThread || process.env.START_SERVER === 'true';
 
+// 修改 startServer 函数的开头部分
 function startServer() {
-  app.use(morgan('combined'));
+  // 只在主线程中初始化 Express 服务器
+  if (shouldStartServer) {
+    app.use(morgan('combined'));
+  }
 
   // 1. 先定义 LRU 缓存类
   class LRUCache {
@@ -314,7 +319,7 @@ function startServer() {
   /**
    * 使用 EWMA 计算动态权重
    * @param {Object} server 服务器对象
-   * @param {number} newResponseTime 新的响应时间
+   * @param {number} newResponseTime 新的响应���间
    */
 
 
@@ -325,7 +330,7 @@ function startServer() {
   const weightCache = new Map();
 
   /**
-   * 选择上游服���器（使用缓存的权重数据）
+   * 选择上游服器（使用缓存的权重数据）
    */
   function selectUpstreamServer() {
     const healthyServers = upstreamServers
@@ -472,64 +477,80 @@ function startServer() {
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   // 统一的请求处理路由
-  app.use('/', async (req, res, next) => {
-    const cacheKey = getCacheKey(req);
-    
-    try {
-      // 检查缓存
-      const cachedItem = await getCacheItem(cacheKey);
-      if (cachedItem) {
-        res.setHeader('Content-Type', cachedItem.contentType);
-        return res.send(cachedItem.data);
-      }
+  if (shouldStartServer) {
+    app.use('/', async (req, res, next) => {
+      const cacheKey = getCacheKey(req);
+      
+      try {
+        // 检查缓存
+        const cachedItem = await getCacheItem(cacheKey);
+        if (cachedItem) {
+          res.setHeader('Content-Type', cachedItem.contentType);
+          return res.send(cachedItem.data);
+        }
 
-      // 选择工作线程处理请求
-      const workerId = Math.floor(Math.random() * NUM_WORKERS);
-      const worker = workers.get(workerId);
+        // 选择工作线程处理请求
+        const workerId = Math.floor(Math.random() * NUM_WORKERS);
+        const worker = workers.get(workerId);
 
-      if (!worker) {
-        throw new Error('没有可用的工作线程');
-      }
+        if (!worker) {
+          throw new Error('没有可用的工作线程');
+        }
 
-      // 等待工作线程响应
-      const response = await new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-          reject(new Error('工作线程响应超时'));
-        }, REQUEST_TIMEOUT);
+        // 等待工作线程响应
+        const response = await new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            reject(new Error('工作线程响应超时'));
+          }, REQUEST_TIMEOUT);
 
-        const messageHandler = (message) => {
-          if (message.requestId === cacheKey) {
-            clearTimeout(timeoutId);
-            worker.removeListener('message', messageHandler);
-            if (message.error) {
-              reject(new Error(message.error));
-            } else {
-              resolve(message.response);
+          const messageHandler = (message) => {
+            if (message.requestId === cacheKey) {
+              clearTimeout(timeoutId);
+              worker.removeListener('message', messageHandler);
+              if (message.error) {
+                reject(new Error(message.error));
+              } else {
+                resolve(message.response);
+              }
             }
-          }
-        };
+          };
 
-        worker.on('message', messageHandler);
+          worker.on('message', messageHandler);
 
-        // 发送请求到工作线程
-        worker.postMessage({
-          type: 'request',
-          requestId: cacheKey,
-          url: req.originalUrl
+          // 发送请求到工作线程
+          worker.postMessage({
+            type: 'request',
+            requestId: cacheKey,
+            url: req.originalUrl
+          });
         });
-      });
 
-      // 缓存响应
-      if (response && response.data) {
-        await setCacheItem(cacheKey, response.data, response.contentType);
+        // 缓存响应
+        if (response && response.data) {
+          await setCacheItem(cacheKey, response.data, response.contentType);
+        }
+
+        res.setHeader('Content-Type', response.contentType);
+        res.send(response.data);
+      } catch (error) {
+        next(error);
       }
+    });
 
-      res.setHeader('Content-Type', response.contentType);
-      res.send(response.data);
-    } catch (error) {
-      next(error);
-    }
-  });
+    // 添加错误处理中间件
+    app.use((err, req, res, next) => {
+      console.error(LOG_PREFIX.ERROR, `请求处理错误: ${err.message}`);
+      res.status(502).json({
+        error: '代理请求失败',
+        message: err.message
+      });
+    });
+
+    // 只在主线程中启动服务器监听
+    app.listen(PORT, () => {
+      console.log(LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
+    });
+  }
 
   // 修改内容类型验证函数， JSON 验证
   async function validateResponse(response, contentType) {
@@ -689,7 +710,7 @@ function startServer() {
     try {
       // 初始化缓存目录
       await fs.mkdir(CACHE_DIR, { recursive: true });
-      console.log(LOG_PREFIX.INFO, `缓存目录初始化成功: ${CACHE_DIR}`);
+      console.log(LOG_PREFIX.INFO, `缓存目��初始化成功: ${CACHE_DIR}`);
       
       // 加载缓存索引
       try {
@@ -774,7 +795,7 @@ function startServer() {
       }
     }
 
-    // 所有��试都失败了
+    // 所有试都失败了
     throw new Error(
       `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
     );
