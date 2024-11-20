@@ -207,12 +207,11 @@ function setupRoutes(app, diskCache, lruCache) {
           throw new Error('Invalid cache content type');
         }
         res.setHeader('Content-Type', cachedItem.contentType);
-        return res.send(cachedItem.data);
+        return res.end(cachedItem.data);
       }
 
       const response = await handleRequestWithWorker(req, cacheKey);
       
-      // 验证响应的 Content-Type
       if (!response.contentType) {
         throw new Error('Invalid response content type');
       }
@@ -227,7 +226,6 @@ function setupRoutes(app, diskCache, lruCache) {
         timestamp: Date.now()
       };
       
-      // 写入缓存前验证
       const isValid = validateResponse(responseData, response.contentType, UPSTREAM_TYPE);
       if (isValid) {
         await diskCache.set(cacheKey, cacheItem);
@@ -236,7 +234,7 @@ function setupRoutes(app, diskCache, lruCache) {
       }
 
       res.setHeader('Content-Type', response.contentType);
-      res.send(responseData);
+      res.end(responseData);
       
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);

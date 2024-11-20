@@ -187,29 +187,25 @@ function validateResponse(data, contentType, upstreamType) {
       if (!contentType.includes('application/json')) {
         return false;
       }
-      // 验证 JSON 数据结构
       try {
-        // 如果已经是对象，直接返回true
         if (typeof data === 'object' && data !== null) {
           return true;
         }
-        // 如果是Buffer，先转换为字符串
         if (Buffer.isBuffer(data)) {
           data = data.toString('utf-8');
         }
-        // 尝试解析JSON字符串
         JSON.parse(data);
         return true;
       } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `Invalid JSON response: ${error.message}`);
+        console.error(LOG_PREFIX.ERROR, `JSON验证失败: ${error.message}`);
         return false;
       }
 
     case 'tmdb-image':
-      return contentType.includes('image/');
-
-    case 'custom':
-      return true;
+      if (!contentType.includes('image/')) {
+        return false;
+      }
+      return Buffer.isBuffer(data) && data.length > 0;
 
     default:
       console.warn(LOG_PREFIX.WARN, `未知的上游类型: ${upstreamType}`);
