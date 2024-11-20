@@ -194,7 +194,10 @@ function startServer() {
   // 5. 修改缓存写入函数
   async function setCacheItem(key, data, contentType) {
     const timestamp = Date.now();
-    const filename = Buffer.from(key).toString('base64') + CACHE_FILE_EXT;
+    // 使用 MD5 哈希来生成固定长度的文件名
+    const crypto = require('crypto');
+    const hash = crypto.createHash('md5').update(key).digest('hex');
+    const filename = `${hash}${CACHE_FILE_EXT}`;
 
     try {
       // 写入磁盘
@@ -216,7 +219,6 @@ function startServer() {
 
       await saveIndex();
       
-      // 添加日志
       console.log(LOG_PREFIX.CACHE.INFO, 
         `缓存写入成功 - 键值: ${key}, ` +
         `内存缓存数: ${lruCache.cache.size}, ` +
@@ -541,12 +543,12 @@ function startServer() {
   }
 
   // 修改请求重试函数
-  async function tryRequestWithRetries(server, req) {
+  async function tryRequestWithRetries(server, originalUrl = '/') {
     let retryCount = 0;
     
     while (retryCount < MAX_RETRY_ATTEMPTS) {
       try {
-        const requestUrl = `${server.url}${req.originalUrl}`;
+        const requestUrl = `${server.url}${originalUrl}`;
         console.log(LOG_PREFIX.INFO, `重试请求: ${requestUrl}`);
         
         const proxyRes = await axios.get(requestUrl, {
@@ -564,11 +566,11 @@ function startServer() {
         
       } catch (error) {
         retryCount++;
-        logError(req.originalUrl, error.response ? error.response.status : 'UNKNOWN');
+        logError(originalUrl, error.response ? error.response.status : 'UNKNOWN');
         
         if (retryCount === MAX_RETRY_ATTEMPTS) {
           if (isServerError(error.response ? error.response.status : 'UNKNOWN')) {
-            server.healthy = false; // 只有在确认是服务器问题时才标记为不健康
+            server.healthy = false;
             console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 标记为不健康`);
           }
           throw error;
