@@ -32,6 +32,7 @@ const {
 let LOG_PREFIX;
 const workers = new Map();
 const weightUpdateQueue = [];
+let upstreamServers;
 
 // 主服务器启动函数
 async function startServer() {
@@ -57,11 +58,39 @@ async function startServer() {
       console.log(LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
     });
 
+    // 初始化上游服务器列表
+    upstreamServers = process.env.UPSTREAM_SERVERS.split(',').map(url => ({
+      url: url.trim(),
+      healthy: true,
+      baseWeight: 1,
+      dynamicWeight: 1,
+      alpha: ALPHA_INITIAL,
+      responseTimes: [],
+      responseTime: Infinity,
+    }));
+
     // 启动健康检查
-    startHealthCheck();
+    const healthCheckConfig = {
+      BASE_WEIGHT_UPDATE_INTERVAL: 300000, // 5分钟
+      REQUEST_TIMEOUT,
+      UPSTREAM_TYPE,
+      TMDB_API_KEY,
+      TMDB_IMAGE_TEST_URL,
+      BASE_WEIGHT_MULTIPLIER
+    };
+
+    startHealthCheck(upstreamServers, healthCheckConfig, LOG_PREFIX);
 
     // 启动权重更新处理
-    setInterval(processWeightUpdateQueue, 1000);
+    setInterval(() => {
+      processWeightUpdateQueue(
+        weightUpdateQueue, 
+        upstreamServers, 
+        LOG_PREFIX, 
+        ALPHA_ADJUSTMENT_STEP,
+        BASE_WEIGHT_MULTIPLIER
+      );
+    }, 1000);
 
   } catch (error) {
     console.error(LOG_PREFIX?.ERROR || '[ 错误 ]', `服务器启动失败: ${error.message}`);
@@ -103,7 +132,7 @@ async function initializeWorker(workerId) {
 // 设置工作线程事件处理器
 function setupWorkerEventHandlers(worker, workerId) {
   worker.on('message', (message) => {
-    if (message.type === 'weight_update') {
+    if (message && message.type === 'weight_update' && message.data) {
       weightUpdateQueue.push(message.data);
     }
   });
@@ -171,46 +200,48 @@ function setupRoutes(app, diskCache, lruCache) {
     const cacheKey = getCacheKey(req);
     
     try {
-      // 检查缓存
       const cachedItem = await getCacheItem(cacheKey, diskCache, lruCache);
       if (cachedItem) {
+        // 验证缓存的 Content-Type
+        if (!cachedItem.contentType) {
+          throw new Error('Invalid cache content type');
+        }
         res.setHeader('Content-Type', cachedItem.contentType);
         return res.send(cachedItem.data);
       }
 
-      // 选择工作线程处理请求
       const response = await handleRequestWithWorker(req, cacheKey);
+      
+      // 验证响应的 Content-Type
+      if (!response.contentType) {
+        throw new Error('Invalid response content type');
+      }
 
-      // 写入缓存
+      const responseData = Buffer.isBuffer(response.data) ? 
+        response.data : 
+        Buffer.from(JSON.stringify(response.data));
+      
       const cacheItem = {
-        data: response.data,
+        data: responseData,
         contentType: response.contentType,
         timestamp: Date.now()
       };
       
-      try {
+      // 写入缓存前验证
+      const isValid = validateResponse(responseData, response.contentType, UPSTREAM_TYPE);
+      if (isValid) {
         await diskCache.set(cacheKey, cacheItem);
         lruCache.set(cacheKey, cacheItem);
-      } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `写入缓存失败: ${error.message}`);
+        console.log(LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
       }
 
-      // 设置响应
       res.setHeader('Content-Type', response.contentType);
-      res.send(response.data);
-
+      res.send(responseData);
+      
     } catch (error) {
+      console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
       next(error);
     }
-  });
-
-  // 错误处理中间件
-  app.use((err, req, res, next) => {
-    console.error(LOG_PREFIX.ERROR, `请求处理错误: ${err.message}`);
-    res.status(502).json({
-      error: '代理请求失败',
-      message: err.message
-    });
   });
 }
 

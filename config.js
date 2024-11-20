@@ -30,5 +30,8 @@ module.exports = {
   HTTPS_PROXY: process.env.HTTPS_PROXY || '',
   
   // 时区配置
-  TZ: process.env.TZ || 'Asia/Shanghai'
+  TZ: process.env.TZ || 'Asia/Shanghai',
+  
+  // Custom upstream 配置
+  CUSTOM_CONTENT_TYPE: process.env.CUSTOM_CONTENT_TYPE || 'application/json',  // 默认值
 };

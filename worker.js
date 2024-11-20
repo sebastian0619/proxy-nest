@@ -5,7 +5,6 @@ const {
   validateResponse,
   tryRequestWithRetries
 } = require('./utils');
-
 // 从 workerData 中解构需要的配置
 const { 
   MAX_SERVER_SWITCHES,
@@ -18,6 +17,12 @@ const {
 
 let LOG_PREFIX;
 let localUpstreamServers = [];
+
+// 立即调用初始化函数
+initializeWorker().catch(error => {
+  console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+  process.exit(1);
+});
 
 // 初始化工作线程
 async function initializeWorker() {
@@ -71,13 +76,30 @@ parentPort.on('message', async (message) => {
   if (message.type === 'request') {
     try {
       const result = await handleRequest(message.url);
-      parentPort.postMessage({
-        requestId: message.requestId,
-        response: {
-          data: result.buffer,
-          contentType: result.contentType
-        }
-      });
+      
+      // 如果是JSON响应，确保数据已经是对象
+      if (result.contentType.includes('application/json')) {
+        const responseData = Buffer.isBuffer(result.data) ? 
+          result.data.toString('utf-8') : 
+          result.data;
+          
+        parentPort.postMessage({
+          requestId: message.requestId,
+          response: {
+            data: typeof responseData === 'string' ? JSON.parse(responseData) : responseData,
+            contentType: result.contentType
+          }
+        });
+      } else {
+        // 非JSON响应直接传递
+        parentPort.postMessage({
+          requestId: message.requestId,
+          response: {
+            data: result.data,
+            contentType: result.contentType
+          }
+        });
+      }
     } catch (error) {
       console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
       parentPort.postMessage({
@@ -99,7 +121,7 @@ async function handleRequest(url) {
       const result = await tryRequestWithRetries(server, url, {
         REQUEST_TIMEOUT,
         UPSTREAM_TYPE
-      });
+      }, LOG_PREFIX);
       
       // 成功后更新服务器权重
       addWeightUpdate(server, result.responseTime);
@@ -161,8 +183,3 @@ function addWeightUpdate(server, responseTime) {
   });
 }
 
-// 初始化工作线程
-initializeWorker().catch(error => {
-  console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
-  process.exit(1);
-});
