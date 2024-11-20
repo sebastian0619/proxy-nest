@@ -37,7 +37,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS'}}
             type=ref,event=branch
             type=sha,format=short
             type=raw,value={{date 'YYYYMMDD'}}
