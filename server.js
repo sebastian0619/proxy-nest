@@ -37,8 +37,8 @@ let upstreamServers;
 // 主服务器启动函数
 async function startServer() {
   try {
-    // 初始化日志
-    LOG_PREFIX = await initializeLogPrefix();
+    // 初始化日志前缀并立即赋值给全局变量
+    global.LOG_PREFIX = await initializeLogPrefix();
     
     // 初始化 Express 应用
     const app = express();
@@ -47,8 +47,10 @@ async function startServer() {
     // 初始化缓存
     const { diskCache, lruCache } = await initializeCache();
 
-    // 初始化工作线程池
-    await initializeWorkerPool();
+    // 初始化工作线程池时传入 LOG_PREFIX
+    await initializeWorkerPool({
+      LOG_PREFIX: global.LOG_PREFIX
+    });
 
     // 设置路由
     setupRoutes(app, diskCache, lruCache);

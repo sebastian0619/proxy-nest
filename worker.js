@@ -15,7 +15,9 @@ const {
   upstreamServers
 } = workerData;
 
-let LOG_PREFIX;
+// 设置全局 LOG_PREFIX
+global.LOG_PREFIX = workerData.LOG_PREFIX;
+
 let localUpstreamServers = [];
 
 // 立即调用初始化函数
@@ -27,9 +29,6 @@ initializeWorker().catch(error => {
 // 初始化工作线程
 async function initializeWorker() {
   try {
-    // 初始化 LOG_PREFIX
-    LOG_PREFIX = await initializeLogPrefix();
-
     if (!upstreamServers) {
       throw new Error('未配置上游服务器');
     }
@@ -44,9 +43,9 @@ async function initializeWorker() {
       responseTime: Infinity,
     }));
 
-    console.log(LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
+    console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
   } catch (error) {
-    console.error(LOG_PREFIX?.ERROR || '[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+    console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   }
 }
@@ -101,7 +100,7 @@ parentPort.on('message', async (message) => {
         });
       }
     } catch (error) {
-      console.error(LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
+      console.error(global.LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
       parentPort.postMessage({
         requestId: message.requestId,
         error: error.message
@@ -121,7 +120,7 @@ async function handleRequest(url) {
       const result = await tryRequestWithRetries(server, url, {
         REQUEST_TIMEOUT,
         UPSTREAM_TYPE
-      }, LOG_PREFIX);
+      }, global.LOG_PREFIX);
       
       // 成功后更新服务器权重
       addWeightUpdate(server, result.responseTime);
@@ -138,7 +137,7 @@ async function handleRequest(url) {
           throw new Error('Invalid response from upstream server');
         }
       } catch (error) {
-        console.error(LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
+        console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
         throw error;
       }
 
@@ -146,7 +145,7 @@ async function handleRequest(url) {
       
     } catch (error) {
       lastError = error;
-      console.error(LOG_PREFIX.ERROR, 
+      console.error(global.LOG_PREFIX.ERROR, 
         `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
       );
 
@@ -158,7 +157,7 @@ async function handleRequest(url) {
       serverSwitchCount++;
       
       if (serverSwitchCount < MAX_SERVER_SWITCHES) {
-        console.log(LOG_PREFIX.WARN, 
+        console.log(global.LOG_PREFIX.WARN, 
           `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
         );
         continue;
