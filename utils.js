@@ -294,7 +294,9 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
     REQUEST_TIMEOUT,
     UPSTREAM_TYPE,
     TMDB_API_KEY,
-    TMDB_IMAGE_TEST_URL
+    TMDB_IMAGE_TEST_URL,
+    BASE_WEIGHT_MULTIPLIER,
+    DYNAMIC_WEIGHT_MULTIPLIER
   } = config;
 
   console.log(LOG_PREFIX.INFO, '启动健康检查服务');
@@ -324,21 +326,52 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
 
         server.healthy = true;
         server.lastCheck = Date.now();
-        server.lastResponseTime = responseTime;
-        server.baseWeight = Math.min(
-          100,
-          Math.max(1, Math.floor((1000 / responseTime) * config.BASE_WEIGHT_MULTIPLIER))
-        );
+
+        // 使用与请求处理相同的权重更新逻辑
+        // 初始化 EWMA
+        if (typeof server.lastEWMA === 'undefined') {
+          server.lastEWMA = responseTime;
+        }
+
+        // 使用 EWMA 计算平均响应时间
+        const beta = 0.2; // 衰减因子
+        server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
+
+        // 更新基础权重和动态权重
+        server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
+        
+        // 计算动态权重：响应时间越短，权重越大
+        const weight = Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)));
+        server.dynamicWeight = Math.min(Math.max(1, weight), 100);
+
+        // 调整 alpha 值
+        if (responseTime < server.lastEWMA) {
+          server.alpha = Math.min(1, (server.alpha || 0.5) + config.ALPHA_ADJUSTMENT_STEP);
+        } else {
+          server.alpha = Math.max(0.1, (server.alpha || 0.5) - config.ALPHA_ADJUSTMENT_STEP);
+        }
+
+        // 计算综合权重
+        const alpha = server.alpha || 0.5;
+        server.combinedWeight = Math.max(1, Math.floor(
+          alpha * server.dynamicWeight + (1 - alpha) * server.baseWeight
+        ));
 
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器 ${server.url} 健康检查成功, ` +
           `响应时间: ${responseTime}ms, ` +
-          `基础权重: ${server.baseWeight}`
+          `平均: ${server.lastEWMA.toFixed(2)}ms, ` +
+          `基础权重: ${server.baseWeight}, ` +
+          `动态权重: ${server.dynamicWeight}, ` +
+          `综合权重: ${server.combinedWeight}, ` +
+          `alpha: ${server.alpha.toFixed(2)}`
         );
       } catch (error) {
         server.healthy = false;
         server.lastCheck = Date.now();
         server.baseWeight = 0;
+        server.dynamicWeight = 0;
+        server.combinedWeight = 0;
         console.error(LOG_PREFIX.ERROR, 
           `服务器 ${server.url} 健康检查失败: ${error.message}`
         );
