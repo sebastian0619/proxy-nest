@@ -355,7 +355,7 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
 }
 
 // 处理权重更新队列
-function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_STEP, BASE_WEIGHT_MULTIPLIER) {
+function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_STEP, BASE_WEIGHT_MULTIPLIER, DYNAMIC_WEIGHT_MULTIPLIER) {
   while (queue.length > 0) {
     const update = queue.shift();
     const server = servers.find(s => s.url === update.server.url);
@@ -377,6 +377,12 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
         server.baseWeight * (1 - server.alpha) + newBaseWeight * server.alpha
       );
       
+      // 更新动态权重
+      server.dynamicWeight = calculateDynamicWeight(server, update.responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+      
+      // 计算综合权重
+      const totalWeight = Math.floor(server.baseWeight * server.dynamicWeight);
+      
       // 调整 alpha 值
       if (update.responseTime < avgResponseTime) {
         server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
@@ -388,7 +394,9 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
         `服务器权重更新 - ${server.url}, ` +
         `响应时间: ${update.responseTime}ms, ` +
         `平均: ${avgResponseTime.toFixed(2)}ms, ` +
-        `权重: ${server.baseWeight}, ` +
+        `基础权重: ${server.baseWeight}, ` +
+        `动态权重: ${server.dynamicWeight}, ` +
+        `综合权重: ${totalWeight}, ` +
         `alpha: ${server.alpha.toFixed(2)}`
       );
     }
@@ -403,6 +411,21 @@ function calculateCombinedWeight(server) {
   const alpha = server.alpha || ALPHA_INITIAL;
   
   return (alpha * dynamicWeight + (1 - alpha) * baseWeight);
+}
+
+// 计算动态权重
+function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
+  // 使用 EWMA (指数加权移动平均) 计算动态权重
+  const currentAvg = server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length;
+  const variance = Math.abs(responseTime - currentAvg);
+  
+  // 方差越大，权重越小
+  const dynamicWeight = Math.max(
+    1,
+    Math.floor(DYNAMIC_WEIGHT_MULTIPLIER / (1 + variance / currentAvg))
+  );
+  
+  return dynamicWeight;
 }
 
 module.exports = {
