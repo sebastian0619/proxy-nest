@@ -88,10 +88,9 @@ async function initializeLogPrefix() {
 
 // 计算基础权重
 function calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER) {
-  return Math.min(
-    100, // 最大权重上限为100
-    Math.max(1, Math.floor((1000 / responseTime) * BASE_WEIGHT_MULTIPLIER))
-  );
+  // 确保响应时间至少为1ms，避免除零
+  const weight = Math.floor((1000 / Math.max(responseTime, 1)) * BASE_WEIGHT_MULTIPLIER);
+  return Math.min(Math.max(1, weight), 100);  // 限制权重在1-100之间
 }
 
 // 生成缓存键
@@ -360,32 +359,33 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
     const update = queue.shift();
     const server = servers.find(s => s.url === update.server.url);
     
-    if (server) {
-      // 初始化响应时间数组（如果不存在）
-      server.responseTimes = server.responseTimes || [];
-      server.responseTimes.push(update.responseTime);
-      if (server.responseTimes.length > 10) {
-        server.responseTimes.shift();
+    if (server && server.healthy) {
+      // 初始化 EWMA
+      if (typeof server.lastEWMA === 'undefined') {
+        server.lastEWMA = update.responseTime;
       }
+
+      // 使用 EWMA 计算平均响应时间
+      const beta = 0.2; // 衰减因子
+      server.lastEWMA = beta * update.responseTime + (1 - beta) * server.lastEWMA;
+
+      // 计算动态权重：响应时间越短，权重越大
+      const weight = Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)));
       
-      // 计算平均响应时间
-      const avgResponseTime = server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length;
-      server.responseTime = avgResponseTime;
-      
+      // 确保权重在合理范围内
+      server.dynamicWeight = Math.min(Math.max(1, weight), 100);
+
       // 更新基础权重
-      server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
-      
-      // 更新动态权重
-      server.dynamicWeight = calculateDynamicWeight(server, update.responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+      server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
       
       // 调整 alpha 值
-      if (update.responseTime < avgResponseTime) {
+      if (update.responseTime < server.lastEWMA) {
         server.alpha = Math.min(1, (server.alpha || 0.5) + ALPHA_ADJUSTMENT_STEP);
       } else {
         server.alpha = Math.max(0.1, (server.alpha || 0.5) - ALPHA_ADJUSTMENT_STEP);
       }
 
-      // 计算综合权重（使用加权平均）
+      // 计算综合权重
       const alpha = server.alpha || 0.5;
       server.combinedWeight = Math.max(1, Math.floor(
         alpha * server.dynamicWeight + (1 - alpha) * server.baseWeight
@@ -395,7 +395,7 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
       console.log(LOG_PREFIX.WEIGHT,
         `服务器权重更新 - ${server.url}, ` +
         `响应时间: ${update.responseTime}ms, ` +
-        `平均: ${avgResponseTime.toFixed(2)}ms, ` +
+        `平均: ${server.lastEWMA.toFixed(2)}ms, ` +
         `基础权重: ${server.baseWeight}, ` +
         `动态权重: ${server.dynamicWeight}, ` +
         `综合权重: ${server.combinedWeight}, ` +
@@ -419,31 +419,21 @@ function calculateCombinedWeight(server) {
 
 // 计算动态权重
 function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
-  if (!server.responseTimes.length) {
-    return 1; // 如果没有历史数据，返回默认权重
-  }
-
-  // 使用 EWMA 计算动态权重
-  const beta = 0.2; // 衰减因子，值越小表示历史数据的影响越大
-  
-  // 计算或更新 EWMA
+  // 初始化 EWMA
   if (typeof server.lastEWMA === 'undefined') {
-    // 首次计算，使用当前响应时间
     server.lastEWMA = responseTime;
-  } else {
-    // 更新 EWMA
-    server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
+    return Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(responseTime, 1)));
   }
 
-  // 使用 EWMA 计算动态权重
-  // 响应时间越短，权重越大
-  const dynamicWeight = Math.max(
-    1,
-    Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)))
-  );
+  // 使用 EWMA 计算平均响应时间
+  const beta = 0.2; // 衰减因子
+  server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
-  // 确保返回有效数值
-  return isNaN(dynamicWeight) ? 1 : Math.min(dynamicWeight, 100);
+  // 计算动态权重：响应时间越短，权重越大
+  const weight = Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)));
+  
+  // 确保权重在合理范围内
+  return Math.min(Math.max(1, weight), 100);
 }
 
 module.exports = {
