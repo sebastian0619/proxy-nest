@@ -2,6 +2,9 @@ const express = require('express');
 const morgan = require('morgan');
 const { Worker, isMainThread } = require('worker_threads');
 const path = require('path');
+const fs = require('fs/promises');
+const LRUCache = require('lru-cache');
+const crypto = require('crypto');
 
 // 从 utils 导入实际需要的函数
 const {
@@ -25,8 +28,19 @@ const {
   DYNAMIC_WEIGHT_MULTIPLIER,
   ALPHA_INITIAL,
   ALPHA_ADJUSTMENT_STEP,
-  MAX_SERVER_SWITCHES
+  MAX_SERVER_SWITCHES,
+  CACHE_CONFIG
 } = require('./config');
+
+const {
+  CACHE_DIR,
+  CACHE_INDEX_FILE,
+  CACHE_TTL,
+  MEMORY_CACHE_SIZE,
+  CACHE_MAX_SIZE,
+  CACHE_CLEANUP_INTERVAL,
+  CACHE_FILE_EXT
+} = CACHE_CONFIG;
 
 // 全局变量
 

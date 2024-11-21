@@ -36,37 +36,30 @@ class LRUCache {
 async function initializeCache() {
   const config = require('./config');
   
-  if (!config.CACHE_DIR) {
+  if (!config.CACHE_CONFIG.CACHE_DIR) {
     throw new Error('CACHE_DIR 未在配置中定义');
   }
 
   const diskCache = new Map();
-  const lruCache = new LRUCache(config.MEMORY_CACHE_SIZE || 100);
+  const lruCache = new LRUCache(config.CACHE_CONFIG.MEMORY_CACHE_SIZE || 100);
 
   try {
     // 确保缓存目录存在
-    await fs.mkdir(config.CACHE_DIR, { recursive: true });
-    
-    const indexPath = path.join(config.CACHE_DIR, 'cache_index.json');
+    await fs.mkdir(config.CACHE_CONFIG.CACHE_DIR, { recursive: true });
+    const indexPath = path.join(config.CACHE_CONFIG.CACHE_DIR, config.CACHE_CONFIG.CACHE_INDEX_FILE);
     
     try {
       const indexData = await fs.readFile(indexPath);
       const index = JSON.parse(indexData);
-      
       for (const [key, meta] of Object.entries(index)) {
         diskCache.set(key, meta);
       }
-      
     } catch (error) {
       // 如果索引文件不存在或损坏，创建新的
-      await fs.writeFile(
-        indexPath,
-        JSON.stringify({}, null, 2)
-      );
+      await fs.writeFile(indexPath, JSON.stringify({}, null, 2));
     }
 
     return { diskCache, lruCache };
-    
   } catch (error) {
     throw new Error(`初始化缓存失败: ${error.message}`);
   }
