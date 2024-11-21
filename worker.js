@@ -63,38 +63,20 @@ function selectUpstreamServer() {
     return sum + weight;
   }, 0);
 
-  // 计算每个服务器的选择概率
-  const serverProbabilities = healthyServers.map(server => {
-    const weight = server.baseWeight * server.dynamicWeight;
-    const probability = (weight / totalWeight * 100).toFixed(2);
-    return {
-      server,
-      weight,
-      probability
-    };
-  });
-
-  // 记录每个服务器的权重和概率
-  console.log(global.LOG_PREFIX.WEIGHT, '服务器权重分布:');
-  serverProbabilities.forEach(({ server, weight, probability }) => {
-    console.log(
-      `${server.url}: ` +
-      `基础权重=${server.baseWeight}, ` +
-      `动态权重=${server.dynamicWeight}, ` +
-      `综合权重=${weight}, ` +
-      `选择概率=${probability}%`
-    );
-  });
-
   // 按权重随机选择
   const random = Math.random() * totalWeight;
   let weightSum = 0;
 
-  for (const { server, weight, probability } of serverProbabilities) {
+  for (const server of healthyServers) {
+    const weight = server.baseWeight * server.dynamicWeight;
+    const probability = (weight / totalWeight * 100).toFixed(2);
     weightSum += weight;
+    
     if (weightSum > random) {
       console.log(global.LOG_PREFIX.SUCCESS, 
         `选中服务器: ${server.url}, ` +
+        `基础权重=${server.baseWeight}, ` +
+        `动态权重=${server.dynamicWeight}, ` +
         `综合权重=${weight}, ` +
         `选择概率=${probability}%`
       );
@@ -103,13 +85,18 @@ function selectUpstreamServer() {
   }
 
   // 保底返回第一个服务器
-  const fallback = serverProbabilities[0];
+  const server = healthyServers[0];
+  const weight = server.baseWeight * server.dynamicWeight;
+  const probability = (weight / totalWeight * 100).toFixed(2);
+  
   console.log(global.LOG_PREFIX.WARN, 
-    `使用保底服务器: ${fallback.server.url}, ` +
-    `综合权重=${fallback.weight}, ` +
-    `选择概率=${fallback.probability}%`
+    `使用保底服务器: ${server.url}, ` +
+    `基础权重=${server.baseWeight}, ` +
+    `动态权重=${server.dynamicWeight}, ` +
+    `综合权重=${weight}, ` +
+    `选择概率=${probability}%`
   );
-  return fallback.server;
+  return server;
 }
 
 parentPort.on('message', async (message) => {

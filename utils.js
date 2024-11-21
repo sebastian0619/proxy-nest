@@ -361,7 +361,8 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
     const server = servers.find(s => s.url === update.server.url);
     
     if (server) {
-      // 更新响应时间记录
+      // 初始化响应时间数组（如果不存在）
+      server.responseTimes = server.responseTimes || [];
       server.responseTimes.push(update.responseTime);
       if (server.responseTimes.length > 10) {
         server.responseTimes.shift();
@@ -372,31 +373,32 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
       server.responseTime = avgResponseTime;
       
       // 更新基础权重
-      const newBaseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
-      server.baseWeight = Math.floor(
-        server.baseWeight * (1 - server.alpha) + newBaseWeight * server.alpha
-      );
+      server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
       
       // 更新动态权重
       server.dynamicWeight = calculateDynamicWeight(server, update.responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
       
-      // 计算综合权重
-      const totalWeight = Math.floor(server.baseWeight * server.dynamicWeight);
-      
       // 调整 alpha 值
       if (update.responseTime < avgResponseTime) {
-        server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
+        server.alpha = Math.min(1, (server.alpha || 0.5) + ALPHA_ADJUSTMENT_STEP);
       } else {
-        server.alpha = Math.max(0.1, server.alpha - ALPHA_ADJUSTMENT_STEP);
+        server.alpha = Math.max(0.1, (server.alpha || 0.5) - ALPHA_ADJUSTMENT_STEP);
       }
-      
-      console.log(LOG_PREFIX.INFO, 
+
+      // 计算综合权重（使用加权平均）
+      const alpha = server.alpha || 0.5;
+      server.combinedWeight = Math.max(1, Math.floor(
+        alpha * server.dynamicWeight + (1 - alpha) * server.baseWeight
+      ));
+
+      // 记录权重更新
+      console.log(LOG_PREFIX.WEIGHT,
         `服务器权重更新 - ${server.url}, ` +
         `响应时间: ${update.responseTime}ms, ` +
         `平均: ${avgResponseTime.toFixed(2)}ms, ` +
         `基础权重: ${server.baseWeight}, ` +
         `动态权重: ${server.dynamicWeight}, ` +
-        `综合权重: ${totalWeight}, ` +
+        `综合权重: ${server.combinedWeight}, ` +
         `alpha: ${server.alpha.toFixed(2)}`
       );
     }
@@ -406,26 +408,42 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
 function calculateCombinedWeight(server) {
   if (!server.healthy) return 0;
   
-  const baseWeight = server.baseWeight || 0;
-  const dynamicWeight = server.dynamicWeight || 0;
-  const alpha = server.alpha || ALPHA_INITIAL;
+  const baseWeight = server.baseWeight || 1;
+  const dynamicWeight = server.dynamicWeight || 1;
+  const alpha = server.alpha || 0.5;
   
-  return (alpha * dynamicWeight + (1 - alpha) * baseWeight);
+  // 使用加权平均计算综合权重
+  const combinedWeight = Math.floor(alpha * dynamicWeight + (1 - alpha) * baseWeight);
+  return Math.max(1, combinedWeight);
 }
 
 // 计算动态权重
 function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
-  // 使用 EWMA (指数加权移动平均) 计算动态权重
-  const currentAvg = server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length;
-  const variance = Math.abs(responseTime - currentAvg);
+  if (!server.responseTimes.length) {
+    return 1; // 如果没有历史数据，返回默认权重
+  }
+
+  // 使用 EWMA 计算动态权重
+  const beta = 0.2; // 衰减因子，值越小表示历史数据的影响越大
   
-  // 方差越大，权重越小
+  // 计算或更新 EWMA
+  if (typeof server.lastEWMA === 'undefined') {
+    // 首次计算，使用当前响应时间
+    server.lastEWMA = responseTime;
+  } else {
+    // 更新 EWMA
+    server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
+  }
+
+  // 使用 EWMA 计算动态权重
+  // 响应时间越短，权重越大
   const dynamicWeight = Math.max(
     1,
-    Math.floor(DYNAMIC_WEIGHT_MULTIPLIER / (1 + variance / currentAvg))
+    Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)))
   );
-  
-  return dynamicWeight;
+
+  // 确保返回有效数值
+  return isNaN(dynamicWeight) ? 1 : Math.min(dynamicWeight, 100);
 }
 
 module.exports = {
