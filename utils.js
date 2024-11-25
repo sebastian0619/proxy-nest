@@ -463,7 +463,9 @@ function calculateCombinedWeight(server) {
 // 计算动态权重
 function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
   // 确保参数有效
-  const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' ? DYNAMIC_WEIGHT_MULTIPLIER : 0.02;
+  const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
+    ? DYNAMIC_WEIGHT_MULTIPLIER 
+    : 0.02;
   
   // 初始化 EWMA
   if (typeof server.lastEWMA === 'undefined') {
