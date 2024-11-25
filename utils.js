@@ -338,22 +338,26 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         const beta = 0.2;
         server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
-        // 计算基础权重和动态权重
+        // 确保配置参数有效
+        const safeBaseMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' ? BASE_WEIGHT_MULTIPLIER : 0.02;
+        const safeDynamicMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' ? DYNAMIC_WEIGHT_MULTIPLIER : 0.02;
+        const safeAlphaStep = typeof ALPHA_ADJUSTMENT_STEP === 'number' ? ALPHA_ADJUSTMENT_STEP : 0.1;
+
+        // 计算权重
         const normalizedTime = Math.max(server.lastEWMA, 1);
-        const baseWeightRaw = (1000 / normalizedTime) * BASE_WEIGHT_MULTIPLIER;
-        const dynamicWeightRaw = (1000 / normalizedTime) * DYNAMIC_WEIGHT_MULTIPLIER;
+        const baseWeightRaw = (1000 / normalizedTime) * safeBaseMultiplier;
+        const dynamicWeightRaw = (1000 / normalizedTime) * safeDynamicMultiplier;
         
         server.baseWeight = Math.min(100, Math.max(1, Math.floor(baseWeightRaw)));
         server.dynamicWeight = Math.min(100, Math.max(1, Math.floor(dynamicWeightRaw)));
 
-        // 调整 alpha 值
-        if (typeof server.alpha === 'undefined') {
-          server.alpha = 0.5;
-        }
+        // 确保 alpha 有效并调整
+        server.alpha = typeof server.alpha === 'number' ? server.alpha : 0.5;
+        
         if (responseTime < server.lastEWMA) {
-          server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
+          server.alpha = Math.min(1, server.alpha + safeAlphaStep);
         } else {
-          server.alpha = Math.max(0.1, server.alpha - ALPHA_ADJUSTMENT_STEP);
+          server.alpha = Math.max(0.1, server.alpha - safeAlphaStep);
         }
 
         // 计算综合权重
