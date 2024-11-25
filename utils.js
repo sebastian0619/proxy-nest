@@ -88,9 +88,12 @@ async function initializeLogPrefix() {
 
 // 计算基础权重
 function calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER) {
+  // 确保参数有效
+  const safeMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' ? BASE_WEIGHT_MULTIPLIER : 0.02;
+  
   // 确保响应时间至少为1ms，避免除零
-  const weight = Math.floor((1000 / Math.max(responseTime, 1)) * BASE_WEIGHT_MULTIPLIER);
-  return Math.min(Math.max(1, weight), 100);  // 限制权重在1-100之间
+  const weight = Math.floor((1000 / Math.max(responseTime, 1)) * safeMultiplier);
+  return Math.min(Math.max(1, weight), 100);
 }
 
 // 生成缓存键
