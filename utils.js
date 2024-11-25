@@ -338,22 +338,18 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         const beta = 0.2;
         server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
-        // 使用 EWMA 计算权重
+        // 计算基础权重和动态权重
         const normalizedTime = Math.max(server.lastEWMA, 1);
+        const baseWeightRaw = (1000 / normalizedTime) * BASE_WEIGHT_MULTIPLIER;
+        const dynamicWeightRaw = (1000 / normalizedTime) * DYNAMIC_WEIGHT_MULTIPLIER;
         
-        // 基础权重计算
-        server.baseWeight = Math.min(
-          100,
-          Math.max(1, Math.floor((1000 / normalizedTime) * BASE_WEIGHT_MULTIPLIER))
-        );
-        
-        // 动态权重计算
-        server.dynamicWeight = Math.min(
-          100,
-          Math.max(1, Math.floor((1000 / normalizedTime) * DYNAMIC_WEIGHT_MULTIPLIER))
-        );
+        server.baseWeight = Math.min(100, Math.max(1, Math.floor(baseWeightRaw)));
+        server.dynamicWeight = Math.min(100, Math.max(1, Math.floor(dynamicWeightRaw)));
 
         // 调整 alpha 值
+        if (typeof server.alpha === 'undefined') {
+          server.alpha = 0.5;
+        }
         if (responseTime < server.lastEWMA) {
           server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
         } else {
@@ -361,12 +357,8 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         }
 
         // 计算综合权重
-        server.combinedWeight = Math.min(
-          100,
-          Math.max(1, Math.floor(
-            server.alpha * server.dynamicWeight + (1 - server.alpha) * server.baseWeight
-          ))
-        );
+        const combinedWeightRaw = server.alpha * server.dynamicWeight + (1 - server.alpha) * server.baseWeight;
+        server.combinedWeight = Math.min(100, Math.max(1, Math.floor(combinedWeightRaw)));
 
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器 ${server.url} 健康检查成功, ` +
