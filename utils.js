@@ -296,7 +296,8 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
     TMDB_API_KEY,
     TMDB_IMAGE_TEST_URL,
     BASE_WEIGHT_MULTIPLIER,
-    DYNAMIC_WEIGHT_MULTIPLIER
+    DYNAMIC_WEIGHT_MULTIPLIER,
+    ALPHA_ADJUSTMENT_STEP
   } = config;
 
   console.log(LOG_PREFIX.INFO, '启动健康检查服务');
@@ -337,24 +338,33 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         const beta = 0.2; // 衰减因子
         server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
-        // 更新基础权重和动态权重
-        server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
+        // 更新基础权重
+        server.baseWeight = Math.min(
+          100,
+          Math.max(1, Math.floor((1000 / server.lastEWMA) * BASE_WEIGHT_MULTIPLIER))
+        );
         
         // 计算动态权重：响应时间越短，权重越大
-        const weight = Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)));
-        server.dynamicWeight = Math.min(Math.max(1, weight), 100);
+        server.dynamicWeight = Math.min(
+          100,
+          Math.max(1, Math.floor((1000 / server.lastEWMA) * DYNAMIC_WEIGHT_MULTIPLIER))
+        );
 
+        // 初始化或调整 alpha 值
+        if (typeof server.alpha === 'undefined') {
+          server.alpha = 0.5;
+        }
+        
         // 调整 alpha 值
         if (responseTime < server.lastEWMA) {
-          server.alpha = Math.min(1, (server.alpha || 0.5) + config.ALPHA_ADJUSTMENT_STEP);
+          server.alpha = Math.min(1, server.alpha + ALPHA_ADJUSTMENT_STEP);
         } else {
-          server.alpha = Math.max(0.1, (server.alpha || 0.5) - config.ALPHA_ADJUSTMENT_STEP);
+          server.alpha = Math.max(0.1, server.alpha - ALPHA_ADJUSTMENT_STEP);
         }
 
         // 计算综合权重
-        const alpha = server.alpha || 0.5;
         server.combinedWeight = Math.max(1, Math.floor(
-          alpha * server.dynamicWeight + (1 - alpha) * server.baseWeight
+          server.alpha * server.dynamicWeight + (1 - server.alpha) * server.baseWeight
         ));
 
         console.log(LOG_PREFIX.SUCCESS, 
