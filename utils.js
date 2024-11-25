@@ -462,10 +462,14 @@ function calculateCombinedWeight(server) {
 
 // 计算动态权重
 function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
+  // 确保参数有效
+  const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' ? DYNAMIC_WEIGHT_MULTIPLIER : 0.02;
+  
   // 初始化 EWMA
   if (typeof server.lastEWMA === 'undefined') {
     server.lastEWMA = responseTime;
-    return Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(responseTime, 1)));
+    const weight = Math.floor((1000 / Math.max(responseTime, 1)) * safeMultiplier);
+    return Math.min(Math.max(1, weight), 100);
   }
 
   // 使用 EWMA 计算平均响应时间
@@ -473,7 +477,8 @@ function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER)
   server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
   // 计算动态权重：响应时间越短，权重越大
-  const weight = Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)));
+  const normalizedTime = Math.max(server.lastEWMA, 1);
+  const weight = Math.floor((1000 / normalizedTime) * safeMultiplier);
   
   // 确保权重在合理范围内
   return Math.min(Math.max(1, weight), 100);
