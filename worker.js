@@ -47,7 +47,10 @@ async function initializeWorker() {
       alpha: ALPHA_INITIAL,
       responseTimes: [],
       lastResponseTime: 0,
-      lastEWMA: 0
+      lastEWMA: 0,
+      isHealthy: true,
+      errorCount: 0,
+      recoveryTime: 0
     }));
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
@@ -57,8 +60,34 @@ async function initializeWorker() {
   }
 }
 
+// 服务器健康检查配置
+const UNHEALTHY_TIMEOUT = 30000; // 不健康状态持续30秒
+const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
+
+function markServerUnhealthy(server) {
+  server.isHealthy = false;
+  server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
+  server.errorCount = 0;
+  console.log(`服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后恢复`);
+}
+
+function checkServerHealth(server) {
+  if (!server.isHealthy && Date.now() >= server.recoveryTime) {
+    server.isHealthy = true;
+    server.errorCount = 0;
+    console.log(`服务器 ${server.url} 已恢复健康状态`);
+  }
+  return server.isHealthy;
+}
+
 function selectUpstreamServer() {
-  const healthyServers = localUpstreamServers.filter(server => server.healthy);
+  const healthyServers = localUpstreamServers.filter(server => {
+    if (!server.hasOwnProperty('isHealthy')) {
+      server.isHealthy = true;
+      server.errorCount = 0;
+    }
+    return checkServerHealth(server);
+  });
 
   if (healthyServers.length === 0) {
     throw new Error('没有健康的上游服务器可用');
@@ -179,14 +208,15 @@ async function handleRequest(url) {
       
     } catch (error) {
       lastError = error;
-      console.error(global.LOG_PREFIX.ERROR, 
-        `请求失败 - 服务器: ${server.url}, 错误: ${error.message}`
-      );
-
-      // 处理服务器失败
-      if (error.isTimeout || error.code === 'ECONNREFUSED') {
-        server.healthy = false;
+      if (server) {
+        server.errorCount = (server.errorCount || 0) + 1;
+        if (server.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
+          markServerUnhealthy(server);
+        }
       }
+      console.error(global.LOG_PREFIX.ERROR, 
+        `请求失败 - 服务器: ${server ? server.url : '未知'}, 错误: ${error.message}`
+      );
 
       serverSwitchCount++;
       
