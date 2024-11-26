@@ -342,17 +342,17 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
 
         // 确保配置参数有效
-        const safeBaseMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' ? BASE_WEIGHT_MULTIPLIER : 0.02;
-        const safeDynamicMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' ? DYNAMIC_WEIGHT_MULTIPLIER : 0.02;
+        const safeBaseMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' && BASE_WEIGHT_MULTIPLIER > 0 
+          ? BASE_WEIGHT_MULTIPLIER 
+          : 0.02;
+        const safeDynamicMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
+          ? DYNAMIC_WEIGHT_MULTIPLIER 
+          : 0.02;
         const safeAlphaStep = typeof ALPHA_ADJUSTMENT_STEP === 'number' ? ALPHA_ADJUSTMENT_STEP : 0.1;
 
-        // 计算权重
-        const normalizedTime = Math.max(server.lastEWMA, 1);
-        const baseWeightRaw = (1000 / normalizedTime) * safeBaseMultiplier;
-        const dynamicWeightRaw = (1000 / normalizedTime) * safeDynamicMultiplier;
-        
-        server.baseWeight = Math.min(100, Math.max(1, Math.floor(baseWeightRaw)));
-        server.dynamicWeight = Math.min(100, Math.max(1, Math.floor(dynamicWeightRaw)));
+        // 使用函数计算权重
+        server.baseWeight = calculateBaseWeight(server.lastEWMA, safeBaseMultiplier);
+        server.dynamicWeight = calculateDynamicWeight(server, responseTime, safeDynamicMultiplier);
 
         // 确保 alpha 有效并调整
         server.alpha = typeof server.alpha === 'number' ? server.alpha : 0.5;
