@@ -3,14 +3,20 @@ const axios = require('axios');
 const {
   initializeLogPrefix,
   validateResponse,
-  tryRequestWithRetries
+  tryRequestWithRetries,
+  calculateBaseWeight,
+  calculateDynamicWeight,
+  calculateCombinedWeight
 } = require('./utils');
+
 // 从 workerData 中解构需要的配置
 const { 
   MAX_SERVER_SWITCHES,
   UPSTREAM_TYPE,
   REQUEST_TIMEOUT,
   ALPHA_INITIAL,
+  BASE_WEIGHT_MULTIPLIER,
+  DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
   upstreamServers
 } = workerData;
@@ -41,6 +47,7 @@ async function initializeWorker() {
       alpha: ALPHA_INITIAL,
       responseTimes: [],
       responseTime: Infinity,
+      lastEWMA: Infinity
     }));
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
@@ -59,7 +66,8 @@ function selectUpstreamServer() {
 
   // 计算总权重
   const totalWeight = healthyServers.reduce((sum, server) => {
-    const weight = server.baseWeight * server.dynamicWeight;
+    // 使用 calculateCombinedWeight 计算综合权重
+    const weight = calculateCombinedWeight(server);
     return sum + weight;
   }, 0);
 
@@ -68,7 +76,7 @@ function selectUpstreamServer() {
   let weightSum = 0;
 
   for (const server of healthyServers) {
-    const weight = server.baseWeight * server.dynamicWeight;
+    const weight = calculateCombinedWeight(server);
     const probability = (weight / totalWeight * 100).toFixed(2);
     weightSum += weight;
     
@@ -78,6 +86,7 @@ function selectUpstreamServer() {
         `基础权重=${server.baseWeight}, ` +
         `动态权重=${server.dynamicWeight}, ` +
         `综合权重=${weight}, ` +
+        `alpha=${server.alpha.toFixed(2)}, ` +
         `选择概率=${probability}%`
       );
       return server;
@@ -86,7 +95,7 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = healthyServers[0];
-  const weight = server.baseWeight * server.dynamicWeight;
+  const weight = calculateCombinedWeight(server);
   const probability = (weight / totalWeight * 100).toFixed(2);
   
   console.log(global.LOG_PREFIX.WARN, 
@@ -94,6 +103,7 @@ function selectUpstreamServer() {
     `基础权重=${server.baseWeight}, ` +
     `动态权重=${server.dynamicWeight}, ` +
     `综合权重=${weight}, ` +
+    `alpha=${server.alpha.toFixed(2)}, ` +
     `选择概率=${probability}%`
   );
   return server;
@@ -196,6 +206,11 @@ async function handleRequest(url) {
 }
 
 function addWeightUpdate(server, responseTime) {
+  // 在发送消息前先更新本地权重
+  server.lastEWMA = responseTime;
+  server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
+  server.dynamicWeight = calculateDynamicWeight(server);
+  
   parentPort.postMessage({
     type: 'weight_update',
     data: {
@@ -205,4 +220,3 @@ function addWeightUpdate(server, responseTime) {
     }
   });
 }
-
