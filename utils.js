@@ -462,7 +462,6 @@ function calculateCombinedWeight(server) {
   return Math.max(1, combinedWeight);
 }
 
-// 计算动态权重
 function calculateDynamicWeight(server, responseTime) {
   // 确保参数有效
   const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
@@ -480,12 +479,16 @@ function calculateDynamicWeight(server, responseTime) {
   
   // 如果服务器不健康或者没有足够的响应时间记录
   if (!server.healthy || server.responseTimes.length === 0) {
+    console.log(`服务器 ${server.url} 不健康或无响应记录，返回权重1`);
     return 1;
   }
   
   // 计算加权平均响应时间，确保所有值都是有效的数字
   const validTimes = server.responseTimes.filter(time => typeof time === 'number' && !isNaN(time) && time > 0);
-  if (validTimes.length === 0) return 1;
+  if (validTimes.length === 0) {
+    console.log(`服务器 ${server.url} 无有效响应时间记录，返回权重1`);
+    return 1;
+  }
   
   const avgResponseTime = validTimes.reduce((sum, time) => sum + time, 0) / validTimes.length;
   
@@ -511,7 +514,13 @@ function calculateDynamicWeight(server, responseTime) {
   const finalWeight = Math.min(Math.max(1, isNaN(weight) ? 1 : weight), 100);
   
   // 打印调试信息
-  console.log(`计算动态权重 - 服务器: ${server.url}, avgTime: ${avgResponseTime}, lastEWMA: ${server.lastEWMA}, baseScore: ${baseScore}, weight: ${weight}, final: ${finalWeight}`);
+  console.log(`计算动态权重 - 服务器: ${server.url}, ` +
+    `响应时间: ${responseTime}ms, ` +
+    `平均: ${avgResponseTime.toFixed(2)}ms, ` +
+    `EWMA: ${server.lastEWMA.toFixed(2)}ms, ` +
+    `基础分数: ${baseScore.toFixed(2)}, ` +
+    `最终权重: ${finalWeight}`
+  );
   
   return finalWeight;
 }
@@ -538,5 +547,6 @@ module.exports = {
   tryRequestWithRetries,
   startHealthCheck,
   processWeightUpdateQueue,
-  calculateCombinedWeight
+  calculateCombinedWeight,
+  calculateDynamicWeight
 };
