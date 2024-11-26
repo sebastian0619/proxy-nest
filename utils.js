@@ -354,7 +354,7 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
 
         // 使用函数计算权重
         server.baseWeight = calculateBaseWeight(server.lastEWMA, safeBaseMultiplier);
-        server.dynamicWeight = calculateDynamicWeight(server, responseTime, safeDynamicMultiplier);
+        server.dynamicWeight = calculateDynamicWeight(server, responseTime);
 
         // 确保 alpha 有效并调整
         server.alpha = typeof server.alpha === 'number' ? server.alpha : 0.5;
@@ -463,28 +463,42 @@ function calculateCombinedWeight(server) {
 }
 
 // 计算动态权重
-function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER) {
+function calculateDynamicWeight(server, responseTime) {
   // 确保参数有效
   const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
     ? DYNAMIC_WEIGHT_MULTIPLIER 
-    : 50; // 默认值改为50
-  
-  // 初始化 EWMA
-  if (typeof server.lastEWMA === 'undefined') {
-    server.lastEWMA = responseTime;
-    const weight = Math.floor((1000 / Math.max(responseTime, 1)) * (safeMultiplier / 100));
-    return Math.min(Math.max(1, weight), 100);
+    : 50; // 默认值为50
+    
+  // 更新响应时间记录
+  if (!server.responseTimes) {
+    server.responseTimes = [];
   }
-
-  // 使用 EWMA 计算平均响应时间
-  const beta = 0.2; // 衰减因子
-  server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
-
-  // 计算动态权重：响应时间越短，权重越大
-  const normalizedTime = Math.max(server.lastEWMA, 1);
-  const weight = Math.floor((1000 / normalizedTime) * (safeMultiplier / 100));
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > RECENT_REQUEST_LIMIT) {
+    server.responseTimes.shift();
+  }
   
-  // 确保权重在合理范围内
+  // 如果服务器不健康或者没有足够的响应时间记录
+  if (!server.healthy || server.responseTimes.length === 0) {
+    return 1;
+  }
+  
+  // 计算加权平均响应时间
+  const avgResponseTime = server.responseTimes.reduce((sum, time) => sum + time, 0) / server.responseTimes.length;
+  
+  // 使用EWMA更新lastEWMA
+  if (!server.lastEWMA) {
+    server.lastEWMA = avgResponseTime;
+  } else {
+    server.lastEWMA = EWMA_BETA * server.lastEWMA + (1 - EWMA_BETA) * avgResponseTime;
+  }
+  
+  // 使用对数函数计算基础分数
+  const baseScore = 1000 / Math.max(server.lastEWMA, 1);
+  // 应用动态权重乘数并使用对数函数平滑
+  const weight = Math.floor(Math.log10(baseScore + 1) * safeMultiplier);
+  
+  // 确保权重在1到100之间
   return Math.min(Math.max(1, weight), 100);
 }
 
