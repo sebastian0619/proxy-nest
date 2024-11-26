@@ -502,6 +502,14 @@ function calculateDynamicWeight(server, responseTime) {
   return Math.min(Math.max(1, weight), 100);
 }
 
+const PORT = process.env.PORT || 8080;
+const BASE_WEIGHT_MULTIPLIER = parseInt(process.env.BASE_WEIGHT_MULTIPLIER || '20');
+const DYNAMIC_WEIGHT_MULTIPLIER = parseInt(process.env.DYNAMIC_WEIGHT_MULTIPLIER || '50');
+const REQUEST_TIMEOUT = 5000;
+const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
+const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
+const ALPHA_ADJUSTMENT_STEP = 0.05; // 每次非缓存请求或健康检查调整的 α 增减值
+
 module.exports = {
   initializeLogPrefix,
   initializeCache,
