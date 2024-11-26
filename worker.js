@@ -217,6 +217,8 @@ function addWeightUpdate(server, responseTime) {
 
   // 更新权重
   server.lastResponseTime = responseTime;
+  server.lastEWMA = avgResponseTime;
+  server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
   server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
   
   parentPort.postMessage({
