@@ -456,35 +456,51 @@ function calculateDynamicWeight(server, responseTime) {
     ? DYNAMIC_WEIGHT_MULTIPLIER 
     : 50;
     
-  // 初始化响应时间数组
+  // 初始化响应时间数组和权重
   if (!server.responseTimes) {
     server.responseTimes = [];
   }
+  if (!server.dynamicWeight) {
+    server.dynamicWeight = 1;
+  }
   
   // 更新响应时间记录
-  server.responseTimes.push(responseTime);
-  if (server.responseTimes.length > RECENT_REQUEST_LIMIT) {
-    server.responseTimes.shift();
+  if (typeof responseTime === 'number' && !isNaN(responseTime) && responseTime > 0) {
+    server.responseTimes.push(responseTime);
+    if (server.responseTimes.length > RECENT_REQUEST_LIMIT) {
+      server.responseTimes.shift();
+    }
   }
   
-  // 如果服务器不健康或者没有足够的响应时间记录
-  if (!server.healthy || server.responseTimes.length === 0) {
-    server.dynamicWeight = 1;
-    console.log(`服务器 ${server.url} 不健康或无响应记录，返回权重1`);
-    return 1;
+  // 如果服务器不健康，逐步降低权重
+  if (!server.healthy) {
+    const reducedWeight = Math.max(1, Math.floor(server.dynamicWeight * 0.8)); // 降低20%
+    server.dynamicWeight = reducedWeight;
+    console.log(`服务器 ${server.url} 不健康，权重降低至 ${reducedWeight}`);
+    return reducedWeight;
   }
   
-  // 计算加权平均响应时间，确保所有值都是有效的数字
+  // 计算有效的响应时间
   const validTimes = server.responseTimes.filter(time => typeof time === 'number' && !isNaN(time) && time > 0);
+  
+  // 处理初始状态或无有效记录的情况
   if (validTimes.length === 0) {
-    server.dynamicWeight = 1;
-    console.log(`服务器 ${server.url} 无有效响应时间记录，返回权重1`);
-    return 1;
+    // 使用当前响应时间作为初始权重计算依据
+    if (typeof responseTime === 'number' && !isNaN(responseTime) && responseTime > 0) {
+      const initialScore = 1000 / Math.max(responseTime, 1);
+      const initialWeight = Math.floor(Math.log10(initialScore + 1) * safeMultiplier);
+      server.dynamicWeight = Math.min(100, Math.max(1, initialWeight));
+      console.log(`服务器 ${server.url} 使用初始响应时间 ${responseTime}ms 计算权重: ${server.dynamicWeight}`);
+      return server.dynamicWeight;
+    }
+    // 如果当前响应时间也无效，保持现有权重
+    return server.dynamicWeight;
   }
   
+  // 计算平均响应时间
   const avgResponseTime = validTimes.reduce((sum, time) => sum + time, 0) / validTimes.length;
   
-  // 使用EWMA更新lastEWMA，确保值有效
+  // 使用EWMA更新lastEWMA
   if (!server.lastEWMA || isNaN(server.lastEWMA)) {
     server.lastEWMA = avgResponseTime;
   } else {
@@ -502,8 +518,19 @@ function calculateDynamicWeight(server, responseTime) {
   // 应用动态权重乘数并使用对数函数平滑
   const weight = Math.floor(Math.log10(baseScore + 1) * safeMultiplier);
   
-  // 确保权重在1到100之间，且是有效数字
-  const finalWeight = Math.min(Math.max(1, isNaN(weight) ? 1 : weight), 100);
+  // 确保权重变化不会太剧烈（最多变化50%）
+  const maxChange = server.dynamicWeight * 0.5;
+  const minWeight = Math.max(1, server.dynamicWeight - maxChange);
+  const maxWeight = Math.min(100, server.dynamicWeight + maxChange);
+  const finalWeight = Math.min(Math.max(minWeight, isNaN(weight) ? 1 : weight), maxWeight);
+  
+  // 如果服务器健康且权重较低，给予恢复机会
+  if (server.healthy && finalWeight <= server.dynamicWeight && server.dynamicWeight < 50) {
+    const recoveryWeight = Math.min(100, Math.floor(server.dynamicWeight * 1.2)); // 提升20%
+    server.dynamicWeight = recoveryWeight;
+    console.log(`服务器 ${server.url} 健康状态良好，权重提升至 ${recoveryWeight}`);
+    return recoveryWeight;
+  }
   
   // 保存计算结果到服务器对象
   server.dynamicWeight = finalWeight;
@@ -521,21 +548,47 @@ function calculateDynamicWeight(server, responseTime) {
 }
 
 function calculateCombinedWeight(server) {
-  if (!server.healthy) return 0;
+  if (!server.healthy) {
+    server.combinedWeight = 0;
+    return 0;
+  }
   
   // 确保基础权重和动态权重有效
   const baseWeight = Math.max(1, server.baseWeight || 1);
   const dynamicWeight = Math.max(1, server.dynamicWeight || 1);
-  const alpha = Math.min(Math.max(0, server.alpha || ALPHA_INITIAL), 1);
+  
+  // 根据服务器性能动态调整 alpha 值
+  if (!server.alpha) {
+    server.alpha = ALPHA_INITIAL;
+  }
+  
+  // 如果动态权重表现更好，增加其影响力
+  if (dynamicWeight > baseWeight) {
+    server.alpha = Math.min(0.8, server.alpha + 0.05);
+  } else {
+    server.alpha = Math.max(0.2, server.alpha - 0.05);
+  }
   
   // 计算综合权重
-  const combinedWeight = Math.floor(alpha * dynamicWeight + (1 - alpha) * baseWeight);
+  const combinedWeight = Math.floor(server.alpha * dynamicWeight + (1 - server.alpha) * baseWeight);
   
-  // 确保权重在有效范围内
-  const finalWeight = Math.max(1, Math.min(100, combinedWeight));
+  // 确保权重在有效范围内，且变化不会太剧烈
+  const prevWeight = server.combinedWeight || combinedWeight;
+  const maxChange = prevWeight * 0.3; // 最大允许30%的变化
+  const minWeight = Math.max(1, prevWeight - maxChange);
+  const maxWeight = Math.min(100, prevWeight + maxChange);
+  const finalWeight = Math.min(Math.max(minWeight, combinedWeight), maxWeight);
   
   // 保存计算结果到服务器对象
   server.combinedWeight = finalWeight;
+  
+  // 打印详细的权重计算信息
+  console.log(`综合权重计算 - 服务器: ${server.url}, ` +
+    `基础权重: ${baseWeight}, ` +
+    `动态权重: ${dynamicWeight}, ` +
+    `alpha: ${server.alpha.toFixed(2)}, ` +
+    `最终权重: ${finalWeight}`
+  );
   
   return finalWeight;
 }
