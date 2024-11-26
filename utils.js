@@ -89,10 +89,12 @@ async function initializeLogPrefix() {
 // 计算基础权重
 function calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER) {
   // 确保参数有效
-  const safeMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' ? BASE_WEIGHT_MULTIPLIER : 0.02;
+  const safeMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' && BASE_WEIGHT_MULTIPLIER > 0 
+    ? BASE_WEIGHT_MULTIPLIER 
+    : 20; // 默认值改为20
   
   // 确保响应时间至少为1ms，避免除零
-  const weight = Math.floor((1000 / Math.max(responseTime, 1)) * safeMultiplier);
+  const weight = Math.floor((1000 / Math.max(responseTime, 1)) * (safeMultiplier / 100));
   return Math.min(Math.max(1, weight), 100);
 }
 
@@ -465,12 +467,12 @@ function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER)
   // 确保参数有效
   const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
     ? DYNAMIC_WEIGHT_MULTIPLIER 
-    : 0.02;
+    : 50; // 默认值改为50
   
   // 初始化 EWMA
   if (typeof server.lastEWMA === 'undefined') {
     server.lastEWMA = responseTime;
-    const weight = Math.floor((1000 / Math.max(responseTime, 1)) * safeMultiplier);
+    const weight = Math.floor((1000 / Math.max(responseTime, 1)) * (safeMultiplier / 100));
     return Math.min(Math.max(1, weight), 100);
   }
 
@@ -480,7 +482,7 @@ function calculateDynamicWeight(server, responseTime, DYNAMIC_WEIGHT_MULTIPLIER)
 
   // 计算动态权重：响应时间越短，权重越大
   const normalizedTime = Math.max(server.lastEWMA, 1);
-  const weight = Math.floor((1000 / normalizedTime) * safeMultiplier);
+  const weight = Math.floor((1000 / normalizedTime) * (safeMultiplier / 100));
   
   // 确保权重在合理范围内
   return Math.min(Math.max(1, weight), 100);
