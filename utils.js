@@ -106,67 +106,45 @@ function initializeServerState(server) {
 }
 
 // 计算基础权重
-function calculateBaseWeight(responseTime, multiplier) {
-  try {
-    if (!responseTime || isNaN(responseTime) || responseTime <= 0) {
-      return 1;
-    }
-    
-    // 基础权重计算：响应时间越短，权重越大
-    const weight = Math.floor(multiplier * (1000 / Math.max(responseTime, 1)));
-    
-    // 确保权重在合理范围内 (1-100)
-    return Math.min(Math.max(1, weight), 100);
-  } catch (error) {
-    console.error('[ 错误 ] 基础权重计算失败:', error);
+function calculateBaseWeight(responseTime, multiplier = 0.02) {
+  // 确保输入参数有效
+  if (typeof responseTime !== 'number' || isNaN(responseTime) || responseTime <= 0) {
     return 1;
   }
+
+  // 基础权重计算：响应时间越短，权重越大
+  const weight = Math.floor(1000 / responseTime * multiplier);
+  
+  // 确保权重在合理范围内
+  return Math.min(Math.max(1, weight), 100);
 }
 
 // 计算动态权重
-function calculateDynamicWeight(avgResponseTime, multiplier) {
-  try {
-    // 动态权重计算：响应时间越短，权重越大
-    const weight = Math.floor(multiplier * (1000 / Math.max(avgResponseTime, 1)));
-    
-    // 确保权重在合理范围内 (1-100)
-    return Math.min(Math.max(1, weight), 100);
-  } catch (error) {
-    console.error('[ 错误 ] 动态权重计算失败:', error);
+function calculateDynamicWeight(responseTime, multiplier = 0.02) {
+  // 确保输入参数有效
+  if (typeof responseTime !== 'number' || isNaN(responseTime) || responseTime <= 0) {
     return 1;
   }
+
+  // 动态权重计算：响应时间越短，权重越大
+  const weight = Math.floor(1000 / responseTime * multiplier);
+  
+  // 确保权重在合理范围内
+  return Math.min(Math.max(1, weight), 100);
 }
 
 // 计算综合权重
 function calculateCombinedWeight(server) {
-  try {
-    const state = initializeServerState(server);
-    
-    // 如果服务器不健康，返回最小权重
-    if (!state.healthy) {
-      return 1;
-    }
-
-    // 确保所有必要的属性都存在且有效
-    const baseWeight = state.baseWeight || 1;
-    const dynamicWeight = state.dynamicWeight || 1;
-    
-    // 动态调整 alpha 值
-    if (dynamicWeight > baseWeight) {
-      state.alpha = Math.min(0.8, state.alpha + config.ALPHA_ADJUSTMENT_STEP);
-    } else {
-      state.alpha = Math.max(0.2, state.alpha - config.ALPHA_ADJUSTMENT_STEP);
-    }
-    
-    // 计算综合权重
-    const combinedWeight = Math.floor(state.alpha * dynamicWeight + (1 - state.alpha) * baseWeight);
-    
-    // 确保最终权重在有效范围内
-    return Math.min(Math.max(1, combinedWeight), 100);
-  } catch (error) {
-    console.error('[ 错误 ] 综合权重计算失败:', error);
+  if (!server || !server.baseWeight || !server.dynamicWeight) {
     return 1;
   }
+
+  // 使用加权平均计算综合权重
+  const alpha = 0.7; // 基础权重的比重
+  const combinedWeight = alpha * server.baseWeight + (1 - alpha) * server.dynamicWeight;
+  
+  // 确保权重在合理范围内
+  return Math.min(Math.max(1, Math.floor(combinedWeight)), 100);
 }
 
 // 更新服务器状态

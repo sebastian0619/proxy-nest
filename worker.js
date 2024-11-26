@@ -201,10 +201,23 @@ async function handleRequest(url) {
 }
 
 function addWeightUpdate(server, responseTime) {
-  // 在发送消息前先更新本地权重
-  server.lastEWMA = responseTime;
-  server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
-  server.dynamicWeight = calculateDynamicWeight(server);
+  // 更新响应时间队列
+  if (!server.responseTimes) {
+    server.responseTimes = [];
+  }
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > 3) {
+    server.responseTimes.shift();
+  }
+
+  // 计算平均响应时间
+  const avgResponseTime = server.responseTimes.length === 3
+    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
+    : responseTime;
+
+  // 更新权重
+  server.lastResponseTime = responseTime;
+  server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
   
   parentPort.postMessage({
     type: 'weight_update',
