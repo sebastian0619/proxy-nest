@@ -5,6 +5,7 @@ const path = require('path');
 const axios = require('axios');
 const crypto = require('crypto');
 const url = require('url');
+const config = require('./config');
 
 // 添加 LRU 缓存类
 class LRUCache {
@@ -34,19 +35,21 @@ class LRUCache {
 
 // 初始化缓存
 async function initializeCache() {
-  const config = require('./config');
+  const {
+    CACHE_CONFIG
+  } = config;
   
-  if (!config.CACHE_CONFIG.CACHE_DIR) {
+  if (!CACHE_CONFIG.CACHE_DIR) {
     throw new Error('CACHE_DIR 未在配置中定义');
   }
 
   const diskCache = new Map();
-  const lruCache = new LRUCache(config.CACHE_CONFIG.MEMORY_CACHE_SIZE || 100);
+  const lruCache = new LRUCache(CACHE_CONFIG.MEMORY_CACHE_SIZE || 100);
 
   try {
     // 确保缓存目录存在
-    await fs.mkdir(config.CACHE_CONFIG.CACHE_DIR, { recursive: true });
-    const indexPath = path.join(config.CACHE_CONFIG.CACHE_DIR, config.CACHE_CONFIG.CACHE_INDEX_FILE);
+    await fs.mkdir(CACHE_CONFIG.CACHE_DIR, { recursive: true });
+    const indexPath = path.join(CACHE_CONFIG.CACHE_DIR, CACHE_CONFIG.CACHE_INDEX_FILE);
     
     try {
       const indexData = await fs.readFile(indexPath);
@@ -564,9 +567,9 @@ function calculateCombinedWeight(server) {
   
   // 如果动态权重表现更好，增加其影响力
   if (dynamicWeight > baseWeight) {
-    server.alpha = Math.min(0.8, server.alpha + 0.05);
+    server.alpha = Math.min(0.8, server.alpha + ALPHA_ADJUSTMENT_STEP);
   } else {
-    server.alpha = Math.max(0.2, server.alpha - 0.05);
+    server.alpha = Math.max(0.2, server.alpha - ALPHA_ADJUSTMENT_STEP);
   }
   
   // 计算综合权重
@@ -593,14 +596,18 @@ function calculateCombinedWeight(server) {
   return finalWeight;
 }
 
-const PORT = process.env.PORT || 8080;
-const BASE_WEIGHT_MULTIPLIER = parseInt(process.env.BASE_WEIGHT_MULTIPLIER || '20');
-const DYNAMIC_WEIGHT_MULTIPLIER = parseInt(process.env.DYNAMIC_WEIGHT_MULTIPLIER || '50');
-const REQUEST_TIMEOUT = 5000;
-const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
-const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
-const ALPHA_ADJUSTMENT_STEP = 0.05; // 每次非缓存请求或健康检查调整的 α 增减值
+const {
+  PORT,
+  BASE_WEIGHT_MULTIPLIER,
+  DYNAMIC_WEIGHT_MULTIPLIER,
+  REQUEST_TIMEOUT,
+  ALPHA_INITIAL,
+  ALPHA_ADJUSTMENT_STEP
+} = config;
+
+// EWMA 和请求限制配置
 const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
+const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
 
 module.exports = {
   initializeLogPrefix,
