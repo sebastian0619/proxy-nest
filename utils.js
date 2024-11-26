@@ -509,6 +509,7 @@ const REQUEST_TIMEOUT = 5000;
 const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
 const ALPHA_INITIAL = 0.5; // 初始平滑因子 α
 const ALPHA_ADJUSTMENT_STEP = 0.05; // 每次非缓存请求或健康检查调整的 α 增减值
+const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
 
 module.exports = {
   initializeLogPrefix,
