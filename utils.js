@@ -124,27 +124,13 @@ function calculateBaseWeight(responseTime, multiplier) {
 }
 
 // 计算动态权重
-function calculateDynamicWeight(server) {
+function calculateDynamicWeight(avgResponseTime, multiplier) {
   try {
-    const state = initializeServerState(server);
+    // 动态权重计算：响应时间越短，权重越大
+    const weight = Math.floor(multiplier * (1000 / Math.max(avgResponseTime, 1)));
     
-    // 如果服务器不健康，降低权重
-    if (!state.healthy) {
-      state.dynamicWeight = Math.max(1, Math.floor(state.dynamicWeight * 0.5));
-      return state.dynamicWeight;
-    }
-
-    // 使用 lastEWMA 计算动态权重
-    const responseTime = Math.max(1, state.lastEWMA);
-    const weight = Math.floor(config.DYNAMIC_WEIGHT_MULTIPLIER * (1000 / responseTime));
-    
-    // 确保权重在1-100之间
-    state.dynamicWeight = Math.min(Math.max(1, weight), 100);
-    
-    // 更新基础权重
-    state.baseWeight = calculateBaseWeight(responseTime, config.BASE_WEIGHT_MULTIPLIER);
-    
-    return state.dynamicWeight;
+    // 确保权重在合理范围内 (1-100)
+    return Math.min(Math.max(1, weight), 100);
   } catch (error) {
     console.error('[ 错误 ] 动态权重计算失败:', error);
     return 1;
@@ -191,23 +177,19 @@ function updateServerState(server, responseTime, healthy = true) {
   state.healthy = healthy;
   
   if (healthy && responseTime > 0) {
-    // 更新响应时间记录
+    // 更新响应时间记录，保持最近3次
     state.responseTimes.push(responseTime);
-    if (state.responseTimes.length > config.RECENT_REQUEST_LIMIT) {
+    if (state.responseTimes.length > 3) {
       state.responseTimes.shift();
     }
     
-    // 更新 EWMA
-    if (!state.lastEWMA || isNaN(state.lastEWMA)) {
-      state.lastEWMA = responseTime;
-    } else {
-      state.lastEWMA = config.EWMA_BETA * state.lastEWMA + (1 - config.EWMA_BETA) * responseTime;
+    // 计算最近3次请求的平均响应时间
+    if (state.responseTimes.length === 3) {
+      const avgResponseTime = state.responseTimes.reduce((a, b) => a + b, 0) / 3;
+      // 只更新动态权重
+      state.dynamicWeight = calculateDynamicWeight(avgResponseTime, config.DYNAMIC_WEIGHT_MULTIPLIER);
     }
   }
-  
-  // 更新权重
-  state.baseWeight = calculateBaseWeight(state.lastEWMA, config.BASE_WEIGHT_MULTIPLIER);
-  state.dynamicWeight = calculateDynamicWeight(server);
   
   // 更新时间戳
   state.lastUpdateTime = Date.now();
@@ -275,7 +257,7 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
       timeout: REQUEST_TIMEOUT,
     });
     const responseTime = Date.now() - start;
-    
+
     console.log(LOG_PREFIX.SUCCESS, `健康检查成功 - 服务器: ${server.url}, 响应时间: ${responseTime}ms`);
     return responseTime;
   } catch (error) {
@@ -418,8 +400,7 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
     TMDB_API_KEY,
     TMDB_IMAGE_TEST_URL,
     BASE_WEIGHT_MULTIPLIER,
-    DYNAMIC_WEIGHT_MULTIPLIER,
-    ALPHA_ADJUSTMENT_STEP
+    DYNAMIC_WEIGHT_MULTIPLIER
   } = config;
 
   console.log(LOG_PREFIX.INFO, '启动健康检查服务');
@@ -450,69 +431,52 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         server.healthy = true;
         server.lastCheck = Date.now();
 
-        // 初始化 EWMA 和 alpha
+        // 获取最近三次响应时间的平均值
+        const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
+          ? server.responseTimes.reduce((a, b) => a + b, 0) / 3 
+          : responseTime;
+
+        // 使用平均响应时间计算 EWMA
         if (typeof server.lastEWMA === 'undefined') {
-          server.lastEWMA = responseTime;
-          server.alpha = 0.5;
-        }
-
-        // 使用 EWMA 计算平均响应时间
-        const beta = 0.2;
-        server.lastEWMA = beta * responseTime + (1 - beta) * server.lastEWMA;
-
-        // 确保配置参数有效
-        const safeBaseMultiplier = typeof BASE_WEIGHT_MULTIPLIER === 'number' && BASE_WEIGHT_MULTIPLIER > 0 
-          ? BASE_WEIGHT_MULTIPLIER 
-          : 0.02;
-        const safeDynamicMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
-          ? DYNAMIC_WEIGHT_MULTIPLIER 
-          : 0.02;
-        const safeAlphaStep = typeof ALPHA_ADJUSTMENT_STEP === 'number' ? ALPHA_ADJUSTMENT_STEP : 0.1;
-
-        // 使用函数计算权重
-        server.baseWeight = calculateBaseWeight(server.lastEWMA, safeBaseMultiplier);
-        server.dynamicWeight = calculateDynamicWeight(server);
-
-        // 确保 alpha 有效并调整
-        server.alpha = typeof server.alpha === 'number' ? server.alpha : 0.5;
-        
-        if (responseTime < server.lastEWMA) {
-          server.alpha = Math.min(1, server.alpha + safeAlphaStep);
+          server.lastEWMA = avgResponseTime;
         } else {
-          server.alpha = Math.max(0.1, server.alpha - safeAlphaStep);
+          const beta = 0.2; // EWMA 衰减因子
+          server.lastEWMA = beta * avgResponseTime + (1 - beta) * server.lastEWMA;
         }
+
+        // 计算基础权重
+        server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
+
+        // 计算动态权重
+        server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
 
         // 计算综合权重
-        const combinedWeightRaw = server.alpha * server.dynamicWeight + (1 - server.alpha) * server.baseWeight;
-        server.combinedWeight = Math.min(100, Math.max(1, Math.floor(combinedWeightRaw)));
+        const combinedWeight = calculateCombinedWeight(server);
 
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器 ${server.url} 健康检查成功, ` +
           `响应时间: ${responseTime}ms, ` +
-          `平均: ${server.lastEWMA.toFixed(2)}ms, ` +
+          `最近3次平均: ${avgResponseTime.toFixed(0)}ms, ` +
+          `EWMA: ${server.lastEWMA.toFixed(0)}ms, ` +
           `基础权重: ${server.baseWeight}, ` +
           `动态权重: ${server.dynamicWeight}, ` +
-          `综合权重: ${server.combinedWeight}, ` +
-          `alpha: ${server.alpha.toFixed(2)}`
+          `综合权重: ${combinedWeight}`
         );
       } catch (error) {
         server.healthy = false;
         server.lastCheck = Date.now();
         server.baseWeight = 0;
         server.dynamicWeight = 0;
-        server.combinedWeight = 0;
-        console.error(LOG_PREFIX.ERROR, 
-          `服务器 ${server.url} 健康检查失败: ${error.message}`
-        );
+        console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
       }
     }
   };
 
   // 立即执行一次健康检查
   await healthCheck();
-  
-  // 设置定时执行
-  return setInterval(healthCheck, BASE_WEIGHT_UPDATE_INTERVAL);
+
+  // 每30分钟执行一次健康检查
+  setInterval(healthCheck, BASE_WEIGHT_UPDATE_INTERVAL);
 }
 
 // 处理权重更新队列

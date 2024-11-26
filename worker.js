@@ -80,8 +80,12 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
+      const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
+        ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
+        : '未知';
+      
       console.log(global.LOG_PREFIX.SUCCESS, 
-        `选择服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}%]`
+        `选择服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
       );
       return server;
     }
@@ -90,8 +94,12 @@ function selectUpstreamServer() {
   // 保底返回第一个服务器
   const server = healthyServers[0];
   const weight = calculateCombinedWeight(server);
+  const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
+    ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
+    : '未知';
+    
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}%]`
+    `保底服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
   );
   return server;
 }
