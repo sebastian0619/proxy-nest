@@ -77,17 +77,11 @@ function selectUpstreamServer() {
 
   for (const server of healthyServers) {
     const weight = calculateCombinedWeight(server);
-    const probability = (weight / totalWeight * 100).toFixed(2);
     weightSum += weight;
     
     if (weightSum > random) {
       console.log(global.LOG_PREFIX.SUCCESS, 
-        `选中服务器: ${server.url}, ` +
-        `基础权重=${server.baseWeight}, ` +
-        `动态权重=${server.dynamicWeight}, ` +
-        `综合权重=${weight}, ` +
-        `alpha=${server.alpha.toFixed(2)}, ` +
-        `选择概率=${probability}%`
+        `选择服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}%]`
       );
       return server;
     }
@@ -96,15 +90,8 @@ function selectUpstreamServer() {
   // 保底返回第一个服务器
   const server = healthyServers[0];
   const weight = calculateCombinedWeight(server);
-  const probability = (weight / totalWeight * 100).toFixed(2);
-  
   console.log(global.LOG_PREFIX.WARN, 
-    `使用保底服务器: ${server.url}, ` +
-    `基础权重=${server.baseWeight}, ` +
-    `动态权重=${server.dynamicWeight}, ` +
-    `综合权重=${weight}, ` +
-    `alpha=${server.alpha.toFixed(2)}, ` +
-    `选择概率=${probability}%`
+    `保底服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}%]`
   );
   return server;
 }

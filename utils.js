@@ -138,12 +138,8 @@ function calculateDynamicWeight(server) {
     const responseTime = Math.max(1, state.lastEWMA);
     const weight = Math.floor(config.DYNAMIC_WEIGHT_MULTIPLIER * (1000 / responseTime));
     
-    // 确保权重变化不会太剧烈（最多变化30%）
-    const maxChange = state.dynamicWeight * 0.3;
-    const minWeight = Math.max(1, state.dynamicWeight - maxChange);
-    const maxWeight = Math.min(100, state.dynamicWeight + maxChange);
-    
-    state.dynamicWeight = Math.min(Math.max(minWeight, weight), maxWeight);
+    // 确保权重在1-100之间
+    state.dynamicWeight = Math.min(Math.max(1, weight), 100);
     
     // 更新基础权重
     state.baseWeight = calculateBaseWeight(responseTime, config.BASE_WEIGHT_MULTIPLIER);
@@ -180,18 +176,7 @@ function calculateCombinedWeight(server) {
     const combinedWeight = Math.floor(state.alpha * dynamicWeight + (1 - state.alpha) * baseWeight);
     
     // 确保最终权重在有效范围内
-    const finalWeight = Math.min(Math.max(1, combinedWeight), 100);
-
-    // 记录详细的权重计算过程
-    console.log(
-      '综合权重计算 - 服务器:', server.url,
-      ', 基础权重:', baseWeight,
-      ', 动态权重:', dynamicWeight,
-      ', alpha:', state.alpha.toFixed(2),
-      ', 最终权重:', finalWeight
-    );
-
-    return finalWeight;
+    return Math.min(Math.max(1, combinedWeight), 100);
   } catch (error) {
     console.error('[ 错误 ] 综合权重计算失败:', error);
     return 1;
