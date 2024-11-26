@@ -467,7 +467,7 @@ function calculateDynamicWeight(server, responseTime) {
   // 确保参数有效
   const safeMultiplier = typeof DYNAMIC_WEIGHT_MULTIPLIER === 'number' && DYNAMIC_WEIGHT_MULTIPLIER > 0 
     ? DYNAMIC_WEIGHT_MULTIPLIER 
-    : 50; // 默认值为50
+    : 50;
     
   // 更新响应时间记录
   if (!server.responseTimes) {
@@ -483,23 +483,37 @@ function calculateDynamicWeight(server, responseTime) {
     return 1;
   }
   
-  // 计算加权平均响应时间
-  const avgResponseTime = server.responseTimes.reduce((sum, time) => sum + time, 0) / server.responseTimes.length;
+  // 计算加权平均响应时间，确保所有值都是有效的数字
+  const validTimes = server.responseTimes.filter(time => typeof time === 'number' && !isNaN(time) && time > 0);
+  if (validTimes.length === 0) return 1;
   
-  // 使用EWMA更新lastEWMA
-  if (!server.lastEWMA) {
+  const avgResponseTime = validTimes.reduce((sum, time) => sum + time, 0) / validTimes.length;
+  
+  // 使用EWMA更新lastEWMA，确保值有效
+  if (!server.lastEWMA || isNaN(server.lastEWMA)) {
     server.lastEWMA = avgResponseTime;
   } else {
     server.lastEWMA = EWMA_BETA * server.lastEWMA + (1 - EWMA_BETA) * avgResponseTime;
   }
   
+  // 确保 lastEWMA 是有效值
+  if (isNaN(server.lastEWMA) || server.lastEWMA <= 0) {
+    server.lastEWMA = avgResponseTime;
+  }
+  
   // 使用对数函数计算基础分数
   const baseScore = 1000 / Math.max(server.lastEWMA, 1);
+  
   // 应用动态权重乘数并使用对数函数平滑
   const weight = Math.floor(Math.log10(baseScore + 1) * safeMultiplier);
   
-  // 确保权重在1到100之间
-  return Math.min(Math.max(1, weight), 100);
+  // 确保权重在1到100之间，且是有效数字
+  const finalWeight = Math.min(Math.max(1, isNaN(weight) ? 1 : weight), 100);
+  
+  // 打印调试信息
+  console.log(`计算动态权重 - 服务器: ${server.url}, avgTime: ${avgResponseTime}, lastEWMA: ${server.lastEWMA}, baseScore: ${baseScore}, weight: ${weight}, final: ${finalWeight}`);
+  
+  return finalWeight;
 }
 
 const PORT = process.env.PORT || 8080;
