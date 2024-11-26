@@ -46,8 +46,8 @@ async function initializeWorker() {
       dynamicWeight: 1,
       alpha: ALPHA_INITIAL,
       responseTimes: [],
-      responseTime: Infinity,
-      lastEWMA: Infinity
+      lastResponseTime: 0,
+      lastEWMA: 0
     }));
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
@@ -66,6 +66,10 @@ function selectUpstreamServer() {
 
   // 计算总权重
   const totalWeight = healthyServers.reduce((sum, server) => {
+    // 确保服务器有基本的权重属性
+    if (!server.baseWeight) server.baseWeight = 1;
+    if (!server.dynamicWeight) server.dynamicWeight = 1;
+
     // 使用 calculateCombinedWeight 计算综合权重
     const weight = calculateCombinedWeight(server);
     return sum + weight;
@@ -80,6 +84,7 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
+      // 计算平均响应时间
       const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
         : '未知';
