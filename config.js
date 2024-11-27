@@ -21,7 +21,13 @@ module.exports = {
   // 服务器配置
   PORT: process.env.PORT || 6635,
   NUM_WORKERS: Math.max(1, os.cpus().length - 1),
-  REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '5000'),
+  UNHEALTHY_TIMEOUT: 300000,           // 不健康状态持续5分钟
+  MAX_ERRORS_BEFORE_UNHEALTHY: 3,      // 连续3次错误后标记为不健康
+  
+  // 请求超时配置
+  INITIAL_TIMEOUT: 8000,               // 初始请求超时时间（8秒）
+  PARALLEL_TIMEOUT: 20000,             // 外部程序最大等待时间（20秒）
+  REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '10000'), // 单个请求的默认超时时间
   
   // TMDB 相关配置
   UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb-api',

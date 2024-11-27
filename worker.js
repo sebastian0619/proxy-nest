@@ -163,76 +163,77 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
-  let lastError = null;
-  let serverSwitchCount = 0;
-
-  while (serverSwitchCount < MAX_SERVER_SWITCHES) {
-    const server = selectUpstreamServer();
-
+  // 第一阶段：使用权重选择的服务器
+  const selectedServer = selectUpstreamServer();
+  try {
+    const result = await tryRequestWithRetries(selectedServer, url, {
+      REQUEST_TIMEOUT,
+      UPSTREAM_TYPE
+    }, global.LOG_PREFIX);
+    
+    // 成功后更新服务器权重
+    addWeightUpdate(selectedServer, result.responseTime);
+    
+    // 验证响应
     try {
-      const result = await tryRequestWithRetries(server, url, {
-        REQUEST_TIMEOUT,
+      const isValid = validateResponse(
+        result.data,
+        result.contentType,
         UPSTREAM_TYPE
-      }, global.LOG_PREFIX);
-      
-      // 成功后更新服务器权重
-      addWeightUpdate(server, result.responseTime);
-      
-      // 验证响应
-      try {
-        const isValid = validateResponse(
-          result.data,
-          result.contentType,
-          UPSTREAM_TYPE
-        );
-        
-        if (!isValid) {
-          throw new Error('Invalid response from upstream server');
-        }
-      } catch (error) {
-        console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
-        throw error;
-      }
-
-      // 确保图片数据以 Buffer 形式返回
-      if (result.contentType.startsWith('image/')) {
-        return {
-          data: Buffer.from(result.data),  // 确保是 Buffer
-          contentType: result.contentType,
-          responseTime: result.responseTime
-        };
-      }
-      
-      // 其他类型数据保持原样
-      return result;
-      
-    } catch (error) {
-      lastError = error;
-      if (server) {
-        server.errorCount = (server.errorCount || 0) + 1;
-        if (server.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-          markServerUnhealthy(server);
-        }
-      }
-      console.error(global.LOG_PREFIX.ERROR, 
-        `请求失败 - 服务器: ${server ? server.url : '未知'}, 错误: ${error.message}`
       );
-
-      serverSwitchCount++;
       
-      if (serverSwitchCount < MAX_SERVER_SWITCHES) {
-        console.log(global.LOG_PREFIX.WARN, 
-          `切换到下一个服务器 ${serverSwitchCount}/${MAX_SERVER_SWITCHES}`
-        );
-        continue;
+      if (!isValid) {
+        throw new Error('Invalid response from upstream server');
       }
+    } catch (error) {
+      console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
+      throw error;
     }
+
+    // 确保图片数据以 Buffer 形式返回
+    if (result.contentType.startsWith('image/')) {
+      return {
+        data: Buffer.from(result.data),  // 确保是 Buffer
+        contentType: result.contentType,
+        responseTime: result.responseTime
+      };
+    }
+    
+    // 其他类型数据保持原样
+    return result;
+    
+  } catch (error) {
+    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
   }
 
-  // 所有尝试都失败了
-  throw new Error(
-    `所有服务器都失败 (${MAX_SERVER_SWITCHES} 次切换): ${lastError.message}`
+  // 第二阶段：并行请求其他健康服务器
+  const healthyServers = localUpstreamServers.filter(server => 
+    server !== selectedServer && checkServerHealth(server)
   );
+
+  if (healthyServers.length === 0) {
+    throw new Error('没有其他健康的服务器可用于并行请求');
+  }
+
+  try {
+    // 剩余时间作为并行请求的超时时间（20秒总限制减去已经用掉的8秒）
+    const result = await tryRequestWithRetries(healthyServers, url, {
+      timeout: REQUEST_TIMEOUT - 8000,
+      upstreamType: UPSTREAM_TYPE
+    }, global.LOG_PREFIX);
+    
+    if (result.success) {
+      addWeightUpdate(result.server, result.responseTime);
+      return result;
+    }
+    throw new Error('并行请求全部失败');
+  } catch (error) {
+    selectedServer.errorCount++;
+    if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
+      markServerUnhealthy(selectedServer);
+    }
+    throw error;
+  }
 }
 
 function addWeightUpdate(server, responseTime) {

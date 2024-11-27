@@ -501,6 +501,59 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
   }
 }
 
+// 并行请求相关函数
+async function makeRequest(server, url, timeout) {
+  const axios = require('axios');
+  const fullUrl = `${server.url}${url}`;
+  
+  try {
+    const startTime = Date.now();
+    const response = await axios({
+      method: 'get',
+      url: fullUrl,
+      timeout: timeout,
+      headers: {
+        'User-Agent': 'tmdb-go-proxy'
+      }
+    });
+    
+    const responseTime = Date.now() - startTime;
+    return {
+      success: true,
+      data: response.data,
+      responseTime,
+      server
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error,
+      server
+    };
+  }
+}
+
+async function makeParallelRequests(servers, url, timeout) {
+  const requests = servers.map(server => 
+    makeRequest(server, url, timeout)
+  );
+  
+  try {
+    const responses = await Promise.all(requests);
+    // 过滤出成功的响应并按响应时间排序
+    const successfulResponses = responses
+      .filter(r => r.success)
+      .sort((a, b) => a.responseTime - b.responseTime);
+      
+    if (successfulResponses.length > 0) {
+      return successfulResponses[0]; // 返回最快的成功响应
+    }
+    throw new Error('所有并行请求都失败了');
+  } catch (error) {
+    throw error;
+  }
+}
+
 const {
   PORT,
   BASE_WEIGHT_MULTIPLIER,
@@ -529,5 +582,7 @@ module.exports = {
   processWeightUpdateQueue,
   calculateCombinedWeight,
   calculateDynamicWeight,
-  updateServerState
+  updateServerState,
+  makeRequest,
+  makeParallelRequests
 };
