@@ -24,10 +24,10 @@ export class MemoryCache implements ICacheService {
   }
 
   async set(key: string, value: CacheItem): Promise<void> {
-    // 如果超过最大大小，删除最早的项
+    // 如果缓存已满，删除最旧的项
     if (this.cache.size >= this.options.maxSize) {
-      const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
     }
 
     this.cache.set(key, value);
@@ -43,5 +43,9 @@ export class MemoryCache implements ICacheService {
 
   async has(key: string): Promise<boolean> {
     return this.cache.has(key);
+  }
+
+  async cleanup(): Promise<void> {
+    this.cache.clear();
   }
 }

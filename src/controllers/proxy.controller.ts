@@ -2,6 +2,8 @@ import { Response, NextFunction } from 'express';
 import { ProxyRequest, ProxyResponse, ProxyControllerDeps } from './types';
 import { CacheItem } from '../types';
 import { validateResponse } from '../utils/validation';
+import { ICacheService } from '../services/cache/types';
+import { IWorkerPool } from '../services/worker/types';
 
 export class ProxyController {
   private diskCache: ICacheService;
@@ -21,10 +23,10 @@ export class ProxyController {
       return cachedItem;
     }
 
-    // 检查磁盘缓存
+    // 如果内存缓存没有，检查磁盘缓存
     cachedItem = await this.diskCache.get(key);
     if (cachedItem) {
-      // 将磁盘缓存项加入内存缓存
+      // 如果在磁盘缓存中找到，也放入内存缓存
       await this.memoryCache.set(key, cachedItem);
       return cachedItem;
     }
@@ -32,69 +34,57 @@ export class ProxyController {
     return null;
   }
 
-  private async cacheResponse(key: string, response: ProxyResponse): Promise<void> {
-    const cacheItem: CacheItem = {
-      data: response.data,
-      contentType: response.contentType,
-      timestamp: Date.now()
-    };
-
-    // 并行写入两级缓存
-    await Promise.all([
-      this.diskCache.set(key, cacheItem),
-      this.memoryCache.set(key, cacheItem)
-    ]);
-  }
-
-  private sendResponse(res: Response, item: CacheItem | ProxyResponse): void {
-    res.setHeader('Content-Type', item.contentType);
-    
-    if (Buffer.isBuffer(item.data)) {
-      res.end(item.data);
-    } else if (typeof item.data === 'string') {
-      res.send(item.data);
-    } else {
-      res.json(item.data);
-    }
-  }
-
-  public handleRequest = async (
-    req: ProxyRequest,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
+  async handleRequest(req: ProxyRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const cacheKey = req.cacheKey;
       if (!cacheKey) {
         throw new Error('Missing cache key');
       }
 
-      // 尝试获取缓存响应
-      const cachedItem = await this.getCachedResponse(cacheKey);
-      if (cachedItem) {
-        this.sendResponse(res, cachedItem);
+      // 尝试从缓存获取
+      const cachedResponse = await this.getCachedResponse(cacheKey);
+      if (cachedResponse) {
+        res.setHeader('Content-Type', cachedResponse.contentType);
+        res.setHeader('X-Cache', 'HIT');
+        res.send(cachedResponse.data);
         return;
       }
 
-      // 通过工作线程处理新请求
-      const response = await this.workerPool.handleRequest({
+      // 如果缓存中没有，则请求上游服务器
+      const response = await this.workerPool.execute({
+        type: 'request',
         url: req.originalUrl,
-        requestId: cacheKey
+        timeout: 5000
       });
 
+      if (!response.success || !response.data) {
+        throw new Error(response.error || 'Failed to fetch from upstream');
+      }
+
       // 验证响应
-      if (!validateResponse(response.data, response.contentType)) {
-        throw new Error('Invalid upstream response');
+      if (!validateResponse(response.data)) {
+        throw new Error('Invalid response from upstream');
       }
 
       // 缓存响应
-      await this.cacheResponse(cacheKey, response);
+      const cacheItem: CacheItem = {
+        data: response.data,
+        contentType: 'application/json',
+        timestamp: Date.now()
+      };
+
+      await Promise.all([
+        this.memoryCache.set(cacheKey, cacheItem),
+        this.diskCache.set(cacheKey, cacheItem)
+      ]);
 
       // 发送响应
-      this.sendResponse(res, response);
+      res.setHeader('Content-Type', cacheItem.contentType);
+      res.setHeader('X-Cache', 'MISS');
+      res.send(cacheItem.data);
 
     } catch (error) {
       next(error);
     }
-  };
+  }
 }

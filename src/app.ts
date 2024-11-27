@@ -1,6 +1,7 @@
 import express, { Application } from 'express';
+import * as http from 'http';
 import { setupMiddlewares } from './middlewares';
-import { createProxyController } from './controllers/proxy.controller';
+import { ProxyController } from './controllers/proxy.controller';
 import { DiskCache } from './services/cache/disk-cache';
 import { MemoryCache } from './services/cache/memory-cache';
 import { WorkerPool } from './services/worker/worker-pool';
@@ -42,7 +43,7 @@ export class App {
   }
 
   private setupRoutes(): void {
-    const proxyController = createProxyController({
+    const proxyController = new ProxyController({
       diskCache: this.diskCache,
       memoryCache: this.memoryCache,
       workerPool: this.workerPool

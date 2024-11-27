@@ -82,4 +82,23 @@ export class DiskCache implements ICacheService {
       return false;
     }
   }
+
+  async cleanup(): Promise<void> {
+    try {
+      const files = await fs.readdir(this.cacheDir);
+      for (const file of files) {
+        if (file === path.basename(this.indexFile)) continue;
+        
+        const filePath = path.join(this.cacheDir, file);
+        try {
+          await fs.unlink(filePath);
+        } catch (error) {
+          console.error(`Failed to delete cache file ${filePath}:`, error);
+        }
+      }
+      await fs.writeFile(this.indexFile, '{}');
+    } catch (error) {
+      console.error('Failed to cleanup disk cache:', error);
+    }
+  }
 }

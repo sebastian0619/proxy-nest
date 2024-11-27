@@ -1,5 +1,5 @@
 import { Application } from 'express';
-import { errorHandler, notFoundHandler } from './error.middleware';
+import { errorHandler, notFoundHandler, AppError } from './error.middleware';
 import { setupLogging, requestLogger } from './logging.middleware';
 import { generateCacheKey } from './cache-key.middleware';
 
@@ -19,7 +19,14 @@ export const setupMiddlewares = (app: Application): void => {
 export {
   AppError,
   errorHandler,
-  notFoundHandler,
-  generateCacheKey,
-  requestLogger
+  notFoundHandler
 } from './error.middleware';
+
+export {
+  requestLogger,
+  setupLogging
+} from './logging.middleware';
+
+export {
+  generateCacheKey
+} from './cache-key.middleware';

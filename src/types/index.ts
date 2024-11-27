@@ -6,6 +6,7 @@ export interface AppConfig {
   upstreamType: 'tmdb-api' | 'tmdb-image' | 'custom';
   tmdbApiKey?: string;
   tmdbImageTestUrl?: string;
+  upstreamServers?: string[];
 }
 
 // 缓存配置接口
@@ -36,4 +37,18 @@ export interface CacheItem {
   data: Buffer | object | string;
   contentType: string;
   timestamp: number;
+}
+
+// 缓存服务接口
+export interface ICacheService {
+  get(key: string): Promise<CacheItem | null>;
+  set(key: string, value: CacheItem): Promise<void>;
+  cleanup(): Promise<void>;
+}
+
+// 工作池接口
+export interface IWorkerPool {
+  initialize(): Promise<void>;
+  execute(task: any): Promise<any>;
+  cleanup(): Promise<void>;
 }

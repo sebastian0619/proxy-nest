@@ -11,18 +11,15 @@ export const appConfig: AppConfig = {
   upstreamServers: (process.env.UPSTREAM_SERVERS || '')
     .split(',')
     .filter(Boolean)
-    .map(url => ({
-      url: url.trim(),
-      weight: 1
-    }))
+    .map(url => url.trim())
 };
 
 export const cacheConfig: CacheConfig = {
   cacheDir: process.env.CACHE_DIR || path.join(process.cwd(), 'cache'),
-  indexFile: 'cache_index.json',
-  ttl: parseInt(process.env.CACHE_TTL || '3600000'),
+  indexFile: process.env.CACHE_INDEX_FILE || 'cache-index.json',
+  ttl: parseInt(process.env.CACHE_TTL || '3600'),
   memoryCacheSize: parseInt(process.env.MEMORY_CACHE_SIZE || '100'),
-  maxSize: parseInt(process.env.CACHE_MAX_SIZE || '1000'),
-  cleanupInterval: 300000,
-  fileExt: '.cache'
+  maxSize: parseInt(process.env.CACHE_MAX_SIZE || '1073741824'), // 1GB
+  cleanupInterval: parseInt(process.env.CACHE_CLEANUP_INTERVAL || '300'),
+  fileExt: process.env.CACHE_FILE_EXT || '.cache'
 };

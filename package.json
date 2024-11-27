@@ -1,41 +1,25 @@
 {
-  "name": "proxy-nest",
+  "name": "tmdb-go-proxy",
   "version": "1.0.0",
-  "description": "TMDB API and Image proxy service",
-  "main": "server.js",
+  "description": "TMDB Proxy Service",
+  "main": "dist/server.js",
   "scripts": {
-    "start": "ts-node src/server.ts",
-    "dev": "nodemon --exec ts-node src/server.ts",
     "build": "tsc",
-    "serve": "node dist/server.js"
+    "start": "node dist/server.js",
+    "serve": "node dist/server.js",
+    "dev": "ts-node-dev --respawn src/server.ts"
   },
   "dependencies": {
-    "axios": "^1.6.7",
-    "chalk": "^4.1.2",
     "express": "^4.18.2",
     "morgan": "^1.10.0",
-    "lru-cache": "^7.14.0"
+    "axios": "^1.6.2"
   },
   "devDependencies": {
-    "nodemon": "^3.0.3"
-  },
-  "engines": {
-    "node": ">=16.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/sebastian0619/proxy-nest.git"
-  },
-  "keywords": [
-    "tmdb",
-    "proxy",
-    "api",
-    "image"
-  ],
-  "author": "Sebastian0619",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/sebastian0619/proxy-nest/issues"
-  },
-  "homepage": "https://github.com/sebastian0619/proxy-nest#readme"
+    "typescript": "^5.0.0",
+    "@types/node": "^18.0.0",
+    "@types/express": "^4.17.21",
+    "@types/morgan": "^1.9.9",
+    "ts-node": "^10.9.1",
+    "ts-node-dev": "^2.0.0"
+  }
 }

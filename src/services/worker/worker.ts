@@ -25,7 +25,10 @@ if (parentPort) {
       });
 
       const workerResponse: WorkerResponse = {
+        success: true,
         requestId: message.requestId,
+        data: response.data,
+        responseTime: Date.now() - start,
         response: {
           data: response.data,
           contentType: response.headers['content-type'],
@@ -37,9 +40,10 @@ if (parentPort) {
 
     } catch (error) {
       parentPort.postMessage({
+        success: false,
         requestId: message.requestId,
-        error: error.message
-      });
+        error: error instanceof Error ? error.message : 'Unknown error'
+      } as WorkerResponse);
     }
   });
 }

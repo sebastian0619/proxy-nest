@@ -18,10 +18,10 @@ export class RetryService {
       try {
         const result = await Promise.race([
           execute(),
-          new Promise((_, reject) => 
+          new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error('请求超时')), this.timeout)
           )
-        ]);
+        ]) as T;
 
         if (validate && !validate(result)) {
           throw new Error('响应验证失败');
@@ -31,7 +31,11 @@ export class RetryService {
 
       } catch (error) {
         retryCount++;
-        console.error(`请求失败 (${retryCount}/${this.maxRetries}): ${error.message}`);
+        if (error instanceof Error) {
+          console.error(`请求失败 (${retryCount}/${this.maxRetries}): ${error.message}`);
+        } else {
+          console.error(`请求失败 (${retryCount}/${this.maxRetries}): Unknown error`);
+        }
 
         if (retryCount >= this.maxRetries) {
           throw error;

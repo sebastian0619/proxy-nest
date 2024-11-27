@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { CacheItem } from '../types';
+import { CacheItem, ICacheService, IWorkerPool } from '../types';
 
 export interface ProxyResponse {
   data: Buffer | string | object;
