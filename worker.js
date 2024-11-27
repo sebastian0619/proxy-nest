@@ -1,7 +1,6 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
 const {
-  initializeLogPrefix,
   validateResponse,
   tryRequestWithRetries,
   calculateBaseWeight,

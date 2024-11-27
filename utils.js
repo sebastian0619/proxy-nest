@@ -578,8 +578,7 @@ const {
 } = require('./config');
 
 // EWMA 和请求限制配置
-const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
-const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
+
 
 module.exports = {
   initializeLogPrefix,
