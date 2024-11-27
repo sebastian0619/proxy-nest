@@ -503,8 +503,14 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
 
 // 并行请求相关函数
 async function makeRequest(server, url, timeout) {
+  if (!server || !server.url) {
+    throw new Error('无效的服务器配置');
+  }
+
   const axios = require('axios');
   const fullUrl = `${server.url}${url}`;
+  
+  console.log(`尝试请求: ${fullUrl}, 超时: ${timeout}ms`);
   
   try {
     const startTime = Date.now();
@@ -518,13 +524,17 @@ async function makeRequest(server, url, timeout) {
     });
     
     const responseTime = Date.now() - startTime;
+    console.log(`请求成功: ${fullUrl}, 响应时间: ${responseTime}ms`);
+    
     return {
       success: true,
       data: response.data,
       responseTime,
-      server
+      server,
+      contentType: response.headers['content-type']
     };
   } catch (error) {
+    console.error(`请求失败: ${fullUrl}, 错误: ${error.message}`);
     return {
       success: false,
       error,
@@ -534,6 +544,12 @@ async function makeRequest(server, url, timeout) {
 }
 
 async function makeParallelRequests(servers, url, timeout) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    throw new Error('无效的服务器列表');
+  }
+
+  console.log(`开始并行请求，服务器数量: ${servers.length}, URL: ${url}`);
+  
   const requests = servers.map(server => 
     makeRequest(server, url, timeout)
   );
@@ -546,22 +562,20 @@ async function makeParallelRequests(servers, url, timeout) {
       .sort((a, b) => a.responseTime - b.responseTime);
       
     if (successfulResponses.length > 0) {
-      return successfulResponses[0]; // 返回最快的成功响应
+      const fastestResponse = successfulResponses[0];
+      console.log(`并行请求成功，最快响应来自: ${fastestResponse.server.url}`);
+      return fastestResponse;
     }
     throw new Error('所有并行请求都失败了');
   } catch (error) {
+    console.error(`并行请求处理失败: ${error.message}`);
     throw error;
   }
 }
 
 const {
-  PORT,
-  BASE_WEIGHT_MULTIPLIER,
-  DYNAMIC_WEIGHT_MULTIPLIER,
-  REQUEST_TIMEOUT,
-  ALPHA_INITIAL,
-  ALPHA_ADJUSTMENT_STEP
-} = config;
+  ALPHA_INITIAL
+} = require('./config');
 
 // EWMA 和请求限制配置
 const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8

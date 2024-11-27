@@ -8,17 +8,21 @@ const {
   calculateDynamicWeight,
   calculateCombinedWeight
 } = require('./utils');
+const { 
+  INITIAL_TIMEOUT,
+  REQUEST_TIMEOUT,
+  UPSTREAM_TYPE
+} = require('./config');
 
 // 从 workerData 中解构需要的配置
 const { 
-  MAX_SERVER_SWITCHES,
-  UPSTREAM_TYPE,
-  REQUEST_TIMEOUT,
   ALPHA_INITIAL,
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
-  upstreamServers
+  upstreamServers,
+  MAX_ERRORS_BEFORE_UNHEALTHY,
+  UNHEALTHY_TIMEOUT
 } = workerData;
 
 // 设置全局 LOG_PREFIX
@@ -61,8 +65,6 @@ async function initializeWorker() {
 }
 
 // 服务器健康检查配置
-const UNHEALTHY_TIMEOUT = 30000; // 不健康状态持续30秒
-const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
 
 function markServerUnhealthy(server) {
   server.isHealthy = false;
@@ -163,12 +165,14 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
+  let requestStartTime = Date.now();
+
   // 第一阶段：使用权重选择的服务器
   const selectedServer = selectUpstreamServer();
   try {
     const result = await tryRequestWithRetries(selectedServer, url, {
-      REQUEST_TIMEOUT,
-      UPSTREAM_TYPE
+      timeout: INITIAL_TIMEOUT,
+      upstreamType: UPSTREAM_TYPE
     }, global.LOG_PREFIX);
     
     // 成功后更新服务器权重
@@ -190,50 +194,69 @@ async function handleRequest(url) {
       throw error;
     }
 
-    // 确保图片数据以 Buffer 形式返回
-    if (result.contentType.startsWith('image/')) {
-      return {
-        data: Buffer.from(result.data),  // 确保是 Buffer
-        contentType: result.contentType,
-        responseTime: result.responseTime
-      };
-    }
-    
-    // 其他类型数据保持原样
-    return result;
+    return formatResponse(result);
     
   } catch (error) {
-    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
-  }
-
-  // 第二阶段：并行请求其他健康服务器
-  const healthyServers = localUpstreamServers.filter(server => 
-    server !== selectedServer && checkServerHealth(server)
-  );
-
-  if (healthyServers.length === 0) {
-    throw new Error('没有其他健康的服务器可用于并行请求');
-  }
-
-  try {
-    // 剩余时间作为并行请求的超时时间（20秒总限制减去已经用掉的8秒）
-    const result = await tryRequestWithRetries(healthyServers, url, {
-      timeout: REQUEST_TIMEOUT - 8000,
-      upstreamType: UPSTREAM_TYPE
-    }, global.LOG_PREFIX);
+    const timeElapsed = Date.now() - requestStartTime;
+    const timeRemaining = REQUEST_TIMEOUT - timeElapsed;
     
-    if (result.success) {
-      addWeightUpdate(result.server, result.responseTime);
-      return result;
+    // 如果剩余时间不足，直接抛出错误
+    if (timeRemaining < 2000) { // 至少留2秒用于并行请求
+      throw new Error(`请求超时: ${error.message}`);
     }
-    throw new Error('并行请求全部失败');
-  } catch (error) {
-    selectedServer.errorCount++;
-    if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-      markServerUnhealthy(selectedServer);
+    
+    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求，剩余时间: ${timeRemaining}ms`);
+    
+    // 第二阶段：并行请求其他健康服务器
+    const healthyServers = workerData.upstreamServers.filter(server => 
+      server !== selectedServer && checkServerHealth(server)
+    );
+
+    if (healthyServers.length === 0) {
+      throw new Error('没有其他健康的服务器可用于并行请求');
     }
-    throw error;
+
+    try {
+      console.log(`开始并行请求，健康服务器数量: ${healthyServers.length}`);
+      healthyServers.forEach(server => {
+        console.log(`- 健康服务器: ${server.url}`);
+      });
+
+      const parallelResult = await Promise.race([
+        utils.makeParallelRequests(healthyServers, url, timeRemaining),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('并行请求超时')), timeRemaining)
+        )
+      ]);
+      
+      if (!parallelResult || !parallelResult.success) {
+        throw new Error('并行请求失败或返回无效结果');
+      }
+
+      console.log(`并行请求成功，使用服务器: ${parallelResult.server.url}, 响应时间: ${parallelResult.responseTime}ms`);
+      addWeightUpdate(parallelResult.server, parallelResult.responseTime);
+      return formatResponse(parallelResult);
+    } catch (error) {
+      console.error(`并行请求失败: ${error.message}`);
+      selectedServer.errorCount++;
+      if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
+        markServerUnhealthy(selectedServer);
+      }
+      throw error;
+    }
   }
+}
+
+function formatResponse(result) {
+  // 确保图片数据以 Buffer 形式返回
+  if (result.contentType && result.contentType.startsWith('image/')) {
+    return {
+      data: Buffer.from(result.data),
+      contentType: result.contentType,
+      responseTime: result.responseTime
+    };
+  }
+  return result;
 }
 
 function addWeightUpdate(server, responseTime) {
