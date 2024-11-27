@@ -1,8 +1,8 @@
-name: Build and Push TMDB Proxy JS
+name: Build and Push TMDB Proxy TS
 
 on:
   push:
-    branches: [ JS ]
+    branches: [ TS ]
     paths:
       - '**'
   release:
@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/proxy-js
+  IMAGE_NAME: ${{ github.repository }}/proxy-ts
 
 jobs:
   build-and-push:
@@ -37,7 +37,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS'}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/TS'}}
             type=ref,event=branch
             type=sha,format=short
             type=raw,value={{date 'YYYYMMDD'}}
