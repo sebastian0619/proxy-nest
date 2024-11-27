@@ -12,7 +12,6 @@ services:
       - NODE_ENV=production
       - PORT=6635
       - TZ=Asia/Shanghai
-      - HTTP_PROXY=http://192.168.11.103:8890
       - UPSTREAM_TYPE=tmdb-api
       - TMDB_API_KEY=59ef6336a19540cd1e254cae0565906e
       - UPSTREAM_SERVERS=https://api.themoviedb.org
