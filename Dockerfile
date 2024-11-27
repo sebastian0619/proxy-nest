@@ -1,21 +1,30 @@
-# 使用官方 Node.js 镜像
-FROM node:18-alpine
+# 基础镜像
+FROM node:18-slim
 
 # 设置工作目录
 WORKDIR /app
 
-# 复制 package.json 和 package-lock.json
-COPY package.json /app/
-
 # 安装依赖
+COPY package*.json ./
 RUN npm install
 
-# 复制项目文件
-COPY . /app
+# 复制源代码
+COPY . .
 
-# 暴露应用运行的端口
+# 构建 TypeScript
+RUN npm run build
+
+# 创建缓存目录
+RUN mkdir -p /app/cache
+
+# 环境变量
+ENV PORT=6635 \
+    NODE_ENV=production \
+    CACHE_DIR=/app/cache \
+    REQUEST_TIMEOUT=5000
+
+# 暴露端口
 EXPOSE 6635
-ENV FORCE_COLOR=1
 
-# 启动应用
-CMD ["node", "server.js"]
+# 启动命令
+CMD ["npm", "run", "serve"]
