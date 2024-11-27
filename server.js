@@ -135,11 +135,26 @@ async function initializeWorkerPool(workerData) {
 
 // 初始化单个工作线程
 async function initializeWorker(workerId, workerData) {
+  // 确保上游服务器配置是JSON字符串
+  const upstreamServers = process.env.UPSTREAM_SERVERS || '[]';
+  
+  try {
+    // 验证配置是否为有效的JSON数组
+    const parsedServers = JSON.parse(upstreamServers);
+    if (!Array.isArray(parsedServers)) {
+      throw new Error('UPSTREAM_SERVERS 必须是JSON数组');
+    }
+    console.log(global.LOG_PREFIX.INFO, `加载了 ${parsedServers.length} 个上游服务器配置`);
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `解析上游服务器配置失败: ${error.message}`);
+    throw error;
+  }
+
   const worker = new Worker('./worker.js', {
     workerData: {
       ...workerData,
       workerId,
-      upstreamServers: process.env.UPSTREAM_SERVERS,
+      upstreamServers,  // 传递JSON字符串
       UPSTREAM_TYPE,
       TMDB_API_KEY,
       TMDB_IMAGE_TEST_URL,
@@ -352,4 +367,3 @@ module.exports = {
   startServer,
   handleRequestWithWorker
 };
-

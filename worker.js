@@ -7,6 +7,7 @@ const {
   calculateDynamicWeight,
   calculateCombinedWeight
 } = require('./utils');
+
 const { 
   INITIAL_TIMEOUT,
   REQUEST_TIMEOUT,
@@ -19,15 +20,39 @@ const {
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
-  upstreamServers,
   MAX_ERRORS_BEFORE_UNHEALTHY,
   UNHEALTHY_TIMEOUT
 } = workerData;
 
+// 解析上游服务器配置
+let localUpstreamServersWithDefault = [];
+try {
+  localUpstreamServersWithDefault = JSON.parse(workerData.upstreamServers || '[]');
+  if (!Array.isArray(localUpstreamServersWithDefault)) {
+    throw new Error('上游服务器配置必须是数组');
+  }
+  console.log(`成功加载 ${localUpstreamServersWithDefault.length} 个上游服务器配置`);
+} catch (error) {
+  console.error(`解析上游服务器配置失败: ${error.message}`);
+  process.exit(1);
+}
+
 // 设置全局 LOG_PREFIX
 global.LOG_PREFIX = workerData.LOG_PREFIX;
 
-let localUpstreamServers = [];
+localUpstreamServersWithDefault = localUpstreamServersWithDefault.map(server => ({
+  ...server,
+  healthy: true,
+  baseWeight: 1,
+  dynamicWeight: 1,
+  alpha: ALPHA_INITIAL,
+  responseTimes: [],
+  lastResponseTime: 0,
+  lastEWMA: 0,
+  isHealthy: true,
+  errorCount: 0,
+  recoveryTime: 0
+}));
 
 // 立即调用初始化函数
 initializeWorker().catch(error => {
@@ -38,23 +63,9 @@ initializeWorker().catch(error => {
 // 初始化工作线程
 async function initializeWorker() {
   try {
-    if (!upstreamServers) {
+    if (localUpstreamServersWithDefault.length === 0) {
       throw new Error('未配置上游服务器');
     }
-
-    localUpstreamServers = upstreamServers.split(',').map(url => ({
-      url: url.trim(),
-      healthy: true,
-      baseWeight: 1,
-      dynamicWeight: 1,
-      alpha: ALPHA_INITIAL,
-      responseTimes: [],
-      lastResponseTime: 0,
-      lastEWMA: 0,
-      isHealthy: true,
-      errorCount: 0,
-      recoveryTime: 0
-    }));
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
   } catch (error) {
@@ -82,7 +93,7 @@ function checkServerHealth(server) {
 }
 
 function selectUpstreamServer() {
-  const healthyServers = localUpstreamServers.filter(server => {
+  const healthyServers = localUpstreamServersWithDefault.filter(server => {
     if (!server.hasOwnProperty('isHealthy')) {
       server.isHealthy = true;
       server.errorCount = 0;
@@ -207,7 +218,7 @@ async function handleRequest(url) {
     console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求，剩余时间: ${timeRemaining}ms`);
     
     // 第二阶段：并行请求其他健康服务器
-    const healthyServers = workerData.upstreamServers.filter(server => 
+    const healthyServers = localUpstreamServersWithDefault.filter(server => 
       server !== selectedServer && checkServerHealth(server)
     );
 
