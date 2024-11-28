@@ -74,15 +74,7 @@ async function startServer() {
     });
 
     // 初始化上游服务器列表
-    upstreamServers = process.env.UPSTREAM_SERVERS.split(',').map(url => ({
-      url: url.trim(),
-      healthy: true,
-      baseWeight: 1,
-      dynamicWeight: 1,
-      alpha: ALPHA_INITIAL,
-      responseTimes: [],
-      responseTime: Infinity,
-    }));
+    upstreamServers = initializeUpstreamServers(process.env.UPSTREAM_SERVERS);
 
     // 启动健康检查
     const healthCheckConfig = {
@@ -154,7 +146,7 @@ async function initializeWorker(workerId, workerData) {
     workerData: {
       ...workerData,
       workerId,
-      upstreamServers,  // 传递JSON字符串
+      upstreamServers: upstreamServers.map(s => s.url).join(','),
       UPSTREAM_TYPE,
       TMDB_API_KEY,
       TMDB_IMAGE_TEST_URL,

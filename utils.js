@@ -419,6 +419,11 @@ function updateServerWeights(server, responseTime) {
 
 // 修改健康检查函数中的权重更新部分
 async function startHealthCheck(servers, config, LOG_PREFIX) {
+  if (!Array.isArray(servers)) {
+    console.error(LOG_PREFIX.ERROR, '健康检查：servers参数必须是数组');
+    return;
+  }
+  
   const {
     BASE_WEIGHT_UPDATE_INTERVAL,
     REQUEST_TIMEOUT,
