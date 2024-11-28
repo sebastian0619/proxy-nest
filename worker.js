@@ -135,14 +135,29 @@ async function initializeWorker() {
     console.log(global.LOG_PREFIX.INFO, '执行初始健康检查...');
     for (const server of localUpstreamServers) {
       try {
-        await checkServerHealth(server, {
+        const responseTime = await checkServerHealth(server, {
           UPSTREAM_TYPE,
           TMDB_API_KEY,
+          TMDB_IMAGE_TEST_URL,
           REQUEST_TIMEOUT,
           LOG_PREFIX: global.LOG_PREFIX
         });
+
+        // 更新服务器状态
+        server.responseTimes = [responseTime];
+        server.lastResponseTime = responseTime;
+        server.lastEWMA = responseTime;
+        server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
+        server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+        server.status = HealthStatus.HEALTHY;
+
+        console.log(global.LOG_PREFIX.SUCCESS, 
+          `服务器 ${server.url} 初始化成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
+        );
       } catch (error) {
         console.error(global.LOG_PREFIX.ERROR, `初始健康检查失败: ${error.message}`);
+        server.status = HealthStatus.UNHEALTHY;
+        server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
       }
     }
   } catch (error) {
