@@ -98,6 +98,13 @@ async function initializeWorker() {
       throw new Error('未配置上游服务器');
     }
 
+    // 确保 LOG_PREFIX 已经初始化
+    if (!global.LOG_PREFIX || !global.LOG_PREFIX.ERROR) {
+      throw new Error('LOG_PREFIX 未初始化');
+    }
+
+    console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 开始初始化...`);
+
     // 初始化缓存
     const { diskCache, lruCache } = await initializeCache();
     global.cache = { diskCache, lruCache };
@@ -119,64 +126,25 @@ async function initializeWorker() {
       dynamicWeight: 1
     }));
 
+    console.log(global.LOG_PREFIX.SUCCESS, `工作线程 ${workerId} 初始化完成`);
+
+    // 等待一段时间再开始健康检查，确保其他组件都已初始化
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
     // 立即执行一次健康检查
     console.log(global.LOG_PREFIX.INFO, '执行初始健康检查...');
     for (const server of localUpstreamServers) {
       try {
-        const startTime = Date.now();
-        
-        // 根据上游类型执行不同的健康检查
-        if (UPSTREAM_TYPE === 'tmdb-api') {
-          if (!TMDB_API_KEY) {
-            throw new Error('TMDB_API_KEY is required for API servers');
-          }
-          await checkServerHealth(server, {
-            UPSTREAM_TYPE,
-            TMDB_API_KEY,
-            REQUEST_TIMEOUT,
-            LOG_PREFIX: global.LOG_PREFIX
-          });
-        } else if (UPSTREAM_TYPE === 'tmdb-image') {
-          // 图片服务器使用简单的 HEAD 请求检查
-          if (!TMDB_IMAGE_TEST_URL) {
-            console.log(global.LOG_PREFIX.WARN, 'TMDB_IMAGE_TEST_URL not set, using default test image');
-          }
-          const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
-          const fullUrl = `${server.url}${testUrl}`;
-          
-          const response = await axios({
-            method: 'head',
-            url: fullUrl,
-            timeout: REQUEST_TIMEOUT,
-            validateStatus: status => status === 200
-          });
-        }
-        
-        // 计算初始权重
-        const responseTime = Date.now() - startTime;
-        server.responseTimes = [responseTime];
-        server.lastResponseTime = responseTime;
-        server.lastEWMA = responseTime;
-        server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
-        server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-        server.status = HealthStatus.HEALTHY;
-
-        console.log(global.LOG_PREFIX.SUCCESS, 
-          `服务器 ${server.url} 初始化成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
-        );
+        await checkServerHealth(server, {
+          UPSTREAM_TYPE,
+          TMDB_API_KEY,
+          REQUEST_TIMEOUT,
+          LOG_PREFIX: global.LOG_PREFIX
+        });
       } catch (error) {
-        console.error(global.LOG_PREFIX.ERROR, 
-          `服务器 ${server.url} 初始化失败: ${error.message}`
-        );
-        server.status = HealthStatus.UNHEALTHY;
-        server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
+        console.error(global.LOG_PREFIX.ERROR, `初始健康检查失败: ${error.message}`);
       }
     }
-
-    // 启动定期健康检查
-    startActiveHealthCheck();
-
-    console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
   } catch (error) {
     console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);

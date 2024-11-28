@@ -365,12 +365,23 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 检查服务器健康状态
 async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE_TEST_URL, REQUEST_TIMEOUT, LOG_PREFIX) {
+  // 设置默认的日志前缀
+  const defaultLogPrefix = {
+    INFO: '[ 信息 ]',
+    ERROR: '[ 错误 ]',
+    WARN: '[ 警告 ]',
+    SUCCESS: '[ 成功 ]'
+  };
+  
+  // 使用传入的 LOG_PREFIX 或默认值
+  const logger = LOG_PREFIX || defaultLogPrefix;
+  
   let testUrl = '';
   
   switch (UPSTREAM_TYPE) {
     case 'tmdb-api':
       if (!TMDB_API_KEY) {
-        console.error(LOG_PREFIX.ERROR, 'TMDB_API_KEY 环境变量未设置');
+        console.error(logger.ERROR, 'TMDB_API_KEY 环境变量未设置');
         process.exit(1);
       }
       testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
@@ -378,7 +389,7 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
       
     case 'tmdb-image':
       if (!TMDB_IMAGE_TEST_URL) {
-        console.error(LOG_PREFIX.ERROR, 'TMDB_IMAGE_TEST_URL 环境变量未设置');
+        console.error(logger.ERROR, 'TMDB_IMAGE_TEST_URL 环境变量未设置');
         process.exit(1);
       }
       testUrl = TMDB_IMAGE_TEST_URL;
@@ -389,7 +400,7 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
       break;
       
     default:
-      console.error(LOG_PREFIX.ERROR, `未知的上游类型: ${UPSTREAM_TYPE}`);
+      console.error(logger.ERROR, `未知的上游类型: ${UPSTREAM_TYPE}`);
       process.exit(1);
   }
 
@@ -400,16 +411,16 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
     });
     const responseTime = Date.now() - start;
 
-    console.log(LOG_PREFIX.SUCCESS, `健康检查成功 - 服务器: ${server.url}, 响应时间: ${responseTime}ms`);
+    console.log(logger.SUCCESS, `健康检查成功 - 服务器: ${server.url}, 响应时间: ${responseTime}ms`);
     return responseTime;
   } catch (error) {
-    console.error(LOG_PREFIX.ERROR, `健康检查失败 - 服务器: ${server.url}, 错误: ${error.message}`);
+    console.error(logger.ERROR, `健康检查失败 - 服务器: ${server.url}, 错误: ${error.message}`);
     throw error;
   }
 }
 
 /**
- * 验证响��内容
+ * 验证响应内容
  * @param {Buffer|string|object} response - 响应内容
  * @param {string} contentType - 内容类型
  * @param {string} upstreamType - 上游类型
@@ -544,6 +555,12 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
     BASE_WEIGHT_MULTIPLIER,
     DYNAMIC_WEIGHT_MULTIPLIER
   } = config;
+
+  // 等待 LOG_PREFIX 初始化
+  while (!LOG_PREFIX || !LOG_PREFIX.ERROR || !LOG_PREFIX.SUCCESS) {
+    console.log('[ 信息 ] 等待日志系统初始化...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
 
   console.log(LOG_PREFIX.INFO, '启动健康检查服务');
 
