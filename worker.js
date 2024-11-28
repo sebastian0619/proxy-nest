@@ -32,13 +32,24 @@ const {
   TMDB_IMAGE_TEST_URL
 } = workerData;
 
-// 设置全局 LOG_PREFIX
-global.LOG_PREFIX = workerData.LOG_PREFIX;
-
 let localUpstreamServers = [];
 
+// 初始化日志前缀
+async function initializeWorkerWithLogs() {
+  try {
+    // 先初始化日志前缀
+    global.LOG_PREFIX = await initializeLogPrefix();
+    
+    // 然后执行其他初始化
+    await initializeWorker();
+  } catch (error) {
+    console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+    process.exit(1);
+  }
+}
+
 // 立即调用初始化函数
-initializeWorker().catch(error => {
+initializeWorkerWithLogs().catch(error => {
   console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
   process.exit(1);
 });
@@ -313,7 +324,7 @@ async function handleRequest(url) {
       return cachedResponse;
     }
   } else {
-    console.log(global.LOG_PREFIX.CACHE.HIT, `内���缓存命中: ${url}`);
+    console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
     return cachedResponse;
   }
 
