@@ -87,8 +87,8 @@ function markServerUnhealthy(server) {
   console.log(`服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后恢复`);
 }
 
-// 修改健康检查函数，移除自动恢复逻辑
-function checkServerHealth(server) {
+// 修改函数名为 isServerHealthy
+function isServerHealthy(server) {
   // 只返回当前状态，不做状态修改
   return server.status === HealthStatus.HEALTHY;
 }
@@ -147,7 +147,7 @@ function selectUpstreamServer() {
       server.status = HealthStatus.HEALTHY;
       server.errorCount = 0;
     }
-    return server.status === HealthStatus.HEALTHY || 
+    return isServerHealthy(server) || 
            (server.status === HealthStatus.WARMING_UP && 
             server.warmupRequests < 10);
   });
