@@ -11,7 +11,10 @@ const CACHE_CONFIG = {
   CACHE_TTL: parseInt(process.env.CACHE_TTL || '3600000'), // 默认1小时
   MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100'), // 内存缓存条目数
   CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1000'), // 磁盘缓存最大条目数
-  CACHE_CLEANUP_INTERVAL: 300000, // 缓存清理间隔(5分钟)
+  
+  // 缓存清理间隔配置
+  DISK_CACHE_CLEANUP_INTERVAL: parseInt(process.env.DISK_CACHE_CLEANUP_INTERVAL || '300000'), // 磁盘缓存清理间隔，默认5分钟
+  MEMORY_CACHE_CLEANUP_INTERVAL: parseInt(process.env.MEMORY_CACHE_CLEANUP_INTERVAL || '60000'), // 内存缓存清理间隔，默认1分钟
   
   // 缓存文件配置
   CACHE_FILE_EXT: '.cache'

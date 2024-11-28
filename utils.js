@@ -9,27 +9,76 @@ const crypto = require('crypto');
 
 // 添加 LRU 缓存类
 class LRUCache {
-  constructor(capacity) {
-    this.capacity = capacity;
+  constructor(config) {
+    this.capacity = config.MEMORY_CACHE_SIZE;
     this.cache = new Map();
+    this.config = config;
+    this.startCleanup();
   }
 
   get(key) {
     if (!this.cache.has(key)) return null;
     const value = this.cache.get(key);
+    
+    // 检查是否过期
+    if (Date.now() > value.expireAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    
+    // 更新访问时间
+    value.lastAccessed = Date.now();
     this.cache.delete(key);
     this.cache.set(key, value);
-    return value;
+    return value.data;
   }
 
   set(key, value) {
+    const cacheItem = {
+      data: value,
+      expireAt: Date.now() + this.config.CACHE_TTL,
+      lastAccessed: Date.now()
+    };
+
     if (this.cache.has(key)) {
       this.cache.delete(key);
     } else if (this.cache.size >= this.capacity) {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
     }
-    this.cache.set(key, value);
+    this.cache.set(key, cacheItem);
+  }
+
+  startCleanup() {
+    console.log(`启动内存缓存清理服务，间隔: ${this.config.MEMORY_CACHE_CLEANUP_INTERVAL}ms`);
+    setInterval(() => {
+      this.cleanup();
+    }, this.config.MEMORY_CACHE_CLEANUP_INTERVAL);
+  }
+
+  cleanup() {
+    console.log('开始清理内存缓存...');
+    const now = Date.now();
+    
+    // 清理过期项
+    for (const [key, value] of this.cache.entries()) {
+      if (now > value.expireAt) {
+        this.cache.delete(key);
+      }
+    }
+
+    // 如果缓存大小超过限制，删除最旧的项
+    if (this.cache.size > this.capacity) {
+      const sortedEntries = [...this.cache.entries()]
+        .sort((a, b) => a[1].lastAccessed - b[1].lastAccessed);
+      
+      const entriesToDelete = sortedEntries
+        .slice(0, this.cache.size - this.capacity);
+      
+      for (const [key] of entriesToDelete) {
+        this.cache.delete(key);
+      }
+    }
   }
 }
 
@@ -162,6 +211,15 @@ class DiskCache {
     }
   }
 
+  startCleanup() {
+    console.log(`启动磁盘缓存清理服务，间隔: ${this.config.DISK_CACHE_CLEANUP_INTERVAL}ms`);
+    setInterval(() => {
+      this.cleanup().catch(error => {
+        console.error(`缓存清理失败: ${error.message}`);
+      });
+    }, this.config.DISK_CACHE_CLEANUP_INTERVAL);
+  }
+
   async cleanup() {
     console.log('开始清理过期缓存...');
     const now = Date.now();
@@ -186,14 +244,6 @@ class DiskCache {
       }
     }
   }
-
-  startCleanup() {
-    setInterval(() => {
-      this.cleanup().catch(error => {
-        console.error(`缓存清理失败: ${error.message}`);
-      });
-    }, this.config.CACHE_CLEANUP_INTERVAL);
-  }
 }
 
 // 修改 initializeCache 函数
@@ -201,7 +251,7 @@ async function initializeCache() {
   const diskCache = new DiskCache(config.CACHE_CONFIG);
   await diskCache.init();
   
-  const lruCache = new LRUCache(config.CACHE_CONFIG.MEMORY_CACHE_SIZE);
+  const lruCache = new LRUCache(config.CACHE_CONFIG);
   
   return { diskCache, lruCache };
 }
