@@ -26,10 +26,28 @@ const {
 // 解析上游服务器配置
 let localUpstreamServersWithDefault = [];
 try {
-  localUpstreamServersWithDefault = JSON.parse(workerData.upstreamServers || '[]');
-  if (!Array.isArray(localUpstreamServersWithDefault)) {
-    throw new Error('上游服务器配置必须是数组');
+  // 将逗号分隔的字符串转换为数组
+  const serverUrls = (workerData.upstreamServers || '').split(',').filter(url => url.trim());
+  
+  if (serverUrls.length === 0) {
+    throw new Error('未配置上游服务器');
   }
+
+  // 为每个服务器URL创建配置对象
+  localUpstreamServersWithDefault = serverUrls.map(url => ({
+    url: url.trim(),
+    healthy: true,
+    baseWeight: 1,
+    dynamicWeight: 1,
+    alpha: ALPHA_INITIAL,
+    responseTimes: [],
+    lastResponseTime: 0,
+    lastEWMA: 0,
+    isHealthy: true,
+    errorCount: 0,
+    recoveryTime: 0
+  }));
+
   console.log(`成功加载 ${localUpstreamServersWithDefault.length} 个上游服务器配置`);
 } catch (error) {
   console.error(`解析上游服务器配置失败: ${error.message}`);
@@ -38,20 +56,6 @@ try {
 
 // 设置全局 LOG_PREFIX
 global.LOG_PREFIX = workerData.LOG_PREFIX;
-
-localUpstreamServersWithDefault = localUpstreamServersWithDefault.map(server => ({
-  ...server,
-  healthy: true,
-  baseWeight: 1,
-  dynamicWeight: 1,
-  alpha: ALPHA_INITIAL,
-  responseTimes: [],
-  lastResponseTime: 0,
-  lastEWMA: 0,
-  isHealthy: true,
-  errorCount: 0,
-  recoveryTime: 0
-}));
 
 // 立即调用初始化函数
 initializeWorker().catch(error => {
