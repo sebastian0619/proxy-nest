@@ -6,13 +6,22 @@ const fs = require('fs/promises');
 const LRUCache = require('lru-cache');
 const crypto = require('crypto');
 
+// 默认日志前缀
+const DEFAULT_LOG_PREFIX = {
+  INFO: '[ 信息 ]',
+  ERROR: '[ 错误 ]',
+  SUCCESS: '[ 成功 ]',
+  WARN: '[ 警告 ]',
+  CACHE: {
+    HIT: '[ 缓存命中 ]',
+    MISS: '[ 缓存未命中 ]'
+  }
+};
+
 // 从 utils 导入需要的函数
 const {
   initializeLogPrefix,
-  initializeCache,
   getCacheKey,
-  processWeightUpdateQueue,
-  startHealthCheck,
   validateResponse,
   updateServerWeights,
   calculateCombinedWeight
@@ -27,19 +36,23 @@ let servers = [];
 // 主启动函数
 async function main() {
   try {
-    // 1. 首先初始化日志系统
-    global.LOG_PREFIX = initializeLogPrefix();
+    // 初始化日志系统，使用默认值作为备份
+    const logPrefix = initializeLogPrefix() || DEFAULT_LOG_PREFIX;
+    global.LOG_PREFIX = {
+      ...DEFAULT_LOG_PREFIX,
+      ...logPrefix
+    };
+    
     console.log(global.LOG_PREFIX.INFO, '日志系统初始化成功');
 
-    // 2. 载入配置
+    // 载入配置
     const config = require('./config');
 
-    // 3. 启动服务器
+    // 启动服务器
     await startServer(config);
 
   } catch (error) {
-    // 确保LOG_PREFIX已初始化后再使用
-    const errorPrefix = global.LOG_PREFIX ? global.LOG_PREFIX.ERROR : '[ 错误 ]';
+    const errorPrefix = (global.LOG_PREFIX && global.LOG_PREFIX.ERROR) || '[ 错误 ]';
     console.error(errorPrefix, `启动失败: ${error.message}`);
     process.exit(1);
   }
@@ -70,10 +83,10 @@ function initializeUpstreamServers() {
 // 主服务器启动函数
 async function startServer(config) {
   try {
-    // 先初始化服务器列表
+    // 初始化服务器列表
     servers = initializeUpstreamServers();
     
-    // 再初始化工作线程
+    // 初始化工作线程
     await initializeWorkerPool({
       ...config,
       upstreamServers: process.env.UPSTREAM_SERVERS
