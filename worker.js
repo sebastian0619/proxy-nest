@@ -37,42 +37,50 @@ let localUpstreamServers = [];
 // 初始化日志前缀
 async function initializeWorkerWithLogs() {
   try {
-    // 先初始化日志前缀
-    global.LOG_PREFIX = await initializeLogPrefix();
+    // 设置默认的日志前缀
+    global.LOG_PREFIX = {
+      INFO: '[ 信息 ]',
+      ERROR: '[ 错误 ]',
+      WARN: '[ 警告 ]',
+      SUCCESS: '[ 成功 ]',
+      CACHE: {
+        HIT: '[ 缓存命中 ]',
+        MISS: '[ 缓存未命中 ]',
+        INFO: '[ 缓存信息 ]'
+      }
+    };
     
-    // 设置默认的日志前缀，以防初始化失败
-    if (!global.LOG_PREFIX) {
+    // 尝试初始化带颜色的日志前缀
+    try {
+      const chalkModule = await import('chalk');
+      const chalk = chalkModule.default;
+      chalk.level = 3;
+      
       global.LOG_PREFIX = {
-        INFO: '[ 信息 ]',
-        ERROR: '[ 错误 ]',
-        WARN: '[ 警告 ]',
-        SUCCESS: '[ 成功 ]',
+        INFO: chalk.blue('[ 信息 ]'),
+        ERROR: chalk.red('[ 错误 ]'),
+        WARN: chalk.yellow('[ 警告 ]'),
+        SUCCESS: chalk.green('[ 成功 ]'),
         CACHE: {
-          HIT: '[ 缓存命中 ]',
-          MISS: '[ 缓存未命中 ]',
-          INFO: '[ 缓存信息 ]'
+          HIT: chalk.green('[ 缓存命中 ]'),
+          MISS: chalk.hex('#FFA500')('[ 缓存未命中 ]'),
+          INFO: chalk.cyan('[ 缓存信息 ]')
         }
       };
+    } catch (error) {
+      console.log(global.LOG_PREFIX.WARN, '无法加载 chalk 模块，使用默认日志前缀');
+    }
+    
+    // 确保 LOG_PREFIX 已经初始化
+    if (!global.LOG_PREFIX || !global.LOG_PREFIX.ERROR) {
+      throw new Error('LOG_PREFIX 初始化失败');
     }
     
     // 然后执行其他初始化
     await initializeWorker();
   } catch (error) {
-    // 确保即使在错误情况下也有基本的日志前缀
-    if (!global.LOG_PREFIX) {
-      global.LOG_PREFIX = {
-        INFO: '[ 信息 ]',
-        ERROR: '[ 错误 ]',
-        WARN: '[ 警告 ]',
-        SUCCESS: '[ 成功 ]',
-        CACHE: {
-          HIT: '[ 缓存命中 ]',
-          MISS: '[ 缓存未命中 ]',
-          INFO: '[ 缓存信息 ]'
-        }
-      };
-    }
-    console.error(global.LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
+    // 使用基本的错误前缀，确保错误信息能够输出
+    console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   }
 }
