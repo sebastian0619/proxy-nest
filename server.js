@@ -13,7 +13,9 @@ const {
   getCacheKey,
   processWeightUpdateQueue,
   startHealthCheck,
-  validateResponse
+  validateResponse,
+  updateServerWeights,
+  calculateCombinedWeight
 } = require('./utils');
 
 // 配置常量
@@ -32,15 +34,6 @@ const {
   CACHE_CONFIG
 } = require('./config');
 
-const {
-  CACHE_DIR,
-  CACHE_INDEX_FILE,
-  CACHE_TTL,
-  MEMORY_CACHE_SIZE,
-  CACHE_MAX_SIZE,
-  CACHE_CLEANUP_INTERVAL,
-  CACHE_FILE_EXT
-} = CACHE_CONFIG;
 
 // 全局变量
 
@@ -98,7 +91,13 @@ async function startServer() {
       UPSTREAM_TYPE,
       TMDB_API_KEY,
       TMDB_IMAGE_TEST_URL,
-      BASE_WEIGHT_MULTIPLIER
+      BASE_WEIGHT_MULTIPLIER,
+      updateWeights: (server, responseTime) => {
+        return updateServerWeights(server, responseTime);
+      },
+      calculateWeight: (server) => {
+        return calculateCombinedWeight(server);
+      }
     };
 
     startHealthCheck(upstreamServers, healthCheckConfig, global.LOG_PREFIX);
@@ -110,7 +109,8 @@ async function startServer() {
         upstreamServers, 
         global.LOG_PREFIX, 
         ALPHA_ADJUSTMENT_STEP,
-        BASE_WEIGHT_MULTIPLIER
+        BASE_WEIGHT_MULTIPLIER,
+        DYNAMIC_WEIGHT_MULTIPLIER
       );
     }, 1000);
 
@@ -174,8 +174,23 @@ async function initializeWorker(workerId, workerData) {
 // 设置工作线程事件处理器
 function setupWorkerEventHandlers(worker, workerId) {
   worker.on('message', (message) => {
-    if (message && message.type === 'weight_update' && message.data) {
-      weightUpdateQueue.push(message.data);
+    if (message.type === 'weight_update') {
+      const { server, responseTime } = message.data;
+      const targetServer = upstreamServers.find(s => s.url === server.url);
+      
+      if (targetServer && targetServer.healthy) {
+        // 使用统一的权重更新函数
+        const weights = updateServerWeights(targetServer, responseTime);
+        
+        console.log(LOG_PREFIX.INFO, 
+          `更新服务器 ${targetServer.url} 权重: ` +
+          `响应时间=${responseTime}ms, ` +
+          `EWMA=${weights.lastEWMA.toFixed(0)}ms, ` +
+          `基础权重=${weights.baseWeight}, ` +
+          `动态权重=${weights.dynamicWeight}, ` +
+          `综合权重=${calculateCombinedWeight(targetServer)}`
+        );
+      }
     }
   });
 

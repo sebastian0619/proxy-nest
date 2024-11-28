@@ -37,10 +37,10 @@ module.exports = {
   MAX_ERRORS_BEFORE_UNHEALTHY: 3,      // 连续3次错误后标记为不健康
   
   // 请求超时配置
-  INITIAL_TIMEOUT: 8000,               // 初始请求超时时间（8秒）
-  PARALLEL_TIMEOUT: 10000,             // 并行请求超时时间（10秒）
-  REQUEST_TIMEOUT: 19000,              // 总请求超时时间（19秒，留1秒缓冲）
-  WORKER_TIMEOUT: 20000,               // 工作线程超时时间（20秒）
+  INITIAL_TIMEOUT: 8000,               // 初始单服务器请求超时（8秒）
+  PARALLEL_TIMEOUT: 12000,             // 并行请求最大可用时间（12秒）
+  REQUEST_TIMEOUT: 20000,              // 总请求超时时间（与外部程序一致）
+  WORKER_TIMEOUT: 21000,               // 工作线程超时时间（预留1秒缓冲）
   
   // TMDB 相关配置
   UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb-api',

@@ -3,8 +3,7 @@ const axios = require('axios');
 const {
   validateResponse,
   tryRequestWithRetries,
-  calculateBaseWeight,
-  calculateDynamicWeight,
+  updateServerWeights,
   calculateCombinedWeight
 } = require('./utils');
 
@@ -175,85 +174,92 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
-  let requestStartTime = Date.now();
-
-  // 第一阶段：使用权重选择的服务器
+  const requestStartTime = Date.now();
   const selectedServer = selectUpstreamServer();
+  
+  // 创建初始请求Promise
+  const initialRequest = tryRequestWithRetries(selectedServer, url, {
+    timeout: INITIAL_TIMEOUT,
+    upstreamType: UPSTREAM_TYPE
+  }, global.LOG_PREFIX);
+
   try {
-    const result = await tryRequestWithRetries(selectedServer, url, {
-      timeout: INITIAL_TIMEOUT,
-      upstreamType: UPSTREAM_TYPE
-    }, global.LOG_PREFIX);
+    // 设置8秒后自动触发并行请求的定时器
+    const parallelTrigger = new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new Error('PARALLEL_TRIGGER')), INITIAL_TIMEOUT);
+    });
+
+    // 等待初始请求或触发并行
+    const result = await Promise.race([initialRequest, parallelTrigger]);
     
-    // 成功后更新服务器权重
+    // 初始请求成功
     addWeightUpdate(selectedServer, result.responseTime);
-    
-    // 验证响应
-    try {
-      const isValid = validateResponse(
-        result.data,
-        result.contentType,
-        UPSTREAM_TYPE
-      );
-      
-      if (!isValid) {
-        throw new Error('Invalid response from upstream server');
-      }
-    } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
+    await validateAndUpdateServer(result, selectedServer);
+    return formatResponse(result);
+
+  } catch (error) {
+    // 如果不是触发并行的信号，且已经超过总超时，则直接抛出
+    if (error.message !== 'PARALLEL_TRIGGER' && 
+        Date.now() - requestStartTime >= REQUEST_TIMEOUT) {
       throw error;
     }
 
-    return formatResponse(result);
-    
-  } catch (error) {
-    const timeElapsed = Date.now() - requestStartTime;
-    const timeRemaining = REQUEST_TIMEOUT - timeElapsed;
-    
-    // 如果剩余时间不足，直接抛出错误
-    if (timeRemaining < 2000) { // 至少留2秒用于并行请求
-      throw new Error(`请求超时: ${error.message}`);
-    }
-    
-    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求，剩余时间: ${timeRemaining}ms`);
-    
-    // 第二阶段：并行请求其他健康服务器
-    const healthyServers = localUpstreamServersWithDefault.filter(server => 
-      server !== selectedServer && checkServerHealth(server)
-    );
-
+    // 获取所有健康的其他服务器
+    const healthyServers = getHealthyServers(selectedServer);
     if (healthyServers.length === 0) {
       throw new Error('没有其他健康的服务器可用于并行请求');
     }
 
+    // 计算剩余可用时间
+    const timeRemaining = REQUEST_TIMEOUT - (Date.now() - requestStartTime);
+    
     try {
-      console.log(`开始并行请求，健康服务器数量: ${healthyServers.length}`);
-      healthyServers.forEach(server => {
-        console.log(`- 健康服务器: ${server.url}`);
-      });
-
+      // 并行请求所有健康服务器
       const parallelResult = await Promise.race([
-        utils.makeParallelRequests(healthyServers, url, timeRemaining),
+        makeParallelRequests(healthyServers, url, timeRemaining),
+        // 继续等待初始请求（如果还没完成）
+        initialRequest,
+        // 总超时保护
         new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('并行请求超时')), timeRemaining)
+          setTimeout(() => reject(new Error('请求超时')), timeRemaining)
         )
       ]);
-      
-      if (!parallelResult || !parallelResult.success) {
-        throw new Error('并行请求失败或返回无效结果');
+
+      if (!parallelResult.success) {
+        throw new Error('所有请求均失败');
       }
 
-      console.log(`并行请求成功，使用服务器: ${parallelResult.server.url}, 响应时间: ${parallelResult.responseTime}ms`);
+      // 更新成功服务器的权重
       addWeightUpdate(parallelResult.server, parallelResult.responseTime);
+      await validateAndUpdateServer(parallelResult, parallelResult.server);
       return formatResponse(parallelResult);
+
     } catch (error) {
-      console.error(`并行请求失败: ${error.message}`);
-      selectedServer.errorCount++;
-      if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-        markServerUnhealthy(selectedServer);
-      }
-      throw error;
+      handleServerError(selectedServer);
+      throw new Error(`请求失败: ${error.message}`);
     }
+  }
+}
+
+// 辅助函数：验证响应并更新服务器状态
+async function validateAndUpdateServer(result, server) {
+  try {
+    const isValid = validateResponse(
+      result.data,
+      result.contentType,
+      UPSTREAM_TYPE
+    );
+    
+    if (!isValid) {
+      throw new Error('Invalid response from upstream server');
+    }
+    
+    // 重置错误计数
+    server.errorCount = 0;
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
+    handleServerError(server);
+    throw error;
   }
 }
 
@@ -270,30 +276,14 @@ function formatResponse(result) {
 }
 
 function addWeightUpdate(server, responseTime) {
-  // 更新响应时间队列
-  if (!server.responseTimes) {
-    server.responseTimes = [];
-  }
-  server.responseTimes.push(responseTime);
-  if (server.responseTimes.length > 3) {
-    server.responseTimes.shift();
-  }
-
-  // 计算平均响应时间
-  const avgResponseTime = server.responseTimes.length === 3
-    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
-    : responseTime;
-
-  // 更新权重
-  server.lastResponseTime = responseTime;
-  server.lastEWMA = avgResponseTime;
-  server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
-  server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+  // 使用统一的权重更新函数
+  const weights = updateServerWeights(server, responseTime);
   
+  // 发送权重更新消息到主线程
   parentPort.postMessage({
     type: 'weight_update',
     data: {
-      server,
+      server: server,
       responseTime,
       timestamp: Date.now()
     }

@@ -378,7 +378,46 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
   }
 }
 
-// 添加健康检查函数
+// 统一的权重计算和获取函数
+function updateServerWeights(server, responseTime) {
+  // 更新响应时间队列
+  if (!server.responseTimes) {
+    server.responseTimes = [];
+  }
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > 3) {
+    server.responseTimes.shift();
+  }
+
+  // 计算平均响应时间
+  const avgResponseTime = server.responseTimes.length === 3
+    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
+    : responseTime;
+
+  // 更新 EWMA
+  if (typeof server.lastEWMA === 'undefined') {
+    server.lastEWMA = avgResponseTime;
+  } else {
+    const beta = 0.2; // 衰减因子
+    server.lastEWMA = beta * avgResponseTime + (1 - beta) * server.lastEWMA;
+  }
+
+  // 更新权重
+  server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
+  server.dynamicWeight = Math.min(
+    Math.max(1, Math.floor(DYNAMIC_WEIGHT_MULTIPLIER * (1000 / Math.max(server.lastEWMA, 1)))),
+    100
+  );
+
+  return {
+    avgResponseTime,
+    lastEWMA: server.lastEWMA,
+    baseWeight: server.baseWeight,
+    dynamicWeight: server.dynamicWeight
+  };
+}
+
+// 修改健康检查函数中的权重更新部分
 async function startHealthCheck(servers, config, LOG_PREFIX) {
   const {
     BASE_WEIGHT_UPDATE_INTERVAL,
@@ -418,36 +457,15 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
         server.healthy = true;
         server.lastCheck = Date.now();
 
-        // 获取最近三次响应时间的平均值
-        const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
-          ? server.responseTimes.reduce((a, b) => a + b, 0) / 3 
-          : responseTime;
-
-        // 使用平均响应时间计算 EWMA
-        if (typeof server.lastEWMA === 'undefined') {
-          server.lastEWMA = avgResponseTime;
-        } else {
-          const beta = 0.2; // EWMA 衰减因子
-          server.lastEWMA = beta * avgResponseTime + (1 - beta) * server.lastEWMA;
-        }
-
-        // 计算基础权重
-        server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
-
-        // 计算动态权重
-        server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-
-        // 计算综合权重
-        const combinedWeight = calculateCombinedWeight(server);
-
+        const weights = updateServerWeights(server, responseTime);
+        
         console.log(LOG_PREFIX.SUCCESS, 
           `服务器 ${server.url} 健康检查成功, ` +
           `响应时间: ${responseTime}ms, ` +
-          `最近3次平均: ${avgResponseTime.toFixed(0)}ms, ` +
-          `EWMA: ${server.lastEWMA.toFixed(0)}ms, ` +
-          `基础权重: ${server.baseWeight}, ` +
-          `动态权重: ${server.dynamicWeight}, ` +
-          `综合权重: ${combinedWeight}`
+          `最近3次平均: ${weights.avgResponseTime.toFixed(0)}ms, ` +
+          `EWMA: ${weights.lastEWMA.toFixed(0)}ms, ` +
+          `基础权重: ${weights.baseWeight}, ` +
+          `动态权重: ${weights.dynamicWeight}`
         );
       } catch (error) {
         server.healthy = false;
@@ -597,5 +615,6 @@ module.exports = {
   calculateDynamicWeight,
   updateServerState,
   makeRequest,
+  updateServerWeights,
   makeParallelRequests
 };
