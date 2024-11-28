@@ -27,7 +27,9 @@ const {
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
-  upstreamServers
+  upstreamServers,
+  TMDB_API_KEY,
+  TMDB_IMAGE_TEST_URL
 } = workerData;
 
 // 设置全局 LOG_PREFIX
@@ -55,7 +57,7 @@ async function initializeWorker() {
     // 初始化服务器列表
     localUpstreamServers = upstreamServers.split(',').map(url => ({
       url: url.trim(),
-      status: HealthStatus.WARMING_UP,  // 初始状态为预热
+      status: HealthStatus.WARMING_UP,
       errorCount: 0,
       recoveryTime: 0,
       warmupStartTime: Date.now(),
@@ -74,13 +76,33 @@ async function initializeWorker() {
     for (const server of localUpstreamServers) {
       try {
         const startTime = Date.now();
-        await checkServerHealth(server, {
-          UPSTREAM_TYPE,
-          TMDB_API_KEY,
-          TMDB_IMAGE_TEST_URL,
-          REQUEST_TIMEOUT,
-          LOG_PREFIX: global.LOG_PREFIX
-        });
+        
+        // 根据上游类型执行不同的健康检查
+        if (UPSTREAM_TYPE === 'tmdb-api') {
+          if (!TMDB_API_KEY) {
+            throw new Error('TMDB_API_KEY is required for API servers');
+          }
+          await checkServerHealth(server, {
+            UPSTREAM_TYPE,
+            TMDB_API_KEY,
+            REQUEST_TIMEOUT,
+            LOG_PREFIX: global.LOG_PREFIX
+          });
+        } else if (UPSTREAM_TYPE === 'tmdb-image') {
+          // 图片服务器使用简单的 HEAD 请求检查
+          if (!TMDB_IMAGE_TEST_URL) {
+            console.log(global.LOG_PREFIX.WARN, 'TMDB_IMAGE_TEST_URL not set, using default test image');
+          }
+          const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
+          const fullUrl = `${server.url}${testUrl}`;
+          
+          const response = await axios({
+            method: 'head',
+            url: fullUrl,
+            timeout: REQUEST_TIMEOUT,
+            validateStatus: status => status === 200
+          });
+        }
         
         // 计算初始权重
         const responseTime = Date.now() - startTime;
@@ -89,7 +111,7 @@ async function initializeWorker() {
         server.lastEWMA = responseTime;
         server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
         server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-        server.status = HealthStatus.HEALTHY;  // 检查成功直接设为健康
+        server.status = HealthStatus.HEALTHY;
 
         console.log(global.LOG_PREFIX.SUCCESS, 
           `服务器 ${server.url} 初始化成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
@@ -291,7 +313,7 @@ async function handleRequest(url) {
       return cachedResponse;
     }
   } else {
-    console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
+    console.log(global.LOG_PREFIX.CACHE.HIT, `内���缓存命中: ${url}`);
     return cachedResponse;
   }
 
