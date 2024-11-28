@@ -1,6 +1,13 @@
 const os = require('os');
 const path = require('path');
 
+// 缓存清理间隔配置(毫秒)
+const CLEANUP_INTERVALS = {
+  'tmdb-api': 3600000,      // API缓存清理间隔1小时
+  'tmdb-image': 86400000,   // 图片缓存清理间隔24小时
+  'custom': parseInt(process.env.CUSTOM_CACHE_CLEANUP_INTERVAL || '3600000') // 自定义间隔,默认1小时
+};
+
 // 缓存相关配置
 const CACHE_CONFIG = {
   // 缓存目录配置
@@ -9,9 +16,14 @@ const CACHE_CONFIG = {
   
   // 缓存参数配置
   CACHE_TTL: parseInt(process.env.CACHE_TTL || '3600000'), // 默认1小时
-  MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100'), // 内存缓存条目数
-  CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1000'), // 磁盘缓存最大条目数
-  CACHE_CLEANUP_INTERVAL: 300000, // 缓存清理间隔(5分钟)
+  MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100'),
+  CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1000'),
+  
+  // 缓存清理配置
+  get CACHE_CLEANUP_INTERVAL() {
+    const upstreamType = process.env.UPSTREAM_TYPE || 'tmdb-api';
+    return CLEANUP_INTERVALS[upstreamType] || CLEANUP_INTERVALS['tmdb-api'];
+  },
   
   // 缓存文件配置
   CACHE_FILE_EXT: '.cache'
