@@ -364,7 +364,15 @@ function isServerError(errorCode) {
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 检查服务器健康状态
-async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE_TEST_URL, REQUEST_TIMEOUT, LOG_PREFIX) {
+async function checkServerHealth(server, config) {
+  const {
+    UPSTREAM_TYPE,
+    TMDB_API_KEY,
+    TMDB_IMAGE_TEST_URL,
+    REQUEST_TIMEOUT,
+    LOG_PREFIX
+  } = config;
+
   // 设置默认的日志前缀
   const defaultLogPrefix = {
     INFO: '[ 信息 ]',
@@ -569,23 +577,13 @@ async function startHealthCheck(servers, config, LOG_PREFIX) {
     
     for (const server of servers) {
       try {
-        let testUrl = '';
-        switch (UPSTREAM_TYPE) {
-          case 'tmdb-api':
-            testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
-            break;
-          case 'tmdb-image':
-            testUrl = TMDB_IMAGE_TEST_URL;
-            break;
-          default:
-            testUrl = '/';
-        }
-
-        const start = Date.now();
-        const response = await axios.get(`${server.url}${testUrl}`, {
-          timeout: REQUEST_TIMEOUT
+        const responseTime = await checkServerHealth(server, {
+          UPSTREAM_TYPE,
+          TMDB_API_KEY,
+          TMDB_IMAGE_TEST_URL,
+          REQUEST_TIMEOUT,
+          LOG_PREFIX
         });
-        const responseTime = Date.now() - start;
 
         server.healthy = true;
         server.lastCheck = Date.now();
