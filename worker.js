@@ -115,7 +115,9 @@ function selectUpstreamServer() {
     if (!server.dynamicWeight) server.dynamicWeight = 1;
 
     // 使用 calculateCombinedWeight 计算综合权重
-    const weight = calculateCombinedWeight(server);
+    const weight = calculateCombinedWeight(server, {
+      alpha: ALPHA_INITIAL
+    });
     return sum + weight;
   }, 0);
 
@@ -124,7 +126,9 @@ function selectUpstreamServer() {
   let weightSum = 0;
 
   for (const server of healthyServers) {
-    const weight = calculateCombinedWeight(server);
+    const weight = calculateCombinedWeight(server, {
+      alpha: ALPHA_INITIAL
+    });
     weightSum += weight;
     
     if (weightSum > random) {
@@ -142,7 +146,9 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = healthyServers[0];
-  const weight = calculateCombinedWeight(server);
+  const weight = calculateCombinedWeight(server, {
+    alpha: ALPHA_INITIAL
+  });
   const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
     ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
     : '未知';
