@@ -118,7 +118,19 @@ async function startActiveHealthCheck() {
             server.status = HealthStatus.WARMING_UP;
             server.warmupStartTime = Date.now();
             server.warmupRequests = 0;
-            console.log(global.LOG_PREFIX.INFO, `服务器 ${server.url} 健康检查通过，进入预热状态`);
+            
+            // 初始化性能指标
+            server.lastResponseTime = responseTime;
+            server.lastEWMA = responseTime;
+            server.responseTimes = [responseTime];
+            
+            // 计算初始权重
+            const baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
+            const dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+            
+            console.log(global.LOG_PREFIX.INFO, 
+              `服务器 ${server.url} 健康检查通过，进入预热状态 [响应时间=${responseTime}ms, 基础权重=${baseWeight}, 动态权重=${dynamicWeight}]`
+            );
           } catch (error) {
             // 健康检查失败，保持不健康状态
             console.error(global.LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
