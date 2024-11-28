@@ -127,40 +127,29 @@ async function initializeWorkerPool(workerData) {
 
 // 初始化单个工作线程
 async function initializeWorker(workerId, workerData) {
-  // 确保上游服务器配置是JSON字符串
-  const upstreamServers = process.env.UPSTREAM_SERVERS || '[]';
+  // 处理逗号分隔的服务器URL字符串
+  const upstreamServers = (process.env.UPSTREAM_SERVERS || '').split(',').filter(url => url.trim());
   
   try {
-    // 验证配置是否为有效的JSON数组
-    const parsedServers = JSON.parse(upstreamServers);
-    if (!Array.isArray(parsedServers)) {
-      throw new Error('UPSTREAM_SERVERS 必须是JSON数组');
+    if (upstreamServers.length === 0) {
+      throw new Error('未配置上游服务器');
     }
-    console.log(global.LOG_PREFIX.INFO, `加载了 ${parsedServers.length} 个上游服务器配置`);
+
+    console.log(global.LOG_PREFIX.INFO, `加载了 ${upstreamServers.length} 个上游服务器配置`);
+    
+    const worker = new Worker('./worker.js', {
+      workerData: {
+        ...workerData,
+        workerId,
+        upstreamServers: upstreamServers.join(',')  // 保持字符串格式传递
+      }
+    });
+
+    return worker;
   } catch (error) {
-    console.error(global.LOG_PREFIX.ERROR, `解析上游服务器配置失败: ${error.message}`);
+    console.error(global.LOG_PREFIX.ERROR, `初始化工作线程失败: ${error.message}`);
     throw error;
   }
-
-  const worker = new Worker('./worker.js', {
-    workerData: {
-      ...workerData,
-      workerId,
-      upstreamServers: upstreamServers.map(s => s.url).join(','),
-      UPSTREAM_TYPE,
-      TMDB_API_KEY,
-      TMDB_IMAGE_TEST_URL,
-      REQUEST_TIMEOUT,
-      MAX_SERVER_SWITCHES,
-      BASE_WEIGHT_MULTIPLIER,
-      DYNAMIC_WEIGHT_MULTIPLIER,
-      ALPHA_INITIAL,
-      ALPHA_ADJUSTMENT_STEP
-    }
-  });
-
-  setupWorkerEventHandlers(worker, workerId);
-  workers.set(workerId, worker);
 }
 
 // 设置工作线程事件处理器
