@@ -47,6 +47,7 @@ class DiskCache {
     try {
       // 确保缓存目录存在
       await fs.mkdir(this.cacheDir, { recursive: true });
+      console.log(`缓存目录已创建/确认: ${this.cacheDir}`);
       
       // 加载索引文件
       try {
@@ -55,9 +56,11 @@ class DiskCache {
         for (const [key, meta] of Object.entries(indexObj)) {
           this.index.set(key, meta);
         }
+        console.log(`已加载缓存索引，共 ${this.index.size} 条记录`);
       } catch (error) {
         // 索引文件不存在或损坏，创建新的
         await this.saveIndex();
+        console.log('已创建新的缓存索引文件');
       }
 
       // 启动定期清理
@@ -97,6 +100,9 @@ class DiskCache {
     this.lock.set(key, true);
     
     try {
+      // 确保缓存目录存在
+      await fs.mkdir(this.cacheDir, { recursive: true });
+      
       const filePath = path.join(this.cacheDir, `${key}${this.config.CACHE_FILE_EXT}`);
       const meta = {
         key,
@@ -114,8 +120,18 @@ class DiskCache {
       this.index.set(key, meta);
       await this.saveIndex();
       
+      console.log(`缓存写入成功: ${key}`);
     } catch (error) {
       console.error(`写入缓存失败: ${error.message}`);
+      // 如果是目录不存在的错误，尝试重新创建目录
+      if (error.code === 'ENOENT') {
+        try {
+          await fs.mkdir(this.cacheDir, { recursive: true });
+          console.log(`重新创建缓存目录: ${this.cacheDir}`);
+        } catch (mkdirError) {
+          console.error(`创建缓存目录失败: ${mkdirError.message}`);
+        }
+      }
       await this.delete(key);
     } finally {
       this.lock.delete(key);
@@ -393,7 +409,7 @@ async function checkServerHealth(server, UPSTREAM_TYPE, TMDB_API_KEY, TMDB_IMAGE
 }
 
 /**
- * 验证响应内容
+ * 验证响��内容
  * @param {Buffer|string|object} response - 响应内容
  * @param {string} contentType - 内容类型
  * @param {string} upstreamType - 上游类型
