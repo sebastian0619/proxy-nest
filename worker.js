@@ -52,21 +52,58 @@ async function initializeWorker() {
     const { diskCache, lruCache } = await initializeCache();
     global.cache = { diskCache, lruCache };
 
+    // 初始化服务器列表
     localUpstreamServers = upstreamServers.split(',').map(url => ({
       url: url.trim(),
-      status: HealthStatus.HEALTHY,
+      status: HealthStatus.WARMING_UP,  // 初始状态为预热
       errorCount: 0,
       recoveryTime: 0,
-      warmupStartTime: 0,
+      warmupStartTime: Date.now(),
       warmupRequests: 0,
       lastCheckTime: 0,
       alpha: ALPHA_INITIAL,
       responseTimes: [],
       lastResponseTime: 0,
-      lastEWMA: 0
+      lastEWMA: 0,
+      baseWeight: 1,
+      dynamicWeight: 1
     }));
 
-    // 启动主动健康检查
+    // 立即执行一次健康检查
+    console.log(global.LOG_PREFIX.INFO, '执行初始健康检查...');
+    for (const server of localUpstreamServers) {
+      try {
+        const startTime = Date.now();
+        await checkServerHealth(server, {
+          UPSTREAM_TYPE,
+          TMDB_API_KEY,
+          TMDB_IMAGE_TEST_URL,
+          REQUEST_TIMEOUT,
+          LOG_PREFIX: global.LOG_PREFIX
+        });
+        
+        // 计算初始权重
+        const responseTime = Date.now() - startTime;
+        server.responseTimes = [responseTime];
+        server.lastResponseTime = responseTime;
+        server.lastEWMA = responseTime;
+        server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
+        server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+        server.status = HealthStatus.HEALTHY;  // 检查成功直接设为健康
+
+        console.log(global.LOG_PREFIX.SUCCESS, 
+          `服务器 ${server.url} 初始化成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
+        );
+      } catch (error) {
+        console.error(global.LOG_PREFIX.ERROR, 
+          `服务器 ${server.url} 初始化失败: ${error.message}`
+        );
+        server.status = HealthStatus.UNHEALTHY;
+        server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
+      }
+    }
+
+    // 启动定期健康检查
     startActiveHealthCheck();
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
@@ -151,9 +188,9 @@ async function startActiveHealthCheck() {
 
 function selectUpstreamServer() {
   const availableServers = localUpstreamServers.filter(server => {
-    if (!server.hasOwnProperty('status')) {
-      server.status = HealthStatus.HEALTHY;
-      server.errorCount = 0;
+    // 如果服务器还没有权重数据，先进行一次健康检查
+    if (!server.baseWeight || !server.dynamicWeight) {
+      return false;  // 暂时不参与选择
     }
     return isServerHealthy(server) || 
            (server.status === HealthStatus.WARMING_UP && 
