@@ -24,7 +24,10 @@ const {
   getCacheKey,
   validateResponse,
   updateServerWeights,
-  calculateCombinedWeight
+  calculateCombinedWeight,
+  initializeCache,
+  processWeightUpdateQueue,
+  startHealthCheck
 } = require('./utils');
 
 // 全局变量
@@ -85,6 +88,18 @@ async function startServer(config) {
   try {
     // 初始化服务器列表
     servers = initializeUpstreamServers();
+    
+    // 初始化缓存系统
+    const cache = initializeCache(config.cacheConfig);
+    global.cache = cache;
+    
+    // 启动健康检查
+    await startHealthCheck(servers, config, global.LOG_PREFIX);
+    
+    // 启动权重更新队列处理
+    setInterval(() => {
+      processWeightUpdateQueue(weightUpdateQueue, servers);
+    }, config.WEIGHT_UPDATE_INTERVAL);
     
     // 初始化工作线程
     await initializeWorkerPool({
