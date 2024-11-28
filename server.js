@@ -40,74 +40,45 @@ const {
 const workers = new Map();
 const weightUpdateQueue = [];
 let upstreamServers;
+let servers = [];
+
+// 初始化上游服务器列表
+function initializeUpstreamServers() {
+  const upstreamUrls = (process.env.UPSTREAM_SERVERS || '').split(',').filter(url => url.trim());
+  
+  if (upstreamUrls.length === 0) {
+    throw new Error('未配置上游服务器');
+  }
+
+  servers = upstreamUrls.map(url => ({
+    url: url.trim(),
+    healthy: true,
+    baseWeight: 1,
+    dynamicWeight: 1,
+    lastEWMA: 0,
+    lastCheck: 0,
+    errorCount: 0
+  }));
+
+  console.log(global.LOG_PREFIX.INFO, `初始化了 ${servers.length} 个上游服务器`);
+  return servers;
+}
 
 // 主服务器启动函数
-async function startServer() {
+async function startServer(config) {
   try {
-    // 先初始化日志前缀
-    global.LOG_PREFIX = await initializeLogPrefix();
-    if (!global.LOG_PREFIX) {
-      throw new Error('初始化日志前缀失败');
-    }
-
-    // 确保 LOG_PREFIX 已经初始化后再继续
-    console.log(global.LOG_PREFIX.INFO, '日志系统初始化成功');
+    // 先初始化服务器列表
+    servers = initializeUpstreamServers();
     
-    // 初始化 Express 应用
-    const app = express();
-    app.use(morgan('combined'));
-
-    // 初始化缓存
-    const { diskCache, lruCache } = await initializeCache();
-
-    // 初始化工作线程池时传入 LOG_PREFIX
+    // 再初始化工作线程
     await initializeWorkerPool({
-      LOG_PREFIX: global.LOG_PREFIX
+      ...config,
+      upstreamServers: process.env.UPSTREAM_SERVERS
     });
-
-    // 设置路由
-    setupRoutes(app, diskCache, lruCache);
-
-    // 启动服务器
-    app.listen(PORT, () => {
-      console.log(global.LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
-    });
-
-    // 初始化上游服务器列表
-    upstreamServers = initializeUpstreamServers(process.env.UPSTREAM_SERVERS);
-
-    // 启动健康检查
-    const healthCheckConfig = {
-      BASE_WEIGHT_UPDATE_INTERVAL: 300000, // 5分钟
-      REQUEST_TIMEOUT,
-      UPSTREAM_TYPE,
-      TMDB_API_KEY,
-      TMDB_IMAGE_TEST_URL,
-      BASE_WEIGHT_MULTIPLIER,
-      updateWeights: (server, responseTime) => {
-        return updateServerWeights(server, responseTime);
-      },
-      calculateWeight: (server) => {
-        return calculateCombinedWeight(server);
-      }
-    };
-
-    startHealthCheck(upstreamServers, healthCheckConfig, global.LOG_PREFIX);
-
-    // 启动权重更新处理
-    setInterval(() => {
-      processWeightUpdateQueue(
-        weightUpdateQueue, 
-        upstreamServers, 
-        global.LOG_PREFIX, 
-        ALPHA_ADJUSTMENT_STEP,
-        BASE_WEIGHT_MULTIPLIER,
-        DYNAMIC_WEIGHT_MULTIPLIER
-      );
-    }, 1000);
-
+    
+    console.log(global.LOG_PREFIX.SUCCESS, '服务器启动成功');
   } catch (error) {
-    console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]', `服务器启动失败: ${error.message}`);
+    console.error(global.LOG_PREFIX.ERROR, `服务器启动失败: ${error.message}`);
     process.exit(1);
   }
 }
