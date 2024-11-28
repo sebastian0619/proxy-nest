@@ -1,5 +1,27 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
+
+// 初始化全局日志前缀
+if (!workerData.logPrefix) {
+  global.LOG_PREFIX = {
+    INFO: '[ 信息 ]',
+    ERROR: '[ 错误 ]',
+    SUCCESS: '[ 成功 ]',
+    WARN: '[ 警告 ]',
+    CACHE: {
+      HIT: '[ 缓存命中 ]',
+      MISS: '[ 缓存未命中 ]'
+    }
+  };
+} else {
+  global.LOG_PREFIX = workerData.logPrefix;
+}
+
+// 验证LOG_PREFIX是否正确初始化
+if (!global.LOG_PREFIX || !global.LOG_PREFIX.ERROR) {
+  throw new Error('LOG_PREFIX 初始化失败');
+}
+
 const {
   validateResponse,
   tryRequestWithRetries,
@@ -33,23 +55,6 @@ try {
 } catch (error) {
   console.error(`解析上游服务器配置失败: ${error.message}`);
   process.exit(1);
-}
-
-// 初始化全局日志前缀
-global.LOG_PREFIX = workerData.logPrefix;
-
-if (!global.LOG_PREFIX) {
-  // 使用默认日志前缀作为后备
-  global.LOG_PREFIX = {
-    INFO: '[ 信息 ]',
-    ERROR: '[ 错误 ]',
-    SUCCESS: '[ 成功 ]',
-    WARN: '[ 警告 ]',
-    CACHE: {
-      HIT: '[ 缓存命中 ]',
-      MISS: '[ 缓存未命中 ]'
-    }
-  };
 }
 
 // 立即调用初始化函数
@@ -216,7 +221,7 @@ async function handleRequest(url) {
       // 并行请求所有健康服务器
       const parallelResult = await Promise.race([
         makeParallelRequests(healthyServers, url, timeRemaining),
-        // 继续等待初始请求（���果还没完成）
+        // 继续等待初始请求（果还没完成）
         initialRequest,
         // 总超时保护
         new Promise((_, reject) => 
