@@ -579,7 +579,54 @@ const {
 
 // EWMA 和请求限制配置
 
+// 更新服务器权重
+function updateServerWeights(server, responseTime) {
+  if (!server) {
+    return {
+      baseWeight: 1,
+      dynamicWeight: 1,
+      lastEWMA: 0
+    };
+  }
 
+  try {
+    // 计算动态alpha值
+    const timeDiff = Date.now() - (server.lastUpdateTime || Date.now());
+    const responseTimeDiff = Math.abs(responseTime - (server.lastEWMA || responseTime));
+    
+    // alpha值根据时间间隔和响应时间变化动态调整
+    // 时间间隔越长或响应时间变化越大，alpha值越大
+    let alpha = ALPHA_INITIAL;
+    if (server.lastEWMA) {
+      const timeWeight = Math.min(timeDiff / 30000, 1); // 30秒作为基准时间
+      const responseWeight = Math.min(responseTimeDiff / server.lastEWMA, 1);
+      alpha = Math.min(ALPHA_INITIAL + (timeWeight + responseWeight) * 0.1, 0.9);
+    }
+
+    // 计算EWMA
+    const lastEWMA = server.lastEWMA || responseTime;
+    const newEWMA = alpha * responseTime + (1 - alpha) * lastEWMA;
+    
+    // 更新服务器状态
+    server.lastEWMA = newEWMA;
+    server.lastUpdateTime = Date.now();
+    server.baseWeight = server.baseWeight || 1;
+    server.dynamicWeight = calculateDynamicWeight(newEWMA);
+
+    return {
+      baseWeight: server.baseWeight,
+      dynamicWeight: server.dynamicWeight,
+      lastEWMA: newEWMA
+    };
+  } catch (error) {
+    console.error('[ 错误 ] 更新服务器权重失败:', error);
+    return {
+      baseWeight: server.baseWeight || 1,
+      dynamicWeight: server.dynamicWeight || 1,
+      lastEWMA: server.lastEWMA || 0
+    };
+  }
+}
 module.exports = {
   initializeLogPrefix,
   initializeCache,
@@ -597,5 +644,7 @@ module.exports = {
   calculateDynamicWeight,
   updateServerState,
   makeRequest,
-  makeParallelRequests
+  makeParallelRequests,
+  updateServerWeights
 };
+
