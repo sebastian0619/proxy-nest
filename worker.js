@@ -40,17 +40,46 @@ async function initializeWorkerWithLogs() {
     // 先初始化日志前缀
     global.LOG_PREFIX = await initializeLogPrefix();
     
+    // 设置默认的日志前缀，以防初始化失败
+    if (!global.LOG_PREFIX) {
+      global.LOG_PREFIX = {
+        INFO: '[ 信息 ]',
+        ERROR: '[ 错误 ]',
+        WARN: '[ 警告 ]',
+        SUCCESS: '[ 成功 ]',
+        CACHE: {
+          HIT: '[ 缓存命中 ]',
+          MISS: '[ 缓存未命中 ]',
+          INFO: '[ 缓存信息 ]'
+        }
+      };
+    }
+    
     // 然后执行其他初始化
     await initializeWorker();
   } catch (error) {
-    console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+    // 确保即使在错误情况下也有基本的日志前缀
+    if (!global.LOG_PREFIX) {
+      global.LOG_PREFIX = {
+        INFO: '[ 信息 ]',
+        ERROR: '[ 错误 ]',
+        WARN: '[ 警告 ]',
+        SUCCESS: '[ 成功 ]',
+        CACHE: {
+          HIT: '[ 缓存命中 ]',
+          MISS: '[ 缓存未命中 ]',
+          INFO: '[ 缓存信息 ]'
+        }
+      };
+    }
+    console.error(global.LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   }
 }
 
 // 立即调用初始化函数
 initializeWorkerWithLogs().catch(error => {
-  console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
+  console.error(global.LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
   process.exit(1);
 });
 
@@ -174,33 +203,49 @@ async function startActiveHealthCheck() {
           console.log(global.LOG_PREFIX.INFO, `正在检查服务器健康状态: ${server.url}`);
           
           try {
-            // 记录健康检查开始时间
             const startTime = Date.now();
-            await checkServerHealth(server, {
-              UPSTREAM_TYPE,
-              TMDB_API_KEY,
-              TMDB_IMAGE_TEST_URL,
-              REQUEST_TIMEOUT,
-              LOG_PREFIX: global.LOG_PREFIX
-            });
-            // 计算响应时间并更新服务器数据
+            
+            // 根据上游类型执行不同的健康检查
+            if (UPSTREAM_TYPE === 'tmdb-api') {
+              if (!TMDB_API_KEY) {
+                throw new Error('TMDB_API_KEY is required for API servers');
+              }
+              await checkServerHealth(server, {
+                UPSTREAM_TYPE,
+                TMDB_API_KEY,
+                REQUEST_TIMEOUT,
+                LOG_PREFIX: global.LOG_PREFIX
+              });
+            } else if (UPSTREAM_TYPE === 'tmdb-image') {
+              const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
+              const fullUrl = `${server.url}${testUrl}`;
+              
+              const response = await axios({
+                method: 'head',
+                url: fullUrl,
+                timeout: REQUEST_TIMEOUT,
+                validateStatus: status => status === 200
+              });
+            }
+            
+            // 计算响应时间并更新服务器状态
             const responseTime = Date.now() - startTime;
             server.responseTimes.push(responseTime);
             if (server.responseTimes.length > 3) {
               server.responseTimes.shift();
             }
-            server.lastResponseTime = responseTime;
             
-            // 更新权重
+            // 更新服务器状态
+            server.lastResponseTime = responseTime;
+            server.lastEWMA = responseTime;
             server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
             server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-            
-            // 健康检查成功，进入预热状态
             server.status = HealthStatus.WARMING_UP;
             server.warmupStartTime = Date.now();
             server.warmupRequests = 0;
-            console.log(global.LOG_PREFIX.INFO, 
-              `服务器 ${server.url} 健康检查通过 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}], 进入预热状态`
+            
+            console.log(global.LOG_PREFIX.SUCCESS, 
+              `服务器 ${server.url} 健康检查成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
             );
           } catch (error) {
             console.error(global.LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
@@ -213,7 +258,10 @@ async function startActiveHealthCheck() {
     }
   };
 
+  // 每30秒执行一次健康检查
   setInterval(healthCheck, 30000);
+  
+  // 立即执行一次健康检查
   healthCheck().catch(error => {
     console.error(global.LOG_PREFIX.ERROR, `初始健康检查失败: ${error.message}`);
   });
