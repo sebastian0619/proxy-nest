@@ -87,12 +87,9 @@ function markServerUnhealthy(server) {
   console.log(`服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后恢复`);
 }
 
+// 修改健康检查函数，移除自动恢复逻辑
 function checkServerHealth(server) {
-  if (server.status === HealthStatus.UNHEALTHY && Date.now() >= server.recoveryTime) {
-    server.status = HealthStatus.HEALTHY;
-    server.errorCount = 0;
-    console.log(`服务器 ${server.url} 已恢复健康状态`);
-  }
+  // 只返回当前状态，不做状态修改
   return server.status === HealthStatus.HEALTHY;
 }
 
@@ -101,32 +98,47 @@ async function startActiveHealthCheck() {
   const healthCheck = async () => {
     for (const server of localUpstreamServers) {
       try {
+        // 只检查不健康的服务器
         if (server.status === HealthStatus.UNHEALTHY && 
             Date.now() >= server.recoveryTime) {
           
-          // 执行健康检查请求
-          await checkServerHealth(server, {
-            UPSTREAM_TYPE,
-            TMDB_API_KEY,
-            TMDB_IMAGE_TEST_URL,
-            REQUEST_TIMEOUT,
-            LOG_PREFIX: global.LOG_PREFIX
-          });
+          console.log(global.LOG_PREFIX.INFO, `正在检查服务器健康状态: ${server.url}`);
           
-          // 如果检查成功，进入预热状态
-          server.status = HealthStatus.WARMING_UP;
-          server.warmupStartTime = Date.now();
-          server.warmupRequests = 0;
-          console.log(global.LOG_PREFIX.INFO, `服务器 ${server.url} 进入预热状态`);
+          // 执行健康检查请求
+          try {
+            await checkServerHealth(server, {
+              UPSTREAM_TYPE,
+              TMDB_API_KEY,
+              TMDB_IMAGE_TEST_URL,
+              REQUEST_TIMEOUT,
+              LOG_PREFIX: global.LOG_PREFIX
+            });
+            
+            // 健康检查成功，进入预热状态
+            server.status = HealthStatus.WARMING_UP;
+            server.warmupStartTime = Date.now();
+            server.warmupRequests = 0;
+            console.log(global.LOG_PREFIX.INFO, `服务器 ${server.url} 健康检查通过，进入预热状态`);
+          } catch (error) {
+            // 健康检查失败，保持不健康状态
+            console.error(global.LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
+            // 更新恢复时间，避免频繁检查
+            server.recoveryTime = Date.now() + (UNHEALTHY_TIMEOUT / 2);
+          }
         }
       } catch (error) {
-        console.error(global.LOG_PREFIX.ERROR, `健康检查失败 ${server.url}: ${error.message}`);
+        console.error(global.LOG_PREFIX.ERROR, `健康检查过程出错 ${server.url}: ${error.message}`);
       }
     }
   };
 
   // 每30秒执行一次健康检查
   setInterval(healthCheck, 30000);
+  
+  // 立即执行一次健康检查
+  healthCheck().catch(error => {
+    console.error(global.LOG_PREFIX.ERROR, `初始健康检查失败: ${error.message}`);
+  });
 }
 
 function selectUpstreamServer() {
