@@ -8,8 +8,16 @@ const {
   calculateDynamicWeight,
   calculateCombinedWeight,
   initializeCache,
-  getCacheKey
+  getCacheKey,
+  checkServerHealth
 } = require('./utils');
+
+// 健康状态枚举
+const HealthStatus = {
+  HEALTHY: 'healthy',
+  UNHEALTHY: 'unhealthy',
+  WARMING_UP: 'warming_up'
+};
 
 // 从 workerData 中解构需要的配置
 const { 
@@ -46,14 +54,20 @@ async function initializeWorker() {
 
     localUpstreamServers = upstreamServers.split(',').map(url => ({
       url: url.trim(),
-      isHealthy: true,
+      status: HealthStatus.HEALTHY,
+      errorCount: 0,
+      recoveryTime: 0,
+      warmupStartTime: 0,
+      warmupRequests: 0,
+      lastCheckTime: 0,
       alpha: ALPHA_INITIAL,
       responseTimes: [],
       lastResponseTime: 0,
-      lastEWMA: 0,
-      errorCount: 0,
-      recoveryTime: 0
+      lastEWMA: 0
     }));
+
+    // 启动主动健康检查
+    startActiveHealthCheck();
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
   } catch (error) {
@@ -67,75 +81,107 @@ const UNHEALTHY_TIMEOUT = 30000; // 不健康状态持续30秒
 const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
 
 function markServerUnhealthy(server) {
-  server.isHealthy = false;
+  server.status = HealthStatus.UNHEALTHY;
   server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
   server.errorCount = 0;
   console.log(`服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后恢复`);
 }
 
 function checkServerHealth(server) {
-  if (!server.isHealthy && Date.now() >= server.recoveryTime) {
-    server.isHealthy = true;
+  if (server.status === HealthStatus.UNHEALTHY && Date.now() >= server.recoveryTime) {
+    server.status = HealthStatus.HEALTHY;
     server.errorCount = 0;
     console.log(`服务器 ${server.url} 已恢复健康状态`);
   }
-  return server.isHealthy;
+  return server.status === HealthStatus.HEALTHY;
+}
+
+// 添加主动健康检查
+async function startActiveHealthCheck() {
+  const healthCheck = async () => {
+    for (const server of localUpstreamServers) {
+      try {
+        if (server.status === HealthStatus.UNHEALTHY && 
+            Date.now() >= server.recoveryTime) {
+          
+          // 执行健康检查请求
+          await checkServerHealth(server, {
+            UPSTREAM_TYPE,
+            TMDB_API_KEY,
+            TMDB_IMAGE_TEST_URL,
+            REQUEST_TIMEOUT,
+            LOG_PREFIX: global.LOG_PREFIX
+          });
+          
+          // 如果检查成功，进入预热状态
+          server.status = HealthStatus.WARMING_UP;
+          server.warmupStartTime = Date.now();
+          server.warmupRequests = 0;
+          console.log(global.LOG_PREFIX.INFO, `服务器 ${server.url} 进入预热状态`);
+        }
+      } catch (error) {
+        console.error(global.LOG_PREFIX.ERROR, `健康检查失败 ${server.url}: ${error.message}`);
+      }
+    }
+  };
+
+  // 每30秒执行一次健康检查
+  setInterval(healthCheck, 30000);
 }
 
 function selectUpstreamServer() {
-  const healthyServers = localUpstreamServers.filter(server => {
-    if (!server.hasOwnProperty('isHealthy')) {
-      server.isHealthy = true;
+  const availableServers = localUpstreamServers.filter(server => {
+    if (!server.hasOwnProperty('status')) {
+      server.status = HealthStatus.HEALTHY;
       server.errorCount = 0;
     }
-    return checkServerHealth(server);
+    return server.status === HealthStatus.HEALTHY || 
+           (server.status === HealthStatus.WARMING_UP && 
+            server.warmupRequests < 10);
   });
 
-  if (healthyServers.length === 0) {
-    throw new Error('没有健康的上游服务器可用');
+  if (availableServers.length === 0) {
+    throw new Error('没有可用的上游服务器');
   }
 
   // 计算总权重
-  const totalWeight = healthyServers.reduce((sum, server) => {
-    // 确保服务器有基本的权重属性
-    if (!server.baseWeight) server.baseWeight = 1;
-    if (!server.dynamicWeight) server.dynamicWeight = 1;
-
-    // 使用 calculateCombinedWeight 计算综合权重
+  const totalWeight = availableServers.reduce((sum, server) => {
     const weight = calculateCombinedWeight(server);
-    return sum + weight;
+    // 预热服务器权重降低到20%
+    return sum + (server.status === HealthStatus.WARMING_UP ? weight * 0.2 : weight);
   }, 0);
 
   // 按权重随机选择
   const random = Math.random() * totalWeight;
   let weightSum = 0;
 
-  for (const server of healthyServers) {
-    const weight = calculateCombinedWeight(server);
+  for (const server of availableServers) {
+    const baseWeight = calculateCombinedWeight(server);
+    const weight = server.status === HealthStatus.WARMING_UP ? baseWeight * 0.2 : baseWeight;
     weightSum += weight;
     
     if (weightSum > random) {
-      // 计算平均响应时间
       const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
         : '未知';
       
       console.log(global.LOG_PREFIX.SUCCESS, 
-        `选择服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
+        `选择服务器 ${server.url} [状态=${server.status} 权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
       );
       return server;
     }
   }
 
   // 保底返回第一个服务器
-  const server = healthyServers[0];
-  const weight = calculateCombinedWeight(server);
+  const server = availableServers[0];
+  const baseWeight = calculateCombinedWeight(server);
+  const weight = server.status === HealthStatus.WARMING_UP ? baseWeight * 0.2 : baseWeight;
   const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
     ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
     : '未知';
     
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务器 ${server.url} [基础=${server.baseWeight} 动态=${server.dynamicWeight} 综合=${weight} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
+    `保底服务器 ${server.url} [状态=${server.status} 权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
   );
   return server;
 }
@@ -165,12 +211,11 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
+  // 检查缓存
   const cacheKey = getCacheKey({ originalUrl: url });
-  
-  // 1. 先检查内存缓存
   let cachedResponse = global.cache.lruCache.get(cacheKey);
   
-  // 2. 如果内存没有，检查磁盘缓存
+  // 如果内存没有，检查磁盘缓存
   if (!cachedResponse) {
     cachedResponse = await global.cache.diskCache.get(cacheKey);
     if (cachedResponse) {
@@ -195,6 +240,15 @@ async function handleRequest(url) {
     // 成功后更新服务器权重
     addWeightUpdate(selectedServer, result.responseTime);
     
+    // 更新预热状态
+    if (selectedServer.status === HealthStatus.WARMING_UP) {
+      selectedServer.warmupRequests++;
+      if (selectedServer.warmupRequests >= 10) {
+        selectedServer.status = HealthStatus.HEALTHY;
+        console.log(global.LOG_PREFIX.SUCCESS, `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
+      }
+    }
+    
     // 验证响应
     try {
       const isValid = validateResponse(
@@ -213,54 +267,31 @@ async function handleRequest(url) {
 
     // 确保图片数据以 Buffer 形式返回
     if (result.contentType.startsWith('image/')) {
-      return {
-        data: Buffer.from(result.data),  // 确保是 Buffer
+      const finalResult = {
+        data: Buffer.from(result.data),
         contentType: result.contentType,
         responseTime: result.responseTime
       };
+      // 写入缓存
+      global.cache.lruCache.set(cacheKey, finalResult);
+      await global.cache.diskCache.set(cacheKey, finalResult);
+      return finalResult;
     }
     
     // 其他类型数据保持原样
+    // 写入缓存
+    global.cache.lruCache.set(cacheKey, result);
+    await global.cache.diskCache.set(cacheKey, result);
     return result;
     
-  } catch (error) {
-    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
-  }
-
-  // 第二阶段：并行请求其他健康服务器
-  const healthyServers = localUpstreamServers.filter(server => 
-    server !== selectedServer && checkServerHealth(server)
-  );
-
-  if (healthyServers.length === 0) {
-    throw new Error('没有其他健康的服务器可用于并行请求');
-  }
-
-  try {
-    // 剩余时间作为并行请求的超时时间（20秒总限制减去已经用掉的8秒）
-    const result = await tryRequestWithRetries(healthyServers, url, {
-      timeout: REQUEST_TIMEOUT - 8000,
-      upstreamType: UPSTREAM_TYPE
-    }, global.LOG_PREFIX);
-    
-    if (result.success) {
-      addWeightUpdate(result.server, result.responseTime);
-      return result;
-    }
-    throw new Error('并行请求全部失败');
   } catch (error) {
     selectedServer.errorCount++;
     if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
       markServerUnhealthy(selectedServer);
     }
+    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
     throw error;
   }
-
-  // 3. 同时写入内存和磁盘缓存
-  global.cache.lruCache.set(cacheKey, result);
-  await global.cache.diskCache.set(cacheKey, result);
-  
-  return result;
 }
 
 function addWeightUpdate(server, responseTime) {
