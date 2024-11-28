@@ -9,11 +9,11 @@ services:
     environment:
       # 缓存配置
       - CACHE_DIR=/app/cache
-      - CACHE_TTL=3600000            # 缓存过期时间（1小时）
+      - CACHE_TTL=60                 # 缓存过期时间（分钟，60=1小时）
       - MEMORY_CACHE_SIZE=100        # 内存缓存条目数
       - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
-      - DISK_CACHE_CLEANUP_INTERVAL=300000    # 磁盘缓存清理间隔（5分钟）
-      - MEMORY_CACHE_CLEANUP_INTERVAL=60000   # 内存缓存清理间隔（1分钟）
+      - DISK_CACHE_CLEANUP_INTERVAL=5      # 磁盘缓存清理间隔（分钟）
+      - MEMORY_CACHE_CLEANUP_INTERVAL=1    # 内存缓存清理间隔（分钟）
       
       # 服务器配置
       - PORT=6635
