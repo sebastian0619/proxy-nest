@@ -132,7 +132,6 @@ async function initializeWorker(workerId, workerData) {
   const upstreamServers = (process.env.UPSTREAM_SERVERS || '').split(',')
     .filter(url => url.trim())
     .map(url => {
-      // 找到对应的主服务器对象
       const mainServer = servers.find(s => s.url === url.trim());
       return {
         url: url.trim(),
@@ -154,10 +153,13 @@ async function initializeWorker(workerId, workerData) {
       workerData: {
         ...workerData,
         workerId,
-        upstreamServers: JSON.stringify(upstreamServers) // 传递完整对象
+        upstreamServers: JSON.stringify(upstreamServers),
+        logPrefix: global.LOG_PREFIX
       }
     });
 
+    setupWorkerEventHandlers(worker, workerId);
+    workers.set(workerId, worker);
     return worker;
   } catch (error) {
     console.error(global.LOG_PREFIX.ERROR, `初始化工作线程失败: ${error.message}`);

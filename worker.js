@@ -35,8 +35,22 @@ try {
   process.exit(1);
 }
 
-// 设置全局 LOG_PREFIX
-global.LOG_PREFIX = workerData.LOG_PREFIX;
+// 初始化全局日志前缀
+global.LOG_PREFIX = workerData.logPrefix;
+
+if (!global.LOG_PREFIX) {
+  // 使用默认日志前缀作为后备
+  global.LOG_PREFIX = {
+    INFO: '[ 信息 ]',
+    ERROR: '[ 错误 ]',
+    SUCCESS: '[ 成功 ]',
+    WARN: '[ 警告 ]',
+    CACHE: {
+      HIT: '[ 缓存命中 ]',
+      MISS: '[ 缓存未命中 ]'
+    }
+  };
+}
 
 // 立即调用初始化函数
 initializeWorker().catch(error => {
@@ -202,7 +216,7 @@ async function handleRequest(url) {
       // 并行请求所有健康服务器
       const parallelResult = await Promise.race([
         makeParallelRequests(healthyServers, url, timeRemaining),
-        // 继续等待初始请求（如果还没完成）
+        // 继续等待初始请求（���果还没完成）
         initialRequest,
         // 总超时保护
         new Promise((_, reject) => 
