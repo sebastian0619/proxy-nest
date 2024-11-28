@@ -21,7 +21,7 @@ module.exports = {
   // 服务器配置
   PORT: process.env.PORT || 6635,
   NUM_WORKERS: Math.max(1, os.cpus().length - 1),
-  UNHEALTHY_TIMEOUT: 300000,           // 不健康状态持续5分钟
+  UNHEALTHY_TIMEOUT: 900000,           // 不健康状态持续5分钟
   MAX_ERRORS_BEFORE_UNHEALTHY: 3,      // 连续3次错误后标记为不健康
   
   // 请求超时配置

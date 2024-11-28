@@ -6,7 +6,9 @@ const {
   tryRequestWithRetries,
   calculateBaseWeight,
   calculateDynamicWeight,
-  calculateCombinedWeight
+  calculateCombinedWeight,
+  initializeCache,
+  getCacheKey
 } = require('./utils');
 
 // 从 workerData 中解构需要的配置
@@ -37,6 +39,10 @@ async function initializeWorker() {
     if (!upstreamServers) {
       throw new Error('未配置上游服务器');
     }
+
+    // 初始化缓存
+    const { diskCache, lruCache } = await initializeCache();
+    global.cache = { diskCache, lruCache };
 
     localUpstreamServers = upstreamServers.split(',').map(url => ({
       url: url.trim(),
@@ -159,6 +165,25 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
+  const cacheKey = getCacheKey({ originalUrl: url });
+  
+  // 1. 先检查内存缓存
+  let cachedResponse = global.cache.lruCache.get(cacheKey);
+  
+  // 2. 如果内存没有，检查磁盘缓存
+  if (!cachedResponse) {
+    cachedResponse = await global.cache.diskCache.get(cacheKey);
+    if (cachedResponse) {
+      // 找到磁盘缓存，加载到内存
+      global.cache.lruCache.set(cacheKey, cachedResponse);
+      console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
+      return cachedResponse;
+    }
+  } else {
+    console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
+    return cachedResponse;
+  }
+
   // 第一阶段：使用权重选择的服务器
   const selectedServer = selectUpstreamServer();
   try {
@@ -230,6 +255,12 @@ async function handleRequest(url) {
     }
     throw error;
   }
+
+  // 3. 同时写入内存和磁盘缓存
+  global.cache.lruCache.set(cacheKey, result);
+  await global.cache.diskCache.set(cacheKey, result);
+  
+  return result;
 }
 
 function addWeightUpdate(server, responseTime) {

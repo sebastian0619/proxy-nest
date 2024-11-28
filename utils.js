@@ -5,6 +5,7 @@ const path = require('path');
 const axios = require('axios');
 const url = require('url');
 const config = require('./config');
+const crypto = require('crypto');
 
 // 添加 LRU 缓存类
 class LRUCache {
@@ -32,39 +33,161 @@ class LRUCache {
   }
 }
 
-// 初始化缓存
-async function initializeCache() {
-  const {
-    CACHE_CONFIG
-  } = config;
-  
-  if (!CACHE_CONFIG.CACHE_DIR) {
-    throw new Error('CACHE_DIR 未在配置中定义');
+// 添加 DiskCache 类
+class DiskCache {
+  constructor(config) {
+    this.config = config;
+    this.cacheDir = config.CACHE_DIR;
+    this.indexPath = path.join(config.CACHE_DIR, config.CACHE_INDEX_FILE);
+    this.index = new Map();
+    this.lock = new Map(); // 用于并发控制
   }
 
-  const diskCache = new Map();
-  const lruCache = new LRUCache(CACHE_CONFIG.MEMORY_CACHE_SIZE || 100);
-
-  try {
-    // 确保缓存目录存在
-    await fs.mkdir(CACHE_CONFIG.CACHE_DIR, { recursive: true });
-    const indexPath = path.join(CACHE_CONFIG.CACHE_DIR, CACHE_CONFIG.CACHE_INDEX_FILE);
-    
+  async init() {
     try {
-      const indexData = await fs.readFile(indexPath);
-      const index = JSON.parse(indexData);
-      for (const [key, meta] of Object.entries(index)) {
-        diskCache.set(key, meta);
+      // 确保缓存目录存在
+      await fs.mkdir(this.cacheDir, { recursive: true });
+      
+      // 加载索引文件
+      try {
+        const indexData = await fs.readFile(this.indexPath, 'utf8');
+        const indexObj = JSON.parse(indexData);
+        for (const [key, meta] of Object.entries(indexObj)) {
+          this.index.set(key, meta);
+        }
+      } catch (error) {
+        // 索引文件不存在或损坏，创建新的
+        await this.saveIndex();
       }
+
+      // 启动定期清理
+      this.startCleanup();
     } catch (error) {
-      // 如果索引文件不存在或损坏，创建新的
-      await fs.writeFile(indexPath, JSON.stringify({}, null, 2));
+      throw new Error(`初始化磁盘缓存失败: ${error.message}`);
+    }
+  }
+
+  async get(key) {
+    const meta = this.index.get(key);
+    if (!meta) return null;
+
+    // 检查是否过期
+    if (Date.now() > meta.expireAt) {
+      await this.delete(key);
+      return null;
     }
 
-    return { diskCache, lruCache };
-  } catch (error) {
-    throw new Error(`初始化缓存失败: ${error.message}`);
+    try {
+      const filePath = path.join(this.cacheDir, `${key}${this.config.CACHE_FILE_EXT}`);
+      const data = await fs.readFile(filePath);
+      return JSON.parse(data);
+    } catch (error) {
+      console.error(`读取缓存文件失败: ${error.message}`);
+      await this.delete(key);
+      return null;
+    }
   }
+
+  async set(key, value) {
+    // 等待任何现有的写操作完成
+    while (this.lock.has(key)) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    
+    this.lock.set(key, true);
+    
+    try {
+      const filePath = path.join(this.cacheDir, `${key}${this.config.CACHE_FILE_EXT}`);
+      const meta = {
+        key,
+        filePath,
+        size: JSON.stringify(value).length,
+        createdAt: Date.now(),
+        expireAt: Date.now() + this.config.CACHE_TTL,
+        lastAccessed: Date.now()
+      };
+
+      // 写入数据文件
+      await fs.writeFile(filePath, JSON.stringify(value));
+      
+      // 更新索引
+      this.index.set(key, meta);
+      await this.saveIndex();
+      
+    } catch (error) {
+      console.error(`写入缓存失败: ${error.message}`);
+      await this.delete(key);
+    } finally {
+      this.lock.delete(key);
+    }
+  }
+
+  async delete(key) {
+    const meta = this.index.get(key);
+    if (!meta) return;
+
+    try {
+      const filePath = path.join(this.cacheDir, `${key}${this.config.CACHE_FILE_EXT}`);
+      await fs.unlink(filePath);
+    } catch (error) {
+      console.error(`删除缓存文件失败: ${error.message}`);
+    }
+
+    this.index.delete(key);
+    await this.saveIndex();
+  }
+
+  async saveIndex() {
+    try {
+      const indexObj = Object.fromEntries(this.index);
+      await fs.writeFile(this.indexPath, JSON.stringify(indexObj, null, 2));
+    } catch (error) {
+      console.error(`保存索引文件失败: ${error.message}`);
+    }
+  }
+
+  async cleanup() {
+    console.log('开始清理过期缓存...');
+    const now = Date.now();
+    
+    for (const [key, meta] of this.index.entries()) {
+      if (now > meta.expireAt) {
+        await this.delete(key);
+      }
+    }
+
+    // 检查缓存大小限制
+    if (this.index.size > this.config.CACHE_MAX_SIZE) {
+      // 按最后访问时间排序，删除最旧的
+      const sortedEntries = [...this.index.entries()]
+        .sort((a, b) => a[1].lastAccessed - b[1].lastAccessed);
+      
+      const entriesToDelete = sortedEntries
+        .slice(0, this.index.size - this.config.CACHE_MAX_SIZE);
+      
+      for (const [key] of entriesToDelete) {
+        await this.delete(key);
+      }
+    }
+  }
+
+  startCleanup() {
+    setInterval(() => {
+      this.cleanup().catch(error => {
+        console.error(`缓存清理失败: ${error.message}`);
+      });
+    }, this.config.CACHE_CLEANUP_INTERVAL);
+  }
+}
+
+// 修改 initializeCache 函数
+async function initializeCache() {
+  const diskCache = new DiskCache(config.CACHE_CONFIG);
+  await diskCache.init();
+  
+  const lruCache = new LRUCache(config.CACHE_CONFIG.MEMORY_CACHE_SIZE);
+  
+  return { diskCache, lruCache };
 }
 
 // 初始化日志前缀
@@ -185,8 +308,25 @@ function updateServerState(server, responseTime, healthy = true) {
 
 // 生成缓存键
 function getCacheKey(req) {
-  const parsedUrl = url.parse(req.originalUrl, true);
-  return `${parsedUrl.pathname}?${new URLSearchParams(parsedUrl.query)}`;
+  try {
+    const parsedUrl = url.parse(req.originalUrl, true);
+    
+    // 规范化查询参数
+    const sortedParams = new URLSearchParams(parsedUrl.query);
+    sortedParams.sort();
+    
+    // 创建缓存键
+    const cacheKey = crypto
+      .createHash('md5')
+      .update(`${parsedUrl.pathname}?${sortedParams.toString()}`)
+      .digest('hex');
+      
+    return cacheKey;
+  } catch (error) {
+    console.error(`生成缓存键失败: ${error.message}`);
+    // 降级处理：使用原始URL
+    return req.originalUrl.replace(/[^a-zA-Z0-9]/g, '_');
+  }
 }
 
 // 记录错误
@@ -547,7 +687,7 @@ async function makeParallelRequests(servers, url, timeout) {
     if (successfulResponses.length > 0) {
       return successfulResponses[0]; // 返回最快的成功响应
     }
-    throw new Error('所有并行���求都失败了');
+    throw new Error('所有并行求都失败了');
   } catch (error) {
     throw error;
   }
