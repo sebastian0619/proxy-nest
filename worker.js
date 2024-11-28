@@ -11,7 +11,6 @@ const {
 
 // 从 workerData 中解构需要的配置
 const { 
-  MAX_SERVER_SWITCHES,
   UPSTREAM_TYPE,
   REQUEST_TIMEOUT,
   ALPHA_INITIAL,
@@ -41,14 +40,11 @@ async function initializeWorker() {
 
     localUpstreamServers = upstreamServers.split(',').map(url => ({
       url: url.trim(),
-      healthy: true,
-      baseWeight: 1,
-      dynamicWeight: 1,
+      isHealthy: true,
       alpha: ALPHA_INITIAL,
       responseTimes: [],
       lastResponseTime: 0,
       lastEWMA: 0,
-      isHealthy: true,
       errorCount: 0,
       recoveryTime: 0
     }));
