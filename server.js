@@ -6,7 +6,7 @@ const fs = require('fs/promises');
 const LRUCache = require('lru-cache');
 const crypto = require('crypto');
 
-// 从 utils 导入实际需要的函数
+// 从 utils 导入需要的函数
 const {
   initializeLogPrefix,
   initializeCache,
@@ -18,29 +18,32 @@ const {
   calculateCombinedWeight
 } = require('./utils');
 
-// 配置常量
-const {
-  PORT,
-  NUM_WORKERS,
-  REQUEST_TIMEOUT,
-  UPSTREAM_TYPE,
-  TMDB_API_KEY,
-  TMDB_IMAGE_TEST_URL,
-  BASE_WEIGHT_MULTIPLIER,
-  DYNAMIC_WEIGHT_MULTIPLIER,
-  ALPHA_INITIAL,
-  ALPHA_ADJUSTMENT_STEP,
-  MAX_SERVER_SWITCHES,
-  CACHE_CONFIG
-} = require('./config');
-
-
 // 全局变量
-
 const workers = new Map();
 const weightUpdateQueue = [];
 let upstreamServers;
 let servers = [];
+
+// 主启动函数
+async function main() {
+  try {
+    // 1. 首先初始化日志系统
+    global.LOG_PREFIX = initializeLogPrefix();
+    console.log(global.LOG_PREFIX.INFO, '日志系统初始化成功');
+
+    // 2. 载入配置
+    const config = require('./config');
+
+    // 3. 启动服务器
+    await startServer(config);
+
+  } catch (error) {
+    // 确保LOG_PREFIX已初始化后再使用
+    const errorPrefix = global.LOG_PREFIX ? global.LOG_PREFIX.ERROR : '[ 错误 ]';
+    console.error(errorPrefix, `启动失败: ${error.message}`);
+    process.exit(1);
+  }
+}
 
 // 初始化上游服务器列表
 function initializeUpstreamServers() {
