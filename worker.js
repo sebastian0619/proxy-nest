@@ -98,14 +98,14 @@ async function startActiveHealthCheck() {
   const healthCheck = async () => {
     for (const server of localUpstreamServers) {
       try {
-        // 只检查不健康的服务器
         if (server.status === HealthStatus.UNHEALTHY && 
             Date.now() >= server.recoveryTime) {
           
           console.log(global.LOG_PREFIX.INFO, `正在检查服务器健康状态: ${server.url}`);
           
-          // 执行健康检查请求
           try {
+            // 记录健康检查开始时间
+            const startTime = Date.now();
             await checkServerHealth(server, {
               UPSTREAM_TYPE,
               TMDB_API_KEY,
@@ -113,28 +113,27 @@ async function startActiveHealthCheck() {
               REQUEST_TIMEOUT,
               LOG_PREFIX: global.LOG_PREFIX
             });
+            // 计算响应时间并更新服务器数据
+            const responseTime = Date.now() - startTime;
+            server.responseTimes.push(responseTime);
+            if (server.responseTimes.length > 3) {
+              server.responseTimes.shift();
+            }
+            server.lastResponseTime = responseTime;
+            
+            // 更新权重
+            server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
+            server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
             
             // 健康检查成功，进入预热状态
             server.status = HealthStatus.WARMING_UP;
             server.warmupStartTime = Date.now();
             server.warmupRequests = 0;
-            
-            // 初始化性能指标
-            server.lastResponseTime = responseTime;
-            server.lastEWMA = responseTime;
-            server.responseTimes = [responseTime];
-            
-            // 计算初始权重
-            const baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
-            const dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-            
             console.log(global.LOG_PREFIX.INFO, 
-              `服务器 ${server.url} 健康检查通过，进入预热状态 [响应时间=${responseTime}ms, 基础权重=${baseWeight}, 动态权重=${dynamicWeight}]`
+              `服务器 ${server.url} 健康检查通过 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}], 进入预热状态`
             );
           } catch (error) {
-            // 健康检查失败，保持不健康状态
             console.error(global.LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
-            // 更新恢复时间，避免频繁检查
             server.recoveryTime = Date.now() + (UNHEALTHY_TIMEOUT / 2);
           }
         }
@@ -144,10 +143,7 @@ async function startActiveHealthCheck() {
     }
   };
 
-  // 每30秒执行一次健康检查
   setInterval(healthCheck, 30000);
-  
-  // 立即执行一次健康检查
   healthCheck().catch(error => {
     console.error(global.LOG_PREFIX.ERROR, `初始健康检查失败: ${error.message}`);
   });
@@ -170,27 +166,32 @@ function selectUpstreamServer() {
 
   // 计算总权重
   const totalWeight = availableServers.reduce((sum, server) => {
-    const weight = calculateCombinedWeight(server);
-    // 预热服务器权重降低到20%
-    return sum + (server.status === HealthStatus.WARMING_UP ? weight * 0.2 : weight);
+    const baseWeight = server.baseWeight || 1;
+    const dynamicWeight = server.dynamicWeight || 1;
+    const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
+    return sum + (server.status === HealthStatus.WARMING_UP ? combinedWeight * 0.2 : combinedWeight);
   }, 0);
 
-  // 按权重随机选择
   const random = Math.random() * totalWeight;
   let weightSum = 0;
 
   for (const server of availableServers) {
-    const baseWeight = calculateCombinedWeight(server);
-    const weight = server.status === HealthStatus.WARMING_UP ? baseWeight * 0.2 : baseWeight;
+    const baseWeight = server.baseWeight || 1;
+    const dynamicWeight = server.dynamicWeight || 1;
+    const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
+    const weight = server.status === HealthStatus.WARMING_UP ? combinedWeight * 0.2 : combinedWeight;
     weightSum += weight;
     
     if (weightSum > random) {
-      const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
-        ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
-        : '未知';
+      // 使用已有的响应时间数据
+      const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
+        ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
+        : server.lastResponseTime?.toFixed(0) || '未知';
       
       console.log(global.LOG_PREFIX.SUCCESS, 
-        `选择服务器 ${server.url} [状态=${server.status} 权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
+        `选择服务器 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
+        `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
+        `最近响应=${avgResponseTime}ms]`
       );
       return server;
     }
@@ -198,14 +199,18 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = availableServers[0];
-  const baseWeight = calculateCombinedWeight(server);
-  const weight = server.status === HealthStatus.WARMING_UP ? baseWeight * 0.2 : baseWeight;
-  const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
-    ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
-    : '未知';
+  const baseWeight = server.baseWeight || 1;
+  const dynamicWeight = server.dynamicWeight || 1;
+  const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
+  const weight = server.status === HealthStatus.WARMING_UP ? combinedWeight * 0.2 : combinedWeight;
+  const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
+    ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
+    : server.lastResponseTime?.toFixed(0) || '未知';
     
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务器 ${server.url} [状态=${server.status} 权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% 最近3次平均=${avgResponseTime}ms]`
+    `保底服务器 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
+    `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
+    `最近响应=${avgResponseTime}ms]`
   );
   return server;
 }
