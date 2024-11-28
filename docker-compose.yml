@@ -9,11 +9,26 @@ services:
     environment:
       # 缓存配置
       - CACHE_DIR=/app/cache
-      - CACHE_TTL=60                 # 缓存过期时间（分钟，60=1小时）
-      - MEMORY_CACHE_SIZE=100        # 内存缓存条目数
+      
+      # 磁盘缓存配置
+      - DISK_CACHE_TTL=1440          # 磁盘缓存过期时间（分钟，1440=1天）
       - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
       - DISK_CACHE_CLEANUP_INTERVAL=5      # 磁盘缓存清理间隔（分钟）
+      
+      # 内存缓存配置
+      - MEMORY_CACHE_TTL=60          # 内存缓存过期时间（分钟，60=1小时）
+      - MEMORY_CACHE_SIZE=100        # 内存缓存条目数
       - MEMORY_CACHE_CLEANUP_INTERVAL=1    # 内存缓存清理间隔（分钟）
+      
+      # 内容类型特定配置
+      # 图片缓存配置
+      - IMAGE_MEMORY_TTL=10          # 图片内存缓存时间（分钟，10=10分钟）
+      - IMAGE_DISK_TTL=4320          # 图片磁盘缓存时间（分钟，4320=3天）
+      - IMAGE_SKIP_MEMORY=false      # 是否跳过图片的内存缓存
+      
+      # JSON缓存配置
+      - JSON_MEMORY_TTL=60           # JSON内存缓存时间（分钟，60=1小时）
+      - JSON_DISK_TTL=1440           # JSON磁盘缓存时间（分钟，1440=1天）
       
       # 服务器配置
       - PORT=6635

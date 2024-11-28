@@ -357,8 +357,13 @@ async function handleRequest(url) {
   if (!cachedResponse) {
     cachedResponse = await global.cache.diskCache.get(cacheKey);
     if (cachedResponse) {
-      // 找到磁盘缓存，加载到内存
-      global.cache.lruCache.set(cacheKey, cachedResponse);
+      // 找到磁盘缓存，检查是否需要加载到内存
+      const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
+      const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
+      
+      if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
+        global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
+      }
       console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
       return cachedResponse;
     }
@@ -411,23 +416,34 @@ async function handleRequest(url) {
         responseTime: result.responseTime
       };
       // 写入缓存
-      global.cache.lruCache.set(cacheKey, finalResult);
-      await global.cache.diskCache.set(cacheKey, finalResult);
+      global.cache.lruCache.set(cacheKey, finalResult, result.contentType);
+      await global.cache.diskCache.set(cacheKey, finalResult, result.contentType);
       return finalResult;
     }
     
     // 其他类型数据保持原样
     // 写入缓存
-    global.cache.lruCache.set(cacheKey, result);
-    await global.cache.diskCache.set(cacheKey, result);
+    global.cache.lruCache.set(cacheKey, result, result.contentType);
+    await global.cache.diskCache.set(cacheKey, result, result.contentType);
     return result;
     
   } catch (error) {
+    // 更新服务器错误计数
     selectedServer.errorCount++;
+    
+    // 检查是否需要标记为不健康
     if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-      markServerUnhealthy(selectedServer);
+      selectedServer.status = HealthStatus.UNHEALTHY;
+      selectedServer.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
+      console.error(global.LOG_PREFIX.ERROR, 
+        `服务器 ${selectedServer.url} 已标记为不健康，将在 ${UNHEALTHY_TIMEOUT/1000} 秒后尝试恢复`
+      );
     }
-    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
+    
+    // 记录错误并重新抛出
+    console.error(global.LOG_PREFIX.ERROR, 
+      `服务器 ${selectedServer.url} 请求失败: ${error.message}`
+    );
     throw error;
   }
 }

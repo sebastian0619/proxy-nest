@@ -209,7 +209,13 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
       );
       if (isValid) {
         console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${cacheKey}`);
-        lruCache.set(cacheKey, cachedItem);
+        // 检查是否应该加载到内存缓存
+        const mimeCategory = cachedItem.contentType.split(';')[0].trim().toLowerCase();
+        const contentTypeConfig = lruCache.getContentTypeConfig(mimeCategory);
+        
+        if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
+          lruCache.set(cacheKey, cachedItem, cachedItem.contentType);
+        }
         return cachedItem;
       }
     }

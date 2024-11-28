@@ -8,13 +8,28 @@ const CACHE_CONFIG = {
   CACHE_INDEX_FILE: 'cache_index.json',
   
   // 缓存参数配置
-  CACHE_TTL: parseInt(process.env.CACHE_TTL || '60') * 60 * 1000,           // 从分钟转换为毫秒
-  MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100'),       // 内存缓存条目数
-  CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1000'),           // 磁盘缓存最大条目数
+  DISK_CACHE_TTL: parseInt(process.env.DISK_CACHE_TTL || '1440') * 60 * 1000,  // 磁盘缓存过期时间（默认24小时）
+  MEMORY_CACHE_TTL: parseInt(process.env.MEMORY_CACHE_TTL || '60') * 60 * 1000, // 内存缓存过期时间（默认1小时）
+  MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100'),          // 内存缓存条目数
+  CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1000'),              // 磁盘缓存最大条目数
   
   // 缓存清理间隔配置（从分钟转换为毫秒）
   DISK_CACHE_CLEANUP_INTERVAL: parseInt(process.env.DISK_CACHE_CLEANUP_INTERVAL || '5') * 60 * 1000,
   MEMORY_CACHE_CLEANUP_INTERVAL: parseInt(process.env.MEMORY_CACHE_CLEANUP_INTERVAL || '1') * 60 * 1000,
+  
+  // 内容类型特定配置
+  CONTENT_TYPE_CONFIG: {
+    'image': {
+      memory_ttl: parseInt(process.env.IMAGE_MEMORY_TTL || '10') * 60 * 1000,   // 图片内存缓存时间（默认10分钟）
+      disk_ttl: parseInt(process.env.IMAGE_DISK_TTL || '4320') * 60 * 1000,     // 图片磁盘缓存时间（默认3天）
+      skip_memory: process.env.IMAGE_SKIP_MEMORY === 'true'                      // 是否跳过内存缓存
+    },
+    'json': {
+      memory_ttl: parseInt(process.env.JSON_MEMORY_TTL || '60') * 60 * 1000,    // JSON内存缓存时间（默认1小时）
+      disk_ttl: parseInt(process.env.JSON_DISK_TTL || '1440') * 60 * 1000,      // JSON磁盘缓存时间（默认1天）
+      skip_memory: false
+    }
+  },
   
   // 缓存文件配置
   CACHE_FILE_EXT: '.cache'

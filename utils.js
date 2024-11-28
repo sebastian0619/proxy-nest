@@ -515,16 +515,51 @@ function validateResponse(data, contentType, upstreamType) {
       }
 
     case 'tmdb-image':
-      // 图片响应验证 - 只验证基本类型和非空
+      // 图片响应验证
       if (!mimeCategory.startsWith('image/')) {
         console.error(global.LOG_PREFIX.ERROR, `图片响应类型错误: ${contentType}`);
         return false;
       }
-      // 接受 Buffer 或其他非空数据
-      return data && (Buffer.isBuffer(data) || data.length > 0);
+      // 验证图片数据
+      if (!Buffer.isBuffer(data)) {
+        if (typeof data === 'string' || data instanceof Uint8Array) {
+          try {
+            Buffer.from(data);
+            return true;
+          } catch (error) {
+            console.error(global.LOG_PREFIX.ERROR, `图片数据转换失败: ${error.message}`);
+            return false;
+          }
+        }
+        console.error(global.LOG_PREFIX.ERROR, '图片数据格式错误');
+        return false;
+      }
+      return true;
 
     default:
-      // 默认验证 - 确保数据非空
+      // 默认验证 - 根据内容类型进行验证
+      if (mimeCategory.includes('application/json')) {
+        try {
+          if (typeof data === 'object' && data !== null) {
+            return true;
+          }
+          if (Buffer.isBuffer(data) || typeof data === 'string') {
+            JSON.parse(typeof data === 'string' ? data : data.toString('utf-8'));
+            return true;
+          }
+          return false;
+        } catch (error) {
+          console.error(global.LOG_PREFIX.ERROR, `JSON解析失败: ${error.message}`);
+          return false;
+        }
+      } else if (mimeCategory.startsWith('image/')) {
+        return Buffer.isBuffer(data) || data instanceof Uint8Array || typeof data === 'string';
+      } else if (mimeCategory.startsWith('text/')) {
+        return typeof data === 'string' || 
+               (Buffer.isBuffer(data) && data.toString('utf-8').length > 0);
+      }
+      
+      // 其他类型 - 确保数据非空
       return data && (
         Buffer.isBuffer(data) || 
         typeof data === 'string' || 
