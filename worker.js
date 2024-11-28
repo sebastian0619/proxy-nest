@@ -26,28 +26,9 @@ const {
 // 解析上游服务器配置
 let localUpstreamServersWithDefault = [];
 try {
-  // 将逗号分隔的字符串转换为数组
-  const serverUrls = (workerData.upstreamServers || '').split(',').filter(url => url.trim());
-  
-  if (serverUrls.length === 0) {
-    throw new Error('未配置上游服务器');
-  }
-
-  // 为每个服务器URL创建配置对象
-  localUpstreamServersWithDefault = serverUrls.map(url => ({
-    url: url.trim(),
-    healthy: true,
-    baseWeight: 1,
-    dynamicWeight: 1,
-    alpha: ALPHA_INITIAL,
-    responseTimes: [],
-    lastResponseTime: 0,
-    lastEWMA: 0,
-    isHealthy: true,
-    errorCount: 0,
-    recoveryTime: 0
-  }));
-
+  // 直接使用传入的服务器数据
+  const serverData = workerData.upstreamServers;
+  localUpstreamServersWithDefault = initializeUpstreamServers(serverData);
   console.log(`成功加载 ${localUpstreamServersWithDefault.length} 个上游服务器配置`);
 } catch (error) {
   console.error(`解析上游服务器配置失败: ${error.message}`);
@@ -292,4 +273,25 @@ function addWeightUpdate(server, responseTime) {
       timestamp: Date.now()
     }
   });
+}
+
+// 在文件开头附近添加这个函数
+function initializeUpstreamServers(serverData) {
+  try {
+    // 解析传入的JSON数据
+    const servers = JSON.parse(serverData);
+    
+    if (!Array.isArray(servers)) {
+      throw new Error('服务器配置必须是数组');
+    }
+
+    return servers.map(server => ({
+      ...server, // 保持原有状态
+      responseTimes: [], // 只初始化本地需要的新属性
+      recoveryTime: 0
+    }));
+  } catch (error) {
+    console.error(`解析服务器配置失败: ${error.message}`);
+    throw error;
+  }
 }

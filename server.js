@@ -127,21 +127,32 @@ async function initializeWorkerPool(workerData) {
 
 // 初始化单个工作线程
 async function initializeWorker(workerId, workerData) {
-  // 处理逗号分隔的服务器URL字符串
-  const upstreamServers = (process.env.UPSTREAM_SERVERS || '').split(',').filter(url => url.trim());
-  
+  const upstreamServers = (process.env.UPSTREAM_SERVERS || '').split(',')
+    .filter(url => url.trim())
+    .map(url => {
+      // 找到对应的主服务器对象
+      const mainServer = servers.find(s => s.url === url.trim());
+      return {
+        url: url.trim(),
+        healthy: mainServer?.healthy ?? true,
+        baseWeight: mainServer?.baseWeight ?? 1,
+        dynamicWeight: mainServer?.dynamicWeight ?? 1,
+        lastEWMA: mainServer?.lastEWMA ?? 0,
+        lastCheck: mainServer?.lastCheck ?? 0,
+        errorCount: mainServer?.errorCount ?? 0
+      };
+    });
+
   try {
     if (upstreamServers.length === 0) {
       throw new Error('未配置上游服务器');
     }
 
-    console.log(global.LOG_PREFIX.INFO, `加载了 ${upstreamServers.length} 个上游服务器配置`);
-    
     const worker = new Worker('./worker.js', {
       workerData: {
         ...workerData,
         workerId,
-        upstreamServers: upstreamServers.join(',')  // 保持字符串格式传递
+        upstreamServers: JSON.stringify(upstreamServers) // 传递完整对象
       }
     });
 
