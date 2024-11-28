@@ -26,9 +26,8 @@ module.exports = {
   
   // 请求超时配置
   INITIAL_TIMEOUT: 8000,               // 初始请求超时时间（8秒）
-  PARALLEL_TIMEOUT: 10000,             // 并行请求超时时间（10秒）
-  REQUEST_TIMEOUT: 19000,              // 总请求超时时间（19秒，留1秒缓冲）
-  WORKER_TIMEOUT: 20000,               // 工作线程超时时间（20秒）
+  PARALLEL_TIMEOUT: 20000,             // 外部程序最大等待时间（20秒）
+  REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '10000'), // 单个请求的默认超时时间
   
   // TMDB 相关配置
   UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb-api',

@@ -1,61 +1,30 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
-
-// 初始化全局日志前缀
-if (!workerData.logPrefix) {
-  global.LOG_PREFIX = {
-    INFO: '[ 信息 ]',
-    ERROR: '[ 错误 ]',
-    SUCCESS: '[ 成功 ]',
-    WARN: '[ 警告 ]',
-    CACHE: {
-      HIT: '[ 缓存命中 ]',
-      MISS: '[ 缓存未命中 ]'
-    }
-  };
-} else {
-  global.LOG_PREFIX = workerData.logPrefix;
-}
-
-// 验证LOG_PREFIX是否正确初始化
-if (!global.LOG_PREFIX || !global.LOG_PREFIX.ERROR) {
-  throw new Error('LOG_PREFIX 初始化失败');
-}
-
 const {
+  initializeLogPrefix,
   validateResponse,
   tryRequestWithRetries,
-  updateServerWeights,
+  calculateBaseWeight,
+  calculateDynamicWeight,
   calculateCombinedWeight
 } = require('./utils');
 
-const { 
-  INITIAL_TIMEOUT,
-  REQUEST_TIMEOUT,
-  UPSTREAM_TYPE
-} = require('./config');
-
 // 从 workerData 中解构需要的配置
 const { 
+  MAX_SERVER_SWITCHES,
+  UPSTREAM_TYPE,
+  REQUEST_TIMEOUT,
   ALPHA_INITIAL,
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
-  MAX_ERRORS_BEFORE_UNHEALTHY,
-  UNHEALTHY_TIMEOUT
+  upstreamServers
 } = workerData;
 
-// 解析上游服务器配置
-let localUpstreamServersWithDefault = [];
-try {
-  // 直接使用传入的服务器数据
-  const serverData = workerData.upstreamServers;
-  localUpstreamServersWithDefault = initializeUpstreamServers(serverData);
-  console.log(`成功加载 ${localUpstreamServersWithDefault.length} 个上游服务器配置`);
-} catch (error) {
-  console.error(`解析上游服务器配置失败: ${error.message}`);
-  process.exit(1);
-}
+// 设置全局 LOG_PREFIX
+global.LOG_PREFIX = workerData.LOG_PREFIX;
+
+let localUpstreamServers = [];
 
 // 立即调用初始化函数
 initializeWorker().catch(error => {
@@ -66,9 +35,23 @@ initializeWorker().catch(error => {
 // 初始化工作线程
 async function initializeWorker() {
   try {
-    if (localUpstreamServersWithDefault.length === 0) {
+    if (!upstreamServers) {
       throw new Error('未配置上游服务器');
     }
+
+    localUpstreamServers = upstreamServers.split(',').map(url => ({
+      url: url.trim(),
+      healthy: true,
+      baseWeight: 1,
+      dynamicWeight: 1,
+      alpha: ALPHA_INITIAL,
+      responseTimes: [],
+      lastResponseTime: 0,
+      lastEWMA: 0,
+      isHealthy: true,
+      errorCount: 0,
+      recoveryTime: 0
+    }));
 
     console.log(global.LOG_PREFIX.INFO, `工作线程 ${workerId} 初始化完成`);
   } catch (error) {
@@ -78,6 +61,8 @@ async function initializeWorker() {
 }
 
 // 服务器健康检查配置
+const UNHEALTHY_TIMEOUT = 30000; // 不健康状态持续30秒
+const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
 
 function markServerUnhealthy(server) {
   server.isHealthy = false;
@@ -96,7 +81,7 @@ function checkServerHealth(server) {
 }
 
 function selectUpstreamServer() {
-  const healthyServers = localUpstreamServersWithDefault.filter(server => {
+  const healthyServers = localUpstreamServers.filter(server => {
     if (!server.hasOwnProperty('isHealthy')) {
       server.isHealthy = true;
       server.errorCount = 0;
@@ -115,9 +100,7 @@ function selectUpstreamServer() {
     if (!server.dynamicWeight) server.dynamicWeight = 1;
 
     // 使用 calculateCombinedWeight 计算综合权重
-    const weight = calculateCombinedWeight(server, {
-      alpha: ALPHA_INITIAL
-    });
+    const weight = calculateCombinedWeight(server);
     return sum + weight;
   }, 0);
 
@@ -126,9 +109,7 @@ function selectUpstreamServer() {
   let weightSum = 0;
 
   for (const server of healthyServers) {
-    const weight = calculateCombinedWeight(server, {
-      alpha: ALPHA_INITIAL
-    });
+    const weight = calculateCombinedWeight(server);
     weightSum += weight;
     
     if (weightSum > random) {
@@ -146,9 +127,7 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = healthyServers[0];
-  const weight = calculateCombinedWeight(server, {
-    alpha: ALPHA_INITIAL
-  });
+  const weight = calculateCombinedWeight(server);
   const avgResponseTime = server.responseTimes && server.responseTimes.length === 3 
     ? (server.responseTimes.reduce((a, b) => a + b, 0) / 3).toFixed(0) 
     : '未知';
@@ -184,139 +163,106 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
-  const requestStartTime = Date.now();
+  // 第一阶段：使用权重选择的服务器
   const selectedServer = selectUpstreamServer();
-  
-  // 创建初始请求Promise
-  const initialRequest = tryRequestWithRetries(selectedServer, url, {
-    timeout: INITIAL_TIMEOUT,
-    upstreamType: UPSTREAM_TYPE
-  }, global.LOG_PREFIX);
-
   try {
-    // 设置8秒后自动触发并行请求的定时器
-    const parallelTrigger = new Promise((_resolve, reject) => {
-      setTimeout(() => reject(new Error('PARALLEL_TRIGGER')), INITIAL_TIMEOUT);
-    });
-
-    // 等待初始请求或触发并行
-    const result = await Promise.race([initialRequest, parallelTrigger]);
+    const result = await tryRequestWithRetries(selectedServer, url, {
+      REQUEST_TIMEOUT,
+      UPSTREAM_TYPE
+    }, global.LOG_PREFIX);
     
-    // 初始请求成功
+    // 成功后更新服务器权重
     addWeightUpdate(selectedServer, result.responseTime);
-    await validateAndUpdateServer(result, selectedServer);
-    return formatResponse(result);
-
-  } catch (error) {
-    // 如果不是触发并行的信号，且已经超过总超时，则直接抛出
-    if (error.message !== 'PARALLEL_TRIGGER' && 
-        Date.now() - requestStartTime >= REQUEST_TIMEOUT) {
+    
+    // 验证响应
+    try {
+      const isValid = validateResponse(
+        result.data,
+        result.contentType,
+        UPSTREAM_TYPE
+      );
+      
+      if (!isValid) {
+        throw new Error('Invalid response from upstream server');
+      }
+    } catch (error) {
+      console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
       throw error;
     }
 
-    // 获取所有健康的其他服务器
-    const healthyServers = getHealthyServers(selectedServer);
-    if (healthyServers.length === 0) {
-      throw new Error('没有其他健康的服务器可用于并行请求');
-    }
-
-    // 计算剩余可用时间
-    const timeRemaining = REQUEST_TIMEOUT - (Date.now() - requestStartTime);
-    
-    try {
-      // 并行请求所有健康服务器
-      const parallelResult = await Promise.race([
-        makeParallelRequests(healthyServers, url, timeRemaining),
-        // 继续等待初始请求（果还没完成）
-        initialRequest,
-        // 总超时保护
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('请求超时')), timeRemaining)
-        )
-      ]);
-
-      if (!parallelResult.success) {
-        throw new Error('所有请求均失败');
-      }
-
-      // 更新成功服务器的权重
-      addWeightUpdate(parallelResult.server, parallelResult.responseTime);
-      await validateAndUpdateServer(parallelResult, parallelResult.server);
-      return formatResponse(parallelResult);
-
-    } catch (error) {
-      handleServerError(selectedServer);
-      throw new Error(`请求失败: ${error.message}`);
-    }
-  }
-}
-
-// 辅助函数：验证响应并更新服务器状态
-async function validateAndUpdateServer(result, server) {
-  try {
-    const isValid = validateResponse(
-      result.data,
-      result.contentType,
-      UPSTREAM_TYPE
-    );
-    
-    if (!isValid) {
-      throw new Error('Invalid response from upstream server');
+    // 确保图片数据以 Buffer 形式返回
+    if (result.contentType.startsWith('image/')) {
+      return {
+        data: Buffer.from(result.data),  // 确保是 Buffer
+        contentType: result.contentType,
+        responseTime: result.responseTime
+      };
     }
     
-    // 重置错误计数
-    server.errorCount = 0;
+    // 其他类型数据保持原样
+    return result;
+    
   } catch (error) {
-    console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
-    handleServerError(server);
+    console.log(`初始服务器 ${selectedServer.url} 请求失败或超时，启动并行请求`);
+  }
+
+  // 第二阶段：并行请求其他健康服务器
+  const healthyServers = localUpstreamServers.filter(server => 
+    server !== selectedServer && checkServerHealth(server)
+  );
+
+  if (healthyServers.length === 0) {
+    throw new Error('没有其他健康的服务器可用于并行请求');
+  }
+
+  try {
+    // 剩余时间作为并行请求的超时时间（20秒总限制减去已经用掉的8秒）
+    const result = await tryRequestWithRetries(healthyServers, url, {
+      timeout: REQUEST_TIMEOUT - 8000,
+      upstreamType: UPSTREAM_TYPE
+    }, global.LOG_PREFIX);
+    
+    if (result.success) {
+      addWeightUpdate(result.server, result.responseTime);
+      return result;
+    }
+    throw new Error('并行请求全部失败');
+  } catch (error) {
+    selectedServer.errorCount++;
+    if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
+      markServerUnhealthy(selectedServer);
+    }
     throw error;
   }
 }
 
-function formatResponse(result) {
-  // 确保图片数据以 Buffer 形式返回
-  if (result.contentType && result.contentType.startsWith('image/')) {
-    return {
-      data: Buffer.from(result.data),
-      contentType: result.contentType,
-      responseTime: result.responseTime
-    };
-  }
-  return result;
-}
-
 function addWeightUpdate(server, responseTime) {
-  // 使用统一的权重更新函数
-  const weights = updateServerWeights(server, responseTime);
+  // 更新响应时间队列
+  if (!server.responseTimes) {
+    server.responseTimes = [];
+  }
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > 3) {
+    server.responseTimes.shift();
+  }
+
+  // 计算平均响应时间
+  const avgResponseTime = server.responseTimes.length === 3
+    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
+    : responseTime;
+
+  // 更新权重
+  server.lastResponseTime = responseTime;
+  server.lastEWMA = avgResponseTime;
+  server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
+  server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
   
-  // 发送权重更新消息到主线程
   parentPort.postMessage({
     type: 'weight_update',
     data: {
-      server: server,
+      server,
       responseTime,
       timestamp: Date.now()
     }
   });
-}
-
-// 在文件开头附近添加这个函数
-function initializeUpstreamServers(serverData) {
-  try {
-    // 解析传入的JSON数据
-    const servers = JSON.parse(serverData);
-    
-    if (!Array.isArray(servers)) {
-      throw new Error('服务器配置必须是数组');
-    }
-
-    return servers.map(server => ({
-      ...server, // 保持原有状态
-      responseTimes: [], // 只初始化本地需要的新属性
-      recoveryTime: 0
-    }));
-  } catch (error) {
-    console.error(`解析服务器配置失败: ${error.message}`);
-    throw error;
-  }
 }

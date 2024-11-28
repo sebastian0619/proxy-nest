@@ -3,7 +3,6 @@
 const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
-const crypto = require('crypto');
 const url = require('url');
 const config = require('./config');
 
@@ -138,15 +137,14 @@ function calculateDynamicWeight(avgResponseTime, multiplier = 50) {
 }
 
 // 计算综合权重
-function calculateCombinedWeight(server, options = {}) {
+function calculateCombinedWeight(server) {
   try {
     if (!server || !server.baseWeight || !server.dynamicWeight) {
       return 1;
     }
 
-    // 使用传入的alpha值,如果未传入则使用默认值0.7
-    const alpha = options.alpha || 0.7;
-    
+    // 使用加权平均计算综合权重
+    const alpha = 0.7; // 基础权重的比重
     const combinedWeight = alpha * server.baseWeight + (1 - alpha) * server.dynamicWeight;
     
     // 确保权重在合理范围内
@@ -156,6 +154,7 @@ function calculateCombinedWeight(server, options = {}) {
     return 1;
   }
 }
+
 // 更新服务器状态
 function updateServerState(server, responseTime, healthy = true) {
   const state = initializeServerState(server);
@@ -503,14 +502,8 @@ function processWeightUpdateQueue(queue, servers, LOG_PREFIX, ALPHA_ADJUSTMENT_S
 
 // 并行请求相关函数
 async function makeRequest(server, url, timeout) {
-  if (!server || !server.url) {
-    throw new Error('无效的服务器配置');
-  }
-
   const axios = require('axios');
   const fullUrl = `${server.url}${url}`;
-  
-  console.log(`尝试请求: ${fullUrl}, 超时: ${timeout}ms`);
   
   try {
     const startTime = Date.now();
@@ -524,17 +517,13 @@ async function makeRequest(server, url, timeout) {
     });
     
     const responseTime = Date.now() - startTime;
-    console.log(`请求成功: ${fullUrl}, 响应时间: ${responseTime}ms`);
-    
     return {
       success: true,
       data: response.data,
       responseTime,
-      server,
-      contentType: response.headers['content-type']
+      server
     };
   } catch (error) {
-    console.error(`请求失败: ${fullUrl}, 错误: ${error.message}`);
     return {
       success: false,
       error,
@@ -544,12 +533,6 @@ async function makeRequest(server, url, timeout) {
 }
 
 async function makeParallelRequests(servers, url, timeout) {
-  if (!Array.isArray(servers) || servers.length === 0) {
-    throw new Error('无效的服务器列表');
-  }
-
-  console.log(`开始并行请求，服务器数量: ${servers.length}, URL: ${url}`);
-  
   const requests = servers.map(server => 
     makeRequest(server, url, timeout)
   );
@@ -562,71 +545,18 @@ async function makeParallelRequests(servers, url, timeout) {
       .sort((a, b) => a.responseTime - b.responseTime);
       
     if (successfulResponses.length > 0) {
-      const fastestResponse = successfulResponses[0];
-      console.log(`并行请求成功，最快响应来自: ${fastestResponse.server.url}`);
-      return fastestResponse;
+      return successfulResponses[0]; // 返回最快的成功响应
     }
-    throw new Error('所有并行请求都失败了');
+    throw new Error('所有并行���求都失败了');
   } catch (error) {
-    console.error(`并行请求处理失败: ${error.message}`);
     throw error;
   }
 }
 
-const {
-  ALPHA_INITIAL
-} = require('./config');
-
 // EWMA 和请求限制配置
+const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
+const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
 
-// 更新服务器权重
-function updateServerWeights(server, responseTime) {
-  if (!server) {
-    return {
-      baseWeight: 1,
-      dynamicWeight: 1,
-      lastEWMA: 0
-    };
-  }
-
-  try {
-    // 计算动态alpha值
-    const timeDiff = Date.now() - (server.lastUpdateTime || Date.now());
-    const responseTimeDiff = Math.abs(responseTime - (server.lastEWMA || responseTime));
-    
-    // alpha值根据时间间隔和响应时间变化动态调整
-    // 时间间隔越长或响应时间变化越大，alpha值越大
-    let alpha = ALPHA_INITIAL;
-    if (server.lastEWMA) {
-      const timeWeight = Math.min(timeDiff / 30000, 1); // 30秒作为基准时间
-      const responseWeight = Math.min(responseTimeDiff / server.lastEWMA, 1);
-      alpha = Math.min(ALPHA_INITIAL + (timeWeight + responseWeight) * 0.1, 0.9);
-    }
-
-    // 计算EWMA
-    const lastEWMA = server.lastEWMA || responseTime;
-    const newEWMA = alpha * responseTime + (1 - alpha) * lastEWMA;
-    
-    // 更新服务器状态
-    server.lastEWMA = newEWMA;
-    server.lastUpdateTime = Date.now();
-    server.baseWeight = server.baseWeight || 1;
-    server.dynamicWeight = calculateDynamicWeight(newEWMA);
-
-    return {
-      baseWeight: server.baseWeight,
-      dynamicWeight: server.dynamicWeight,
-      lastEWMA: newEWMA
-    };
-  } catch (error) {
-    console.error('[ 错误 ] 更新服务器权重失败:', error);
-    return {
-      baseWeight: server.baseWeight || 1,
-      dynamicWeight: server.dynamicWeight || 1,
-      lastEWMA: server.lastEWMA || 0
-    };
-  }
-}
 module.exports = {
   initializeLogPrefix,
   initializeCache,
@@ -644,7 +574,5 @@ module.exports = {
   calculateDynamicWeight,
   updateServerState,
   makeRequest,
-  makeParallelRequests,
-  updateServerWeights
+  makeParallelRequests
 };
-
