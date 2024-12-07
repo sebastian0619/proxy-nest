@@ -26,7 +26,7 @@ const {
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
-  upstreamServers,
+  UPSTREAM_SERVERS,
   TMDB_API_KEY,
   TMDB_IMAGE_TEST_URL,
   HEALTH_CHECK_CONFIG,
@@ -113,7 +113,7 @@ initializeWorkerWithLogs().catch(error => {
 // 初始化工作线程
 async function initializeWorker() {
   try {
-    if (!upstreamServers) {
+    if (!UPSTREAM_SERVERS) {
       throw new Error('未配置上游服务器');
     }
 
@@ -129,7 +129,7 @@ async function initializeWorker() {
     global.cache = { diskCache, lruCache };
 
     // 初始化服务器列表
-    localUpstreamServers = upstreamServers.split(',').map(url => ({
+    localUpstreamServers = UPSTREAM_SERVERS.split(',').map(url => ({
       url: url.trim(),
       status: HealthStatus.WARMING_UP,
       errorCount: 0,
@@ -310,7 +310,7 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
-      // 使用已有的响应时��数据
+      // 使用已有的响应时数据
       const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
         : server.lastResponseTime?.toFixed(0) || '未知';
@@ -335,7 +335,7 @@ function selectUpstreamServer() {
     : server.lastResponseTime?.toFixed(0) || '未知';
     
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务器 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
+    `保底服务��� ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
     `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
     `最近响应=${avgResponseTime}ms]`
   );
