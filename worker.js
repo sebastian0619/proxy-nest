@@ -1,7 +1,6 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
 const {
-  initializeLogPrefix,
   validateResponse,
   tryRequestWithRetries,
   calculateBaseWeight,
@@ -29,8 +28,28 @@ const {
   workerId,
   upstreamServers,
   TMDB_API_KEY,
-  TMDB_IMAGE_TEST_URL
+  TMDB_IMAGE_TEST_URL,
+  HEALTH_CHECK_CONFIG,
+  RETRY_CONFIG,
+  ERROR_PENALTY_FACTOR,
+  ERROR_RECOVERY_FACTOR
 } = workerData;
+
+// 使用配置中的常量
+const {
+  HEALTH_CHECK_INTERVAL,
+  MIN_HEALTH_CHECK_INTERVAL,
+  MAX_CONSECUTIVE_FAILURES,
+  WARMUP_REQUEST_COUNT,
+  MAX_WARMUP_ATTEMPTS
+} = HEALTH_CHECK_CONFIG;
+
+const {
+  MAX_RETRIES,
+  RETRY_DELAY_BASE,
+  RETRY_DELAY_MAX,
+  RETRY_JITTER
+} = RETRY_CONFIG;
 
 let localUpstreamServers = [];
 
@@ -167,9 +186,8 @@ async function initializeWorker() {
 }
 
 // 服务器健康检查配置
-const UNHEALTHY_TIMEOUT = 900000; // 使用统一的15分钟超时时间
-const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
-const MAX_WARMUP_ATTEMPTS = 3; // 最大预热尝试次数
+const UNHEALTHY_TIMEOUT = HEALTH_CHECK_CONFIG.UNHEALTHY_TIMEOUT || 900000; // 使用统一的15分钟超时时间
+const MAX_ERRORS_BEFORE_UNHEALTHY = HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES; // 使用配置中的值
 
 function markServerUnhealthy(server) {
   server.status = HealthStatus.UNHEALTHY;
@@ -180,7 +198,6 @@ function markServerUnhealthy(server) {
     `服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后尝试恢复`
   );
 }
-
 // 修改函数名为 isServerHealthy
 function isServerHealthy(server) {
   // 只返回当前状态，不做状态修改
@@ -192,7 +209,7 @@ async function startActiveHealthCheck() {
   const healthCheck = async () => {
     for (const server of localUpstreamServers) {
       try {
-        // 只检查不健康的服务器
+        // 只检不健康的服务器
         if (server.status === HealthStatus.UNHEALTHY && 
             Date.now() >= server.recoveryTime) {
           
@@ -227,7 +244,7 @@ async function startActiveHealthCheck() {
             // 计算响应时间并更新服务器状态
             const responseTime = Date.now() - startTime;
             
-            // 更新服务器状态
+            // ���新服务器状态
             server.lastResponseTime = responseTime;
             server.lastEWMA = responseTime;
             server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
@@ -264,7 +281,7 @@ async function startActiveHealthCheck() {
   };
 
   // 每30秒执行一次健康检查
-  setInterval(healthCheck, 30000);
+  setInterval(healthCheck, HEALTH_CHECK_CONFIG.HEALTH_CHECK_INTERVAL);
   
   // 立即执行一次健康检查
   healthCheck().catch(error => {
@@ -291,10 +308,10 @@ function selectUpstreamServer() {
   });
 
   if (availableServers.length === 0) {
-    throw new Error('没有可用的上游服务器');
+    throw new Error('没有可用的上游服务��');
   }
 
-  // 计算总权重
+  // 计算权重
   const totalWeight = availableServers.reduce((sum, server) => {
     const baseWeight = server.baseWeight || 1;
     const dynamicWeight = server.dynamicWeight || 1;
@@ -406,12 +423,24 @@ async function handleRequest(url) {
   try {
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
-      UPSTREAM_TYPE
+      UPSTREAM_TYPE,
+      RETRY_CONFIG
     });
     
     // 验证响应
     if (!validateResponse(result.data, result.contentType, UPSTREAM_TYPE)) {
       throw new Error('Invalid response from upstream server');
+    }
+    
+    // 更新预热状态
+    if (selectedServer.status === HealthStatus.WARMING_UP) {
+      selectedServer.warmupRequests++;
+      if (selectedServer.warmupRequests >= HEALTH_CHECK_CONFIG.WARMUP_REQUEST_COUNT) {
+        selectedServer.status = HealthStatus.HEALTHY;
+        selectedServer.errorCount = 0;
+        selectedServer.warmupAttempts = 0;
+        console.log(global.LOG_PREFIX.SUCCESS, `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
+      }
     }
     
     // 处理响应数据
@@ -422,7 +451,18 @@ async function handleRequest(url) {
     
     return finalResult;
   } catch (error) {
-    console.error(global.LOG_PREFIX.ERROR, `请求处理失败: ${error.message}`);
+    // 更新服务器错误计数
+    selectedServer.errorCount = (selectedServer.errorCount || 0) + 1;
+    
+    // 检查是否需要标记为不健康
+    if (selectedServer.errorCount >= HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES) {
+      markServerUnhealthy(selectedServer);
+    }
+    
+    // 记录错误并重新抛出
+    console.error(global.LOG_PREFIX.ERROR, 
+      `服务器 ${selectedServer.url} 请求失败: ${error.message}`
+    );
     throw error;
   }
 }
@@ -513,14 +553,14 @@ function addWeightUpdate(server, responseTime) {
 }
 
 // 健康检查相关配置
-const HEALTH_CHECK_INTERVAL = 30000; // 30秒
-const MIN_HEALTH_CHECK_INTERVAL = 5000; // 最小健康检查间隔
-const MAX_CONSECUTIVE_FAILURES = 3; // 连续失败次数阈值
+// const HEALTH_CHECK_INTERVAL = 30000; // 30秒
+// const MIN_HEALTH_CHECK_INTERVAL = 5000; // 最小健康检查间隔
+// const MAX_CONSECUTIVE_FAILURES = 3; // 连续失败次数阈值
 
 async function checkServerHealth(server, config) {
-  // 防止过于频繁的健康检查
+  // 防止过频繁的健康检查
   const now = Date.now();
-  if (server.lastCheckTime && (now - server.lastCheckTime) < MIN_HEALTH_CHECK_INTERVAL) {
+  if (server.lastCheckTime && (now - server.lastCheckTime) < HEALTH_CHECK_CONFIG.MIN_HEALTH_CHECK_INTERVAL) {
     return;
   }
   server.lastCheckTime = now;
@@ -568,12 +608,12 @@ function updateServerMetrics(server, responseTime) {
 function handleHealthCheckFailure(server, error) {
   server.consecutiveFailures = (server.consecutiveFailures || 0) + 1;
   
-  if (server.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+  if (server.consecutiveFailures >= HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES) {
     markServerUnhealthy(server);
   }
   
   console.error(global.LOG_PREFIX.ERROR,
-    `服务器 ${server.url} 健康检查失败 (${server.consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${error.message}`
+    `服务器 ${server.url} 健康检查失败 (${server.consecutiveFailures}/${HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
   );
 }
 
@@ -610,8 +650,8 @@ async function performHealthCheck(server, config) {
 }
 
 // 重试相关配置
-const MAX_RETRIES = 3;
-const RETRY_DELAY_BASE = 1000; // 基础重试延迟（毫秒）
+// const MAX_RETRIES = 3;
+// const RETRY_DELAY_BASE = 1000; // 基础重试延迟（毫秒）
 
 async function tryRequestWithRetries(server, url, config, retryCount = 0) {
   try {
@@ -655,8 +695,8 @@ async function tryRequestWithRetries(server, url, config, retryCount = 0) {
     );
     
     // 检查是否应该重试
-    if (shouldRetry(error, retryCount)) {
-      const delay = calculateRetryDelay(retryCount);
+    if (shouldRetry(error, retryCount, config.RETRY_CONFIG)) {
+      const delay = calculateRetryDelay(retryCount, config.RETRY_CONFIG);
       
       console.log(global.LOG_PREFIX.WARN,
         `等待 ${delay}ms 后进行第 ${retryCount + 1} 次重试...`
@@ -673,8 +713,8 @@ async function tryRequestWithRetries(server, url, config, retryCount = 0) {
   }
 }
 
-function shouldRetry(error, retryCount) {
-  if (retryCount >= MAX_RETRIES) {
+function shouldRetry(error, retryCount, retryConfig) {
+  if (retryCount >= retryConfig.MAX_RETRIES) {
     return false;
   }
   
@@ -689,11 +729,12 @@ function shouldRetry(error, retryCount) {
   return false;
 }
 
-function calculateRetryDelay(retryCount) {
+function calculateRetryDelay(retryCount, retryConfig) {
   // 使用指数退避策略
-  const delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
-  // 添加随机抖动，避免多个请求同时重试
-  return delay + Math.random() * 1000;
+  const delay = retryConfig.RETRY_DELAY_BASE * Math.pow(2, retryCount);
+  // 添加随机抖动
+  const jitter = delay * retryConfig.RETRY_JITTER * (Math.random() * 2 - 1);
+  return Math.min(delay + jitter, retryConfig.RETRY_DELAY_MAX);
 }
 
 function handleRequestFailure(server, error) {
@@ -720,3 +761,4 @@ function isSeriousError(error) {
   }
   return false;
 }
+

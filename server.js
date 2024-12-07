@@ -29,7 +29,11 @@ const {
   ALPHA_INITIAL,
   ALPHA_ADJUSTMENT_STEP,
   MAX_SERVER_SWITCHES,
-  CACHE_CONFIG
+  CACHE_CONFIG,
+  HEALTH_CHECK_CONFIG,
+  RETRY_CONFIG,
+  ERROR_PENALTY_FACTOR,
+  ERROR_RECOVERY_FACTOR
 } = require('./config');
 
 const {
@@ -67,9 +71,11 @@ async function startServer() {
     // 初始化缓存
     const { diskCache, lruCache } = await initializeCache();
 
-    // 初始化工作线程池时传入 LOG_PREFIX
+    // 初始化工作线程池
     await initializeWorkerPool({
-      LOG_PREFIX: global.LOG_PREFIX
+      LOG_PREFIX: global.LOG_PREFIX,
+      diskCache,
+      lruCache
     });
 
     // 设置路由
@@ -127,10 +133,20 @@ async function initializeWorkerPool(config) {
       const worker = new Worker(path.join(__dirname, 'worker.js'), {
         workerData: {
           workerId: i,
-          ...config,
+          UPSTREAM_TYPE,
+          TMDB_API_KEY,
+          TMDB_IMAGE_TEST_URL,
+          REQUEST_TIMEOUT,
+          BASE_WEIGHT_MULTIPLIER,
+          DYNAMIC_WEIGHT_MULTIPLIER,
+          ALPHA_INITIAL,
+          ALPHA_ADJUSTMENT_STEP,
+          MAX_SERVER_SWITCHES,
           UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
           HEALTH_CHECK_CONFIG,
-          RETRY_CONFIG
+          RETRY_CONFIG,
+          ERROR_PENALTY_FACTOR,
+          ERROR_RECOVERY_FACTOR
         }
       });
 
@@ -389,7 +405,7 @@ function setupRoutes(app, diskCache, lruCache) {
       }
       
     } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `请求处��错误: ${error.message}`);
+      console.error(global.LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
       next(error);
     }
   });
@@ -434,7 +450,7 @@ async function handleRequestWithWorker(req, cacheKey) {
 // 只在主线程中启动服务器
 if (isMainThread) {
   startServer().catch(error => {
-    console.error('[ 错误 ]', `服务器启动失败: ${error.message}`);
+    console.error('[ ���误 ]', `服务器启动失败: ${error.message}`);
     process.exit(1);
   });
 }
