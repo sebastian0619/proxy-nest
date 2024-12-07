@@ -37,14 +37,28 @@ healthChecker.initialize(UPSTREAM_SERVERS);
 const workers = [];
 const numWorkers = config.NUM_WORKERS || 4;
 
+// 准备要传递给工作线程的配置
+const workerConfig = {
+  ...config,
+  // 移除不可序列化的内容
+  LOG_PREFIX: {
+    INFO: '[ 信息 ]',
+    ERROR: '[ 错误 ]',
+    WARN: '[ 警告 ]',
+    SUCCESS: '[ 成功 ]',
+    CACHE: {
+      HIT: '[ 缓存命中 ]',
+      MISS: '[ 缓存未命中 ]',
+      INFO: '[ 缓存信息 ]'
+    }
+  }
+};
+
 for (let i = 0; i < numWorkers; i++) {
   const worker = new Worker(path.join(__dirname, 'worker.js'), {
     workerData: {
       workerId: i,
-      config: {
-        ...config,
-        LOG_PREFIX
-      }
+      config: workerConfig
     }
   });
 
@@ -70,6 +84,10 @@ for (let i = 0; i < numWorkers; i++) {
         broadcastServerStatus(url, serverStatus);
       }
     }
+  });
+
+  worker.on('error', (error) => {
+    console.error(LOG_PREFIX.ERROR, `工作线程 ${i} 发生错误:`, error);
   });
 
   workers.push(worker);
