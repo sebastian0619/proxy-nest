@@ -184,10 +184,20 @@ async function handleWorkerError(worker, workerId) {
     const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
       workerData: {
         workerId,
-        ...config,
+        UPSTREAM_TYPE,
+        TMDB_API_KEY,
+        TMDB_IMAGE_TEST_URL,
+        REQUEST_TIMEOUT,
+        BASE_WEIGHT_MULTIPLIER,
+        DYNAMIC_WEIGHT_MULTIPLIER,
+        ALPHA_INITIAL,
+        ALPHA_ADJUSTMENT_STEP,
+        MAX_SERVER_SWITCHES,
         UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
         HEALTH_CHECK_CONFIG,
-        RETRY_CONFIG
+        RETRY_CONFIG,
+        ERROR_PENALTY_FACTOR,
+        ERROR_RECOVERY_FACTOR
       }
     });
     
@@ -210,7 +220,6 @@ async function handleWorkerError(worker, workerId) {
     console.log(global.LOG_PREFIX.SUCCESS, `工作线程 ${workerId} 已重新创建`);
   } catch (error) {
     console.error(global.LOG_PREFIX.ERROR, `重新创建工作线程 ${workerId} 失败:`, error);
-    // 如果重新创建失败，可能需要采取其他措施
     handleWorkerRecoveryFailure(workerId);
   }
 }
@@ -226,10 +235,20 @@ function handleWorkerExit(workerId) {
       const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
         workerData: {
           workerId,
-          ...config,
+          UPSTREAM_TYPE,
+          TMDB_API_KEY,
+          TMDB_IMAGE_TEST_URL,
+          REQUEST_TIMEOUT,
+          BASE_WEIGHT_MULTIPLIER,
+          DYNAMIC_WEIGHT_MULTIPLIER,
+          ALPHA_INITIAL,
+          ALPHA_ADJUSTMENT_STEP,
+          MAX_SERVER_SWITCHES,
           UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
           HEALTH_CHECK_CONFIG,
-          RETRY_CONFIG
+          RETRY_CONFIG,
+          ERROR_PENALTY_FACTOR,
+          ERROR_RECOVERY_FACTOR
         }
       });
       
@@ -450,7 +469,7 @@ async function handleRequestWithWorker(req, cacheKey) {
 // 只在主线程中启动服务器
 if (isMainThread) {
   startServer().catch(error => {
-    console.error('[ ���误 ]', `服务器启动失败: ${error.message}`);
+    console.error('[ 错误 ]', `服务器启动失败: ${error.message}`);
     process.exit(1);
   });
 }
