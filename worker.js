@@ -310,7 +310,7 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
-      // 使用已有的响应时间数据
+      // 使用已有的响应时��数据
       const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
         : server.lastResponseTime?.toFixed(0) || '未知';
@@ -572,116 +572,8 @@ function handleHealthCheckFailure(server, error) {
   );
 }
 
-// 重试相关配置
-// const MAX_RETRIES = 3;
-// const RETRY_DELAY_BASE = 1000; // 基础重试延迟（毫秒）
-
-async function tryRequestWithRetries(server, url, config, retryCount = 0) {
-  try {
-    const startTime = Date.now();
-    const response = await axios({
-      method: 'get',
-      url: `${server.url}${url}`,
-      timeout: config.REQUEST_TIMEOUT,
-      validateStatus: null // 允许所有状态码，我们会在后面处理
-    });
-    
-    const responseTime = Date.now() - startTime;
-    
-    // 检查响应状态码
-    if (response.status >= 500) {
-      throw new Error(`服务器错误: ${response.status}`);
-    }
-    
-    if (response.status >= 400) {
-      throw new Error(`客户端错误: ${response.status}`);
-    }
-    
-    // 验证响应内容
-    if (!validateResponse(response.data, response.headers['content-type'], config.UPSTREAM_TYPE)) {
-      throw new Error('响应验证失败');
-    }
-    
-    // 更新服务器指标
-    updateServerMetrics(server, responseTime);
-    
-    return {
-      data: response.data,
-      contentType: response.headers['content-type'],
-      responseTime
-    };
-    
-  } catch (error) {
-    // 记录错误
-    console.error(global.LOG_PREFIX.ERROR,
-      `请求失败 [${server.url}${url}] - ${error.message}`
-    );
-    
-    // 检查是否应该重试
-    if (shouldRetry(error, retryCount, config.RETRY_CONFIG)) {
-      const delay = calculateRetryDelay(retryCount, config.RETRY_CONFIG);
-      
-      console.log(global.LOG_PREFIX.WARN,
-        `等待 ${delay}ms 后进行第 ${retryCount + 1} 次重试...`
-      );
-      
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      return tryRequestWithRetries(server, url, config, retryCount + 1);
-    }
-    
-    // 如果不重试，更新服务器错误计数
-    handleRequestFailure(server, error);
-    throw error;
-  }
-}
-
-function shouldRetry(error, retryCount, retryConfig) {
-  if (retryCount >= retryConfig.MAX_RETRIES) {
-    return false;
-  }
-  
-  // 检查错误类型
-  if (axios.isAxiosError(error)) {
-    // 网络错误、超时或服务器错误可以重试
-    return error.code === 'ECONNABORTED' || 
-           error.code === 'ETIMEDOUT' ||
-           (error.response && error.response.status >= 500);
-  }
-  
-  return false;
-}
-
-function calculateRetryDelay(retryCount, retryConfig) {
-  // 使用指数退避策略
-  const delay = retryConfig.RETRY_DELAY_BASE * Math.pow(2, retryCount);
-  // 添加随机抖动
-  const jitter = delay * retryConfig.RETRY_JITTER * (Math.random() * 2 - 1);
-  return Math.min(delay + jitter, retryConfig.RETRY_DELAY_MAX);
-}
-
-function handleRequestFailure(server, error) {
-  server.errorCount = (server.errorCount || 0) + 1;
-  
-  // 如果是严重错误，直接标记为不健康
-  if (isSeriousError(error)) {
-    markServerUnhealthy(server);
-    return;
-  }
-  
-  // 否则检查错误计数
-  if (server.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-    markServerUnhealthy(server);
-  }
-}
-
-function isSeriousError(error) {
-  if (axios.isAxiosError(error)) {
-    // 连接被拒绝、主机无法解析等严重错误
-    return error.code === 'ECONNREFUSED' ||
-           error.code === 'ENOTFOUND' ||
-           error.code === 'EHOSTUNREACH';
-  }
-  return false;
-}
+module.exports = {
+  startActiveHealthCheck,
+  handleRequest
+};
 
