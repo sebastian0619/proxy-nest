@@ -294,17 +294,16 @@ function initializeServerState(server) {
 }
 
 // 计算基础权重
-function calculateBaseWeight(responseTime, multiplier = 20) {
+function calculateBaseWeight(avgResponseTime, multiplier = 20, errorWeight = 1) {
   try {
-    if (!responseTime || isNaN(responseTime) || responseTime <= 0) {
-      return 1;
-    }
-    
     // 基础权重计算：响应时间越短，权重越大
-    const weight = Math.floor(multiplier * (1000 / Math.max(responseTime, 1)));
+    const weight = Math.floor(multiplier * (1000 / Math.max(avgResponseTime, 1)));
+    
+    // 考虑错误权重
+    const adjustedWeight = weight / errorWeight;
     
     // 确保权重在合理范围内 (1-100)
-    return Math.min(Math.max(1, weight), 100);
+    return Math.min(Math.max(1, adjustedWeight), 100);
   } catch (error) {
     console.error('[ 错误 ] 基础权重计算失败:', error);
     return 1;
@@ -813,6 +812,82 @@ async function makeParallelRequests(servers, url, timeout) {
 const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
 const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
 
+// 添加新的工具函数
+
+// 计算重试延迟
+function calculateRetryDelay(retryCount, config) {
+  const {
+    RETRY_DELAY_BASE,
+    RETRY_DELAY_MAX,
+    RETRY_JITTER
+  } = config;
+
+  // 使用指数退避策略
+  let delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
+  
+  // 添加随机抖动
+  const jitter = delay * RETRY_JITTER * (Math.random() * 2 - 1);
+  delay += jitter;
+  
+  // 确保不超过最大延迟
+  return Math.min(delay, RETRY_DELAY_MAX);
+}
+
+// 更新错误统计
+function updateErrorStats(server, error, config) {
+  const { ERROR_PENALTY_FACTOR, ERROR_RECOVERY_FACTOR } = config;
+  
+  // 更新错误计数
+  server.errorCount = (server.errorCount || 0) + 1;
+  
+  // 更新错误权重
+  if (!server.errorWeight) {
+    server.errorWeight = 1;
+  }
+  
+  // 根据错误类型调整权重
+  if (isSeriousError(error)) {
+    server.errorWeight *= ERROR_PENALTY_FACTOR;
+  } else {
+    // 轻微错误，权重增长较慢
+    server.errorWeight *= (1 + (ERROR_PENALTY_FACTOR - 1) * 0.5);
+  }
+  
+  // 限制最大错误权重
+  server.errorWeight = Math.min(server.errorWeight, 10);
+  
+  return server.errorWeight;
+}
+
+// 更新服务器恢复状态
+function updateRecoveryStatus(server, config) {
+  const { ERROR_RECOVERY_FACTOR } = config;
+  
+  // 成功请求后降低错误权重
+  if (server.errorWeight && server.errorWeight > 1) {
+    server.errorWeight *= ERROR_RECOVERY_FACTOR;
+    if (server.errorWeight < 1) {
+      server.errorWeight = 1;
+    }
+  }
+  
+  // 重置错误计数
+  if (server.errorCount > 0) {
+    server.errorCount = 0;
+  }
+}
+
+// 检查是否是严重错误
+function isSeriousError(error) {
+  if (axios.isAxiosError(error)) {
+    return error.code === 'ECONNREFUSED' ||
+           error.code === 'ENOTFOUND' ||
+           error.code === 'EHOSTUNREACH' ||
+           (error.response && error.response.status >= 500);
+  }
+  return false;
+}
+
 module.exports = {
   initializeLogPrefix,
   initializeCache,
@@ -830,5 +905,9 @@ module.exports = {
   calculateDynamicWeight,
   updateServerState,
   makeRequest,
-  makeParallelRequests
+  makeParallelRequests,
+  calculateRetryDelay,
+  updateErrorStats,
+  updateRecoveryStatus,
+  isSeriousError
 };

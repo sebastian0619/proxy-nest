@@ -120,60 +120,123 @@ async function startServer() {
   }
 }
 
-// 初始化工作线程池
-async function initializeWorkerPool(workerData) {
-  if (!global.LOG_PREFIX) {
-    throw new Error('LOG_PREFIX 未初始化');
-  }
-  
-  console.log(global.LOG_PREFIX.INFO, `初始化 ${NUM_WORKERS} 个工作线程`);
-  
-  for (let i = 0; i < NUM_WORKERS; i++) {
-    await initializeWorker(i, workerData);
+// 工作线程管理
+async function initializeWorkerPool(config) {
+  try {
+    for (let i = 0; i < NUM_WORKERS; i++) {
+      const worker = new Worker(path.join(__dirname, 'worker.js'), {
+        workerData: {
+          workerId: i,
+          ...config,
+          UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
+          HEALTH_CHECK_CONFIG,
+          RETRY_CONFIG
+        }
+      });
+
+      // 错误处理
+      worker.on('error', (error) => {
+        console.error(global.LOG_PREFIX.ERROR, `工作线程 ${i} 发生错误:`, error);
+        handleWorkerError(worker, i);
+      });
+
+      // 退出处理
+      worker.on('exit', (code) => {
+        if (code !== 0) {
+          console.error(global.LOG_PREFIX.ERROR, `工作线程 ${i} 异常退出，代码: ${code}`);
+          handleWorkerExit(i);
+        }
+      });
+
+      workers.set(i, worker);
+    }
+
+    console.log(global.LOG_PREFIX.SUCCESS, `初始化了 ${NUM_WORKERS} 个工作线程`);
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, '初始化工作线程池失败:', error);
+    throw error;
   }
 }
 
-// 初始化单个工作线程
-async function initializeWorker(workerId, workerData) {
-  const worker = new Worker('./worker.js', {
-    workerData: {
-      ...workerData,
-      workerId,
-      upstreamServers: process.env.UPSTREAM_SERVERS,
-      UPSTREAM_TYPE,
-      TMDB_API_KEY,
-      TMDB_IMAGE_TEST_URL,
-      REQUEST_TIMEOUT,
-      MAX_SERVER_SWITCHES,
-      BASE_WEIGHT_MULTIPLIER,
-      DYNAMIC_WEIGHT_MULTIPLIER,
-      ALPHA_INITIAL,
-      ALPHA_ADJUSTMENT_STEP
-    }
-  });
-
-  setupWorkerEventHandlers(worker, workerId);
-  workers.set(workerId, worker);
+// 处理工作线程错误
+async function handleWorkerError(worker, workerId) {
+  try {
+    // 终止出错的工作线程
+    await worker.terminate();
+    
+    // 创建新的工作线程
+    const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
+      workerData: {
+        workerId,
+        ...config,
+        UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
+        HEALTH_CHECK_CONFIG,
+        RETRY_CONFIG
+      }
+    });
+    
+    // 设置新工作线程的错误处理
+    newWorker.on('error', (error) => {
+      console.error(global.LOG_PREFIX.ERROR, `新工作线程 ${workerId} 发生错误:`, error);
+      handleWorkerError(newWorker, workerId);
+    });
+    
+    newWorker.on('exit', (code) => {
+      if (code !== 0) {
+        console.error(global.LOG_PREFIX.ERROR, `新工作线程 ${workerId} 异常退出，代码: ${code}`);
+        handleWorkerExit(workerId);
+      }
+    });
+    
+    // 更新工作线程映射
+    workers.set(workerId, newWorker);
+    
+    console.log(global.LOG_PREFIX.SUCCESS, `工作线程 ${workerId} 已重新创建`);
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `重新创建工作线程 ${workerId} 失败:`, error);
+    // 如果重新创建失败，可能需要采取其他措施
+    handleWorkerRecoveryFailure(workerId);
+  }
 }
 
-// 设置工作线程事件处理器
-function setupWorkerEventHandlers(worker, workerId) {
-  worker.on('message', (message) => {
-    if (message && message.type === 'weight_update' && message.data) {
-      weightUpdateQueue.push(message.data);
+// 处理工作线程退出
+function handleWorkerExit(workerId) {
+  // 从映射中移除工作线程
+  workers.delete(workerId);
+  
+  // 尝试重新创建工作线程
+  setTimeout(() => {
+    try {
+      const newWorker = new Worker(path.join(__dirname, 'worker.js'), {
+        workerData: {
+          workerId,
+          ...config,
+          UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
+          HEALTH_CHECK_CONFIG,
+          RETRY_CONFIG
+        }
+      });
+      
+      workers.set(workerId, newWorker);
+      console.log(global.LOG_PREFIX.SUCCESS, `工作线程 ${workerId} 已重新创建`);
+    } catch (error) {
+      console.error(global.LOG_PREFIX.ERROR, `重新创建工作线程 ${workerId} 失败:`, error);
+      handleWorkerRecoveryFailure(workerId);
     }
-  });
+  }, 5000); // 等待5秒后重试
+}
 
-  worker.on('error', (error) => {
-    console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
-  });
-
-  worker.on('exit', (code) => {
-    if (code !== 0) {
-      console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
-      setTimeout(() => initializeWorker(workerId), 1000);
-    }
-  });
+// 处理工作线程恢复失败
+function handleWorkerRecoveryFailure(workerId) {
+  // 记录严重错误
+  console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 恢复失败，系统可能需要重启`);
+  
+  // 检查是否还有足够的工作线程
+  if (workers.size < Math.ceil(NUM_WORKERS / 2)) {
+    console.error(global.LOG_PREFIX.ERROR, '可用工作线程数量过低，准备重启服务器...');
+    // 这里可以添加重启服务器的逻辑，或者发送告警
+    process.exit(1);
+  }
 }
 
 // 添加缺失的 getCacheItem 函数
@@ -227,8 +290,30 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
   return null;
 }
 
-// 修改 setupRoutes 函数，添加缓存写入
+// 设置路由
 function setupRoutes(app, diskCache, lruCache) {
+  // 健康检查端点
+  app.get('/health', (req, res) => {
+    const health = {
+      status: 'healthy',
+      workers: workers.size,
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      cache: {
+        memory: lruCache.length,
+        disk: diskCache.length
+      }
+    };
+    
+    // 检查工作线程数量
+    if (workers.size < NUM_WORKERS) {
+      health.status = 'degraded';
+      health.message = `${NUM_WORKERS - workers.size} 个工作线程未运行`;
+    }
+    
+    res.json(health);
+  });
+
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
     
@@ -304,7 +389,7 @@ function setupRoutes(app, diskCache, lruCache) {
       }
       
     } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `请求处理错误: ${error.message}`);
+      console.error(global.LOG_PREFIX.ERROR, `请求处��错误: ${error.message}`);
       next(error);
     }
   });

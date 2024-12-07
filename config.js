@@ -35,6 +35,23 @@ const CACHE_CONFIG = {
   CACHE_FILE_EXT: '.cache'
 };
 
+// 健康检查配置
+const HEALTH_CHECK_CONFIG = {
+  HEALTH_CHECK_INTERVAL: parseInt(process.env.HEALTH_CHECK_INTERVAL || '30000'),     // 健康检查间隔（30秒）
+  MIN_HEALTH_CHECK_INTERVAL: parseInt(process.env.MIN_HEALTH_CHECK_INTERVAL || '5000'), // 最小健康检查间隔（5秒）
+  MAX_CONSECUTIVE_FAILURES: parseInt(process.env.MAX_CONSECUTIVE_FAILURES || '3'),    // 最大连续失败次数
+  WARMUP_REQUEST_COUNT: parseInt(process.env.WARMUP_REQUEST_COUNT || '10'),          // 预热请求数
+  MAX_WARMUP_ATTEMPTS: parseInt(process.env.MAX_WARMUP_ATTEMPTS || '3')             // 最大预热尝试次数
+};
+
+// 重试配置
+const RETRY_CONFIG = {
+  MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '3'),                           // 最大重试次数
+  RETRY_DELAY_BASE: parseInt(process.env.RETRY_DELAY_BASE || '1000'),              // 基础重试延迟（毫秒）
+  RETRY_DELAY_MAX: parseInt(process.env.RETRY_DELAY_MAX || '10000'),               // 最大重试延迟（毫秒）
+  RETRY_JITTER: parseFloat(process.env.RETRY_JITTER || '0.1')                      // 重试抖动因子（0-1）
+};
+
 module.exports = {
   // 服务器配置
   PORT: process.env.PORT || 6635,
@@ -68,5 +85,15 @@ module.exports = {
   
   // Custom upstream 配置
   CUSTOM_CONTENT_TYPE: process.env.CUSTOM_CONTENT_TYPE || 'application/json',  // 默认值
-  CACHE_CONFIG
+  CACHE_CONFIG,
+  
+  // 健康检查配置
+  HEALTH_CHECK_CONFIG,
+  
+  // 重试配置
+  RETRY_CONFIG,
+  
+  // 错误处理配置
+  ERROR_PENALTY_FACTOR: parseFloat(process.env.ERROR_PENALTY_FACTOR || '1.5'),      // 错误惩罚因子
+  ERROR_RECOVERY_FACTOR: parseFloat(process.env.ERROR_RECOVERY_FACTOR || '0.8'),    // 错误恢复因子
 };

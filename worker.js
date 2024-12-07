@@ -167,14 +167,18 @@ async function initializeWorker() {
 }
 
 // 服务器健康检查配置
-const UNHEALTHY_TIMEOUT = 30000; // 不健康状态持续30秒
+const UNHEALTHY_TIMEOUT = 900000; // 使用统一的15分钟超时时间
 const MAX_ERRORS_BEFORE_UNHEALTHY = 3; // 连续3次错误后标记为不健康
+const MAX_WARMUP_ATTEMPTS = 3; // 最大预热尝试次数
 
 function markServerUnhealthy(server) {
   server.status = HealthStatus.UNHEALTHY;
   server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
   server.errorCount = 0;
-  console.log(`服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后恢复`);
+  server.warmupAttempts = 0;
+  console.log(global.LOG_PREFIX.WARN, 
+    `服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后尝试恢复`
+  );
 }
 
 // 修改函数名为 isServerHealthy
@@ -188,6 +192,7 @@ async function startActiveHealthCheck() {
   const healthCheck = async () => {
     for (const server of localUpstreamServers) {
       try {
+        // 只检查不健康的服务器
         if (server.status === HealthStatus.UNHEALTHY && 
             Date.now() >= server.recoveryTime) {
           
@@ -221,10 +226,6 @@ async function startActiveHealthCheck() {
             
             // 计算响应时间并更新服务器状态
             const responseTime = Date.now() - startTime;
-            server.responseTimes.push(responseTime);
-            if (server.responseTimes.length > 3) {
-              server.responseTimes.shift();
-            }
             
             // 更新服务器状态
             server.lastResponseTime = responseTime;
@@ -234,13 +235,26 @@ async function startActiveHealthCheck() {
             server.status = HealthStatus.WARMING_UP;
             server.warmupStartTime = Date.now();
             server.warmupRequests = 0;
+            server.warmupAttempts = 0;
+            server.errorCount = 0;
             
             console.log(global.LOG_PREFIX.SUCCESS, 
-              `服务器 ${server.url} 健康检查成功 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
+              `服务器 ${server.url} 健康检查成功，进入预热阶段 [响应时间=${responseTime}ms, 基础权重=${server.baseWeight}, 动态权重=${server.dynamicWeight}]`
             );
           } catch (error) {
-            console.error(global.LOG_PREFIX.ERROR, `服务器 ${server.url} 健康检查失败: ${error.message}`);
-            server.recoveryTime = Date.now() + (UNHEALTHY_TIMEOUT / 2);
+            server.warmupAttempts = (server.warmupAttempts || 0) + 1;
+            if (server.warmupAttempts >= MAX_WARMUP_ATTEMPTS) {
+              console.error(global.LOG_PREFIX.ERROR, 
+                `服务器 ${server.url} 预热失败次数过多，将继续保持不健康状态: ${error.message}`
+              );
+              server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
+              server.warmupAttempts = 0;
+            } else {
+              console.error(global.LOG_PREFIX.ERROR, 
+                `服务器 ${server.url} 健康检查失败，这是第 ${server.warmupAttempts} 次尝试: ${error.message}`
+              );
+              server.recoveryTime = Date.now() + (UNHEALTHY_TIMEOUT / 2);
+            }
           }
         }
       } catch (error) {
@@ -260,10 +274,17 @@ async function startActiveHealthCheck() {
 
 function selectUpstreamServer() {
   const availableServers = localUpstreamServers.filter(server => {
-    // 如果服务器还没有权重数据，先进行一次健康检查
-    if (!server.baseWeight || !server.dynamicWeight) {
-      return false;  // 暂时不参与选择
+    // 检查服务器是否有基本的必要属性
+    if (!server || typeof server.url !== 'string') {
+      return false;
     }
+    
+    // 如果服务器还没有权重数据，不参与选择
+    if (typeof server.baseWeight !== 'number' || typeof server.dynamicWeight !== 'number') {
+      return false;
+    }
+
+    // 检查服务器状态
     return isServerHealthy(server) || 
            (server.status === HealthStatus.WARMING_UP && 
             server.warmupRequests < 10);
@@ -351,100 +372,112 @@ parentPort.on('message', async (message) => {
 async function handleRequest(url) {
   // 检查缓存
   const cacheKey = getCacheKey({ originalUrl: url });
-  let cachedResponse = global.cache.lruCache.get(cacheKey);
   
-  // 如果内存没有，检查磁盘缓存
-  if (!cachedResponse) {
+  try {
+    // 先检查内存缓存
+    let cachedResponse = global.cache.lruCache.get(cacheKey);
+    
+    if (cachedResponse) {
+      console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
+      return validateAndReturnCachedResponse(cachedResponse, 'memory');
+    }
+    
+    // 再检查磁盘缓存
     cachedResponse = await global.cache.diskCache.get(cacheKey);
     if (cachedResponse) {
-      // 找到磁盘缓存，检查是否需要加载到内存
-      const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
-      const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
+      console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
       
-      if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
+      // 检查是否需要加载到内存缓存
+      const shouldCacheInMemory = shouldStoreInMemoryCache(cachedResponse);
+      if (shouldCacheInMemory) {
         global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
       }
-      console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
-      return cachedResponse;
+      
+      return validateAndReturnCachedResponse(cachedResponse, 'disk');
     }
-  } else {
-    console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
-    return cachedResponse;
+  } catch (error) {
+    console.error(global.LOG_PREFIX.CACHE.INFO, `缓存检查失败: ${error.message}`);
+    // 缓存错误不影响主流程，继续处理请求
   }
 
-  // 第一阶段：使用权重选择的服务器
+  // 没有缓存命中，处理实际请求
   const selectedServer = selectUpstreamServer();
+  
   try {
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE
-    }, global.LOG_PREFIX);
-    
-    // 成功后更新服务器权重
-    addWeightUpdate(selectedServer, result.responseTime);
-    
-    // 更新预热状态
-    if (selectedServer.status === HealthStatus.WARMING_UP) {
-      selectedServer.warmupRequests++;
-      if (selectedServer.warmupRequests >= 10) {
-        selectedServer.status = HealthStatus.HEALTHY;
-        console.log(global.LOG_PREFIX.SUCCESS, `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
-      }
-    }
+    });
     
     // 验证响应
-    try {
-      const isValid = validateResponse(
-        result.data,
-        result.contentType,
-        UPSTREAM_TYPE
-      );
-      
-      if (!isValid) {
-        throw new Error('Invalid response from upstream server');
-      }
-    } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `响应验证失败: ${error.message}`);
-      throw error;
-    }
-
-    // 确保图片数据以 Buffer 形式返回
-    if (result.contentType.startsWith('image/')) {
-      const finalResult = {
-        data: Buffer.from(result.data),
-        contentType: result.contentType,
-        responseTime: result.responseTime
-      };
-      // 写入缓存
-      global.cache.lruCache.set(cacheKey, finalResult, result.contentType);
-      await global.cache.diskCache.set(cacheKey, finalResult, result.contentType);
-      return finalResult;
+    if (!validateResponse(result.data, result.contentType, UPSTREAM_TYPE)) {
+      throw new Error('Invalid response from upstream server');
     }
     
-    // 其他类型数据保持原样
-    // 写入缓存
-    global.cache.lruCache.set(cacheKey, result, result.contentType);
-    await global.cache.diskCache.set(cacheKey, result, result.contentType);
-    return result;
+    // 处理响应数据
+    const finalResult = await processResponse(result);
     
+    // 存储到缓存
+    await storeToCaches(cacheKey, finalResult);
+    
+    return finalResult;
   } catch (error) {
-    // 更新服务器错误计数
-    selectedServer.errorCount++;
-    
-    // 检查是否需要标记为不健康
-    if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-      selectedServer.status = HealthStatus.UNHEALTHY;
-      selectedServer.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
-      console.error(global.LOG_PREFIX.ERROR, 
-        `服务器 ${selectedServer.url} 已标记为不健康，将在 ${UNHEALTHY_TIMEOUT/1000} 秒后尝试恢复`
-      );
+    console.error(global.LOG_PREFIX.ERROR, `请求处理失败: ${error.message}`);
+    throw error;
+  }
+}
+
+function validateAndReturnCachedResponse(cachedResponse, source) {
+  try {
+    // 验证缓存的响应是否完整
+    if (!cachedResponse || !cachedResponse.data || !cachedResponse.contentType) {
+      throw new Error(`无效的缓存响应 (${source})`);
     }
     
-    // 记录错误并重新抛出
-    console.error(global.LOG_PREFIX.ERROR, 
-      `服务器 ${selectedServer.url} 请求失败: ${error.message}`
-    );
+    // 对于图片类型，确保数据是Buffer
+    if (cachedResponse.contentType.startsWith('image/') && !Buffer.isBuffer(cachedResponse.data)) {
+      cachedResponse.data = Buffer.from(cachedResponse.data);
+    }
+    
+    return cachedResponse;
+  } catch (error) {
+    console.error(global.LOG_PREFIX.CACHE.INFO, `缓存验证失败 (${source}): ${error.message}`);
     throw error;
+  }
+}
+
+function shouldStoreInMemoryCache(response) {
+  const mimeCategory = response.contentType.split(';')[0].trim().toLowerCase();
+  const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
+  return !contentTypeConfig || !contentTypeConfig.skip_memory;
+}
+
+async function processResponse(result) {
+  // 确保图片数据以Buffer形式返回
+  if (result.contentType.startsWith('image/')) {
+    return {
+      data: Buffer.from(result.data),
+      contentType: result.contentType,
+      responseTime: result.responseTime
+    };
+  }
+  
+  // 其他类型数据保持原样
+  return result;
+}
+
+async function storeToCaches(cacheKey, result) {
+  try {
+    // 存储到内存缓存
+    if (shouldStoreInMemoryCache(result)) {
+      global.cache.lruCache.set(cacheKey, result, result.contentType);
+    }
+    
+    // 存储到磁盘缓存
+    await global.cache.diskCache.set(cacheKey, result, result.contentType);
+  } catch (error) {
+    console.error(global.LOG_PREFIX.CACHE.INFO, `缓存存储失败: ${error.message}`);
+    // 缓存错误不影响主流程
   }
 }
 
@@ -477,4 +510,213 @@ function addWeightUpdate(server, responseTime) {
       timestamp: Date.now()
     }
   });
+}
+
+// 健康检查相关配置
+const HEALTH_CHECK_INTERVAL = 30000; // 30秒
+const MIN_HEALTH_CHECK_INTERVAL = 5000; // 最小健康检查间隔
+const MAX_CONSECUTIVE_FAILURES = 3; // 连续失败次数阈值
+
+async function checkServerHealth(server, config) {
+  // 防止过于频繁的健康检查
+  const now = Date.now();
+  if (server.lastCheckTime && (now - server.lastCheckTime) < MIN_HEALTH_CHECK_INTERVAL) {
+    return;
+  }
+  server.lastCheckTime = now;
+
+  try {
+    const responseTime = await performHealthCheck(server, config);
+    
+    // 重置失败计数
+    server.consecutiveFailures = 0;
+    server.lastSuccessTime = now;
+    
+    // 更新服务器状态
+    updateServerMetrics(server, responseTime);
+    
+    return responseTime;
+  } catch (error) {
+    handleHealthCheckFailure(server, error);
+    throw error;
+  }
+}
+
+function updateServerMetrics(server, responseTime) {
+  // 更新响应时间历史
+  if (!Array.isArray(server.responseTimes)) {
+    server.responseTimes = [];
+  }
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > 10) {
+    server.responseTimes.shift();
+  }
+
+  // 更新EWMA
+  if (typeof server.lastEWMA === 'undefined') {
+    server.lastEWMA = responseTime;
+  } else {
+    const alpha = 0.2; // EWMA衰减因子
+    server.lastEWMA = alpha * responseTime + (1 - alpha) * server.lastEWMA;
+  }
+
+  // 更新权重
+  server.baseWeight = calculateBaseWeight(server.lastEWMA, BASE_WEIGHT_MULTIPLIER);
+  server.dynamicWeight = calculateDynamicWeight(responseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+}
+
+function handleHealthCheckFailure(server, error) {
+  server.consecutiveFailures = (server.consecutiveFailures || 0) + 1;
+  
+  if (server.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    markServerUnhealthy(server);
+  }
+  
+  console.error(global.LOG_PREFIX.ERROR,
+    `服务器 ${server.url} 健康检查失败 (${server.consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${error.message}`
+  );
+}
+
+async function performHealthCheck(server, config) {
+  const {
+    UPSTREAM_TYPE,
+    TMDB_API_KEY,
+    TMDB_IMAGE_TEST_URL,
+    REQUEST_TIMEOUT
+  } = config;
+
+  const startTime = Date.now();
+  
+  try {
+    if (UPSTREAM_TYPE === 'tmdb-api') {
+      if (!TMDB_API_KEY) {
+        throw new Error('TMDB_API_KEY is required for API servers');
+      }
+      const testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
+      await axios.get(`${server.url}${testUrl}`, { timeout: REQUEST_TIMEOUT });
+    } else if (UPSTREAM_TYPE === 'tmdb-image') {
+      const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
+      await axios.head(`${server.url}${testUrl}`, { 
+        timeout: REQUEST_TIMEOUT,
+        validateStatus: status => status === 200
+      });
+    }
+    
+    return Date.now() - startTime;
+  } catch (error) {
+    error.responseTime = Date.now() - startTime;
+    throw error;
+  }
+}
+
+// 重试相关配置
+const MAX_RETRIES = 3;
+const RETRY_DELAY_BASE = 1000; // 基础重试延迟（毫秒）
+
+async function tryRequestWithRetries(server, url, config, retryCount = 0) {
+  try {
+    const startTime = Date.now();
+    const response = await axios({
+      method: 'get',
+      url: `${server.url}${url}`,
+      timeout: config.REQUEST_TIMEOUT,
+      validateStatus: null // 允许所有状态码，我们会在后面处理
+    });
+    
+    const responseTime = Date.now() - startTime;
+    
+    // 检查响应状态码
+    if (response.status >= 500) {
+      throw new Error(`服务器错误: ${response.status}`);
+    }
+    
+    if (response.status >= 400) {
+      throw new Error(`客户端错误: ${response.status}`);
+    }
+    
+    // 验证响应内容
+    if (!validateResponse(response.data, response.headers['content-type'], config.UPSTREAM_TYPE)) {
+      throw new Error('响应验证失败');
+    }
+    
+    // 更新服务器指标
+    updateServerMetrics(server, responseTime);
+    
+    return {
+      data: response.data,
+      contentType: response.headers['content-type'],
+      responseTime
+    };
+    
+  } catch (error) {
+    // 记录错误
+    console.error(global.LOG_PREFIX.ERROR,
+      `请求失败 [${server.url}${url}] - ${error.message}`
+    );
+    
+    // 检查是否应该重试
+    if (shouldRetry(error, retryCount)) {
+      const delay = calculateRetryDelay(retryCount);
+      
+      console.log(global.LOG_PREFIX.WARN,
+        `等待 ${delay}ms 后进行第 ${retryCount + 1} 次重试...`
+      );
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      return tryRequestWithRetries(server, url, config, retryCount + 1);
+    }
+    
+    // 如果不重试，更新服务器错误计数
+    handleRequestFailure(server, error);
+    throw error;
+  }
+}
+
+function shouldRetry(error, retryCount) {
+  if (retryCount >= MAX_RETRIES) {
+    return false;
+  }
+  
+  // 检查错误类型
+  if (axios.isAxiosError(error)) {
+    // 网络错误、超时或服务器错误可以重试
+    return error.code === 'ECONNABORTED' || 
+           error.code === 'ETIMEDOUT' ||
+           (error.response && error.response.status >= 500);
+  }
+  
+  return false;
+}
+
+function calculateRetryDelay(retryCount) {
+  // 使用指数退避策略
+  const delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
+  // 添加随机抖动，避免多个请求同时重试
+  return delay + Math.random() * 1000;
+}
+
+function handleRequestFailure(server, error) {
+  server.errorCount = (server.errorCount || 0) + 1;
+  
+  // 如果是严重错误，直接标记为不健康
+  if (isSeriousError(error)) {
+    markServerUnhealthy(server);
+    return;
+  }
+  
+  // 否则检查错误计数
+  if (server.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
+    markServerUnhealthy(server);
+  }
+}
+
+function isSeriousError(error) {
+  if (axios.isAxiosError(error)) {
+    // 连接被拒绝、主机无法解析等严重错误
+    return error.code === 'ECONNREFUSED' ||
+           error.code === 'ENOTFOUND' ||
+           error.code === 'EHOSTUNREACH';
+  }
+  return false;
 }
