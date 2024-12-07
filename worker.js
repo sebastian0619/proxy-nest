@@ -98,7 +98,7 @@ async function initializeWorkerWithLogs() {
     // 然后执行其他初始化
     await initializeWorker();
   } catch (error) {
-    // 使用基本的错误前缀，确保错误信息能够输出
+    // 使用基本的错误前缀，确保错��信息能够输出
     console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   }
@@ -310,7 +310,7 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
-      // 使用已有的响应时数据
+      // 使用已有的响应��数据
       const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
         : server.lastResponseTime?.toFixed(0) || '未知';
@@ -335,7 +335,7 @@ function selectUpstreamServer() {
     : server.lastResponseTime?.toFixed(0) || '未知';
     
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务��� ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
+    `保底服务 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
     `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
     `最近响应=${avgResponseTime}ms]`
   );
@@ -367,10 +367,25 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
-  // 检查缓存
-  const cacheKey = getCacheKey({ originalUrl: url });
-  
   try {
+    // 确保日志前缀已初始化
+    if (!global.LOG_PREFIX) {
+      global.LOG_PREFIX = {
+        INFO: '[ 信息 ]',
+        ERROR: '[ 错误 ]',
+        WARN: '[ 警告 ]',
+        SUCCESS: '[ 成功 ]',
+        CACHE: {
+          HIT: '[ 缓存命中 ]',
+          MISS: '[ 缓存未命中 ]',
+          INFO: '[ 缓存信息 ]'
+        }
+      };
+    }
+
+    // 检查缓存
+    const cacheKey = getCacheKey({ originalUrl: url });
+    
     // 先检查内存缓存
     let cachedResponse = global.cache.lruCache.get(cacheKey);
     
@@ -404,7 +419,8 @@ async function handleRequest(url) {
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE,
-      RETRY_CONFIG
+      RETRY_CONFIG,
+      LOG_PREFIX: global.LOG_PREFIX
     });
     
     // 验证响应
@@ -419,7 +435,7 @@ async function handleRequest(url) {
         selectedServer.status = HealthStatus.HEALTHY;
         selectedServer.errorCount = 0;
         selectedServer.warmupAttempts = 0;
-        console.log(global.LOG_PREFIX.SUCCESS, `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
+        console.log(global.LOG_PREFIX?.SUCCESS || '[ 成功 ]', `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
       }
     }
     
