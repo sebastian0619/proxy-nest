@@ -209,42 +209,22 @@ async function startActiveHealthCheck() {
   const healthCheck = async () => {
     for (const server of localUpstreamServers) {
       try {
-        // 只检不健康的服务器
+        // 只检查不健康的服务器
         if (server.status === HealthStatus.UNHEALTHY && 
             Date.now() >= server.recoveryTime) {
           
           console.log(global.LOG_PREFIX.INFO, `正在检查服务器健康状态: ${server.url}`);
           
           try {
-            const startTime = Date.now();
+            const responseTime = await checkServerHealth(server, {
+              UPSTREAM_TYPE,
+              TMDB_API_KEY,
+              TMDB_IMAGE_TEST_URL,
+              REQUEST_TIMEOUT,
+              LOG_PREFIX: global.LOG_PREFIX
+            });
             
-            // 根据上游类型执行不同的健康检查
-            if (UPSTREAM_TYPE === 'tmdb-api') {
-              if (!TMDB_API_KEY) {
-                throw new Error('TMDB_API_KEY is required for API servers');
-              }
-              await checkServerHealth(server, {
-                UPSTREAM_TYPE,
-                TMDB_API_KEY,
-                REQUEST_TIMEOUT,
-                LOG_PREFIX: global.LOG_PREFIX
-              });
-            } else if (UPSTREAM_TYPE === 'tmdb-image') {
-              const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
-              const fullUrl = `${server.url}${testUrl}`;
-              
-              const response = await axios({
-                method: 'head',
-                url: fullUrl,
-                timeout: REQUEST_TIMEOUT,
-                validateStatus: status => status === 200
-              });
-            }
-            
-            // 计算响应时间并更新服务器状态
-            const responseTime = Date.now() - startTime;
-            
-            // ���新服务器状态
+            // 更新服务器状态
             server.lastResponseTime = responseTime;
             server.lastEWMA = responseTime;
             server.baseWeight = calculateBaseWeight(responseTime, BASE_WEIGHT_MULTIPLIER);
@@ -260,7 +240,7 @@ async function startActiveHealthCheck() {
             );
           } catch (error) {
             server.warmupAttempts = (server.warmupAttempts || 0) + 1;
-            if (server.warmupAttempts >= MAX_WARMUP_ATTEMPTS) {
+            if (server.warmupAttempts >= HEALTH_CHECK_CONFIG.MAX_WARMUP_ATTEMPTS) {
               console.error(global.LOG_PREFIX.ERROR, 
                 `服务器 ${server.url} 预热失败次数过多，将继续保持不健康状态: ${error.message}`
               );
@@ -308,7 +288,7 @@ function selectUpstreamServer() {
   });
 
   if (availableServers.length === 0) {
-    throw new Error('没有可用的上游服务��');
+    throw new Error('没有可用的上游服务器');
   }
 
   // 计算权重
@@ -557,31 +537,6 @@ function addWeightUpdate(server, responseTime) {
 // const MIN_HEALTH_CHECK_INTERVAL = 5000; // 最小健康检查间隔
 // const MAX_CONSECUTIVE_FAILURES = 3; // 连续失败次数阈值
 
-async function checkServerHealth(server, config) {
-  // 防止过频繁的健康检查
-  const now = Date.now();
-  if (server.lastCheckTime && (now - server.lastCheckTime) < HEALTH_CHECK_CONFIG.MIN_HEALTH_CHECK_INTERVAL) {
-    return;
-  }
-  server.lastCheckTime = now;
-
-  try {
-    const responseTime = await performHealthCheck(server, config);
-    
-    // 重置失败计数
-    server.consecutiveFailures = 0;
-    server.lastSuccessTime = now;
-    
-    // 更新服务器状态
-    updateServerMetrics(server, responseTime);
-    
-    return responseTime;
-  } catch (error) {
-    handleHealthCheckFailure(server, error);
-    throw error;
-  }
-}
-
 function updateServerMetrics(server, responseTime) {
   // 更新响应时间历史
   if (!Array.isArray(server.responseTimes)) {
@@ -615,38 +570,6 @@ function handleHealthCheckFailure(server, error) {
   console.error(global.LOG_PREFIX.ERROR,
     `服务器 ${server.url} 健康检查失败 (${server.consecutiveFailures}/${HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
   );
-}
-
-async function performHealthCheck(server, config) {
-  const {
-    UPSTREAM_TYPE,
-    TMDB_API_KEY,
-    TMDB_IMAGE_TEST_URL,
-    REQUEST_TIMEOUT
-  } = config;
-
-  const startTime = Date.now();
-  
-  try {
-    if (UPSTREAM_TYPE === 'tmdb-api') {
-      if (!TMDB_API_KEY) {
-        throw new Error('TMDB_API_KEY is required for API servers');
-      }
-      const testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
-      await axios.get(`${server.url}${testUrl}`, { timeout: REQUEST_TIMEOUT });
-    } else if (UPSTREAM_TYPE === 'tmdb-image') {
-      const testUrl = TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
-      await axios.head(`${server.url}${testUrl}`, { 
-        timeout: REQUEST_TIMEOUT,
-        validateStatus: status => status === 200
-      });
-    }
-    
-    return Date.now() - startTime;
-  } catch (error) {
-    error.responseTime = Date.now() - startTime;
-    throw error;
-  }
 }
 
 // 重试相关配置
