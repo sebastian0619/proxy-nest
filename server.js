@@ -2,14 +2,28 @@ const { Worker } = require('worker_threads');
 const express = require('express');
 const path = require('path');
 const { initializeLogPrefix } = require('./utils');
-const HealthChecker = require('./healthCheck');
-const config = require('./config');
 
 // 初始化日志前缀
 const LOG_PREFIX = initializeLogPrefix();
 global.LOG_PREFIX = LOG_PREFIX;
 
+// 加载配置
+let config;
+try {
+  config = require('./config');
+} catch (error) {
+  console.error(LOG_PREFIX.ERROR, `加载配置文件失败: ${error.message}`);
+  process.exit(1);
+}
+
+// 验证上游服务器配置
+if (!config.UPSTREAM_SERVERS) {
+  console.error(LOG_PREFIX.ERROR, '未配置上游服务器（UPSTREAM_SERVERS）');
+  process.exit(1);
+}
+
 // 创建健康检查器实例
+const HealthChecker = require('./healthCheck');
 const healthChecker = new HealthChecker({
   ...config,
   LOG_PREFIX
