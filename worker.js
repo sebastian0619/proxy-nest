@@ -98,7 +98,7 @@ async function initializeWorkerWithLogs() {
     // 然后执行其他初始化
     await initializeWorker();
   } catch (error) {
-    // 使用基本的错误前缀，确保错��信息能够输出
+    // 使用基本的错误前缀，确保错信息能够输出
     console.error('[ 错误 ]', `工作线程初始化失败: ${error.message}`);
     process.exit(1);
   }
@@ -194,7 +194,7 @@ function markServerUnhealthy(server) {
   server.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
   server.errorCount = 0;
   server.warmupAttempts = 0;
-  console.log(global.LOG_PREFIX.WARN, 
+  console.log(global.LOG_PREFIX?.WARN || '[ 警告 ]', 
     `服务器 ${server.url} 被标记为不健康状态，将在 ${new Date(server.recoveryTime).toLocaleTimeString()} 后尝试恢复`
   );
 }
@@ -310,7 +310,7 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
-      // 使用已有的响应��数据
+      // 使用已有的响应数据
       const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
         ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
         : server.lastResponseTime?.toFixed(0) || '未知';
@@ -512,7 +512,7 @@ async function storeToCaches(cacheKey, result) {
     // 存储到磁盘缓存
     await global.cache.diskCache.set(cacheKey, result, result.contentType);
   } catch (error) {
-    console.error(global.LOG_PREFIX.CACHE.INFO, `缓存存储失败: ${error.message}`);
+    console.error(global.LOG_PREFIX?.CACHE?.INFO || '[ 缓存信息 ]', `缓存存储失败: ${error.message}`);
     // 缓存错误不影响主流程
   }
 }
@@ -583,7 +583,7 @@ function handleHealthCheckFailure(server, error) {
     markServerUnhealthy(server);
   }
   
-  console.error(global.LOG_PREFIX.ERROR,
+  console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]',
     `服务器 ${server.url} 健康检查失败 (${server.consecutiveFailures}/${HEALTH_CHECK_CONFIG.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
   );
 }
