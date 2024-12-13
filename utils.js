@@ -294,16 +294,17 @@ function initializeServerState(server) {
 }
 
 // 计算基础权重
-function calculateBaseWeight(avgResponseTime, multiplier = 20, errorWeight = 1) {
+function calculateBaseWeight(responseTime, multiplier = 20) {
   try {
-    // 基础权重计算：响应时间越短，权重越大
-    const weight = Math.floor(multiplier * (1000 / Math.max(avgResponseTime, 1)));
+    if (!responseTime || isNaN(responseTime) || responseTime <= 0) {
+      return 1;
+    }
     
-    // 考虑错误权重
-    const adjustedWeight = weight / errorWeight;
+    // 基础权重计算：响应时间越短，权重越大
+    const weight = Math.floor(multiplier * (1000 / Math.max(responseTime, 1)));
     
     // 确保权重在合理范围内 (1-100)
-    return Math.min(Math.max(1, adjustedWeight), 100);
+    return Math.min(Math.max(1, weight), 100);
   } catch (error) {
     console.error('[ 错误 ] 基础权重计算失败:', error);
     return 1;
@@ -413,67 +414,35 @@ function isServerError(errorCode) {
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 检查服务器健康状态
-async function checkServerHealth(server, config) {
-  const {
-    UPSTREAM_TYPE,
-    TMDB_API_KEY,
-    TMDB_IMAGE_TEST_URL,
-    REQUEST_TIMEOUT,
-    LOG_PREFIX
-  } = config;
-
-  // 设置默认的日志前缀
-  const defaultLogPrefix = {
-    INFO: '[ 信息 ]',
-    ERROR: '[ 错误 ]',
-    WARN: '[ 警告 ]',
-    SUCCESS: '[ 成功 ]'
-  };
-  
-  // 使用传入的 LOG_PREFIX 或默认值
-  const logger = LOG_PREFIX || defaultLogPrefix;
-  
-  let testUrl = '';
-  
-  switch (UPSTREAM_TYPE) {
-    case 'tmdb-api':
-      if (!TMDB_API_KEY) {
-        console.error(logger.ERROR, 'TMDB_API_KEY 环境变量未设置');
-        process.exit(1);
+function checkServerHealth(server, config) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const startTime = Date.now();
+      
+      if (config.UPSTREAM_TYPE === 'tmdb-api') {
+        const response = await axios({
+          method: 'get',
+          url: `${server.url}/3/configuration`,
+          params: { api_key: config.TMDB_API_KEY },
+          timeout: config.REQUEST_TIMEOUT,
+          validateStatus: status => status === 200
+        });
+      } else if (config.UPSTREAM_TYPE === 'tmdb-image') {
+        const testUrl = config.TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png';
+        const response = await axios({
+          method: 'head',
+          url: `${server.url}${testUrl}`,
+          timeout: config.REQUEST_TIMEOUT,
+          validateStatus: status => status === 200
+        });
       }
-      testUrl = `/3/configuration?api_key=${TMDB_API_KEY}`;
-      break;
       
-    case 'tmdb-image':
-      if (!TMDB_IMAGE_TEST_URL) {
-        console.error(logger.ERROR, 'TMDB_IMAGE_TEST_URL 环境变量未设置');
-        process.exit(1);
-      }
-      testUrl = TMDB_IMAGE_TEST_URL;
-      break;
-      
-    case 'custom':
-      testUrl = '/';
-      break;
-      
-    default:
-      console.error(logger.ERROR, `未知的上游类型: ${UPSTREAM_TYPE}`);
-      process.exit(1);
-  }
-
-  try {
-    const start = Date.now();
-    const response = await axios.get(`${server.url}${testUrl}`, {
-      timeout: REQUEST_TIMEOUT,
-    });
-    const responseTime = Date.now() - start;
-
-    console.log(logger.SUCCESS, `健康检查成功 - 服务器: ${server.url}, 响应时间: ${responseTime}ms`);
-    return responseTime;
-  } catch (error) {
-    console.error(logger.ERROR, `健康检查失败 - 服务器: ${server.url}, 错误: ${error.message}`);
-    throw error;
-  }
+      const responseTime = Date.now() - startTime;
+      resolve(responseTime);
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 /**
@@ -812,102 +781,14 @@ async function makeParallelRequests(servers, url, timeout) {
 const EWMA_BETA = parseFloat(process.env.EWMA_BETA || '0.8'); // EWMA平滑系数，默认0.8
 const RECENT_REQUEST_LIMIT = parseInt(process.env.RECENT_REQUEST_LIMIT || '10'); // 扩大记录数以更平滑动态权重
 
-// 添加新的工具函数
-
-// 计算重试延迟
-function calculateRetryDelay(retryCount, config) {
-  const {
-    RETRY_DELAY_BASE,
-    RETRY_DELAY_MAX,
-    RETRY_JITTER
-  } = config;
-
-  // 使用指数退避策略
-  let delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
-  
-  // 添加随机抖动
-  const jitter = delay * RETRY_JITTER * (Math.random() * 2 - 1);
-  delay += jitter;
-  
-  // 确保不超过最大延迟
-  return Math.min(delay, RETRY_DELAY_MAX);
-}
-
-// 更新错误统计
-function updateErrorStats(server, error, config) {
-  const { ERROR_PENALTY_FACTOR, ERROR_RECOVERY_FACTOR } = config;
-  
-  // 更新错误计数
-  server.errorCount = (server.errorCount || 0) + 1;
-  
-  // 更新错误权重
-  if (!server.errorWeight) {
-    server.errorWeight = 1;
-  }
-  
-  // 根据错误类型调整权重
-  if (isSeriousError(error)) {
-    server.errorWeight *= ERROR_PENALTY_FACTOR;
-  } else {
-    // 轻微错误，权重增长较慢
-    server.errorWeight *= (1 + (ERROR_PENALTY_FACTOR - 1) * 0.5);
-  }
-  
-  // 限制最大错误权重
-  server.errorWeight = Math.min(server.errorWeight, 10);
-  
-  return server.errorWeight;
-}
-
-// 更新服务器恢复状态
-function updateRecoveryStatus(server, config) {
-  const { ERROR_RECOVERY_FACTOR } = config;
-  
-  // 成功请求后降低错误权重
-  if (server.errorWeight && server.errorWeight > 1) {
-    server.errorWeight *= ERROR_RECOVERY_FACTOR;
-    if (server.errorWeight < 1) {
-      server.errorWeight = 1;
-    }
-  }
-  
-  // 重置错误计数
-  if (server.errorCount > 0) {
-    server.errorCount = 0;
-  }
-}
-
-// 检查是否是严重错误
-function isSeriousError(error) {
-  if (axios.isAxiosError(error)) {
-    return error.code === 'ECONNREFUSED' ||
-           error.code === 'ENOTFOUND' ||
-           error.code === 'EHOSTUNREACH' ||
-           (error.response && error.response.status >= 500);
-  }
-  return false;
-}
-
 module.exports = {
   initializeLogPrefix,
   initializeCache,
-  calculateBaseWeight,
   getCacheKey,
-  logError,
-  isServerError,
-  delay,
-  checkServerHealth,
-  validateResponse,
-  tryRequestWithRetries,
-  startHealthCheck,
   processWeightUpdateQueue,
-  calculateCombinedWeight,
+  validateResponse,
+  checkServerHealth,
+  calculateBaseWeight,
   calculateDynamicWeight,
-  updateServerState,
-  makeRequest,
-  makeParallelRequests,
-  calculateRetryDelay,
-  updateErrorStats,
-  updateRecoveryStatus,
-  isSeriousError
+  calculateCombinedWeight
 };

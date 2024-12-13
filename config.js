@@ -35,91 +35,38 @@ const CACHE_CONFIG = {
   CACHE_FILE_EXT: '.cache'
 };
 
-// 健康检查配置
-const HEALTH_CHECK_CONFIG = {
-  HEALTH_CHECK_INTERVAL: parseInt(process.env.HEALTH_CHECK_INTERVAL || '30000'),     // 健康检查间隔（30秒）
-  MIN_HEALTH_CHECK_INTERVAL: parseInt(process.env.MIN_HEALTH_CHECK_INTERVAL || '5000'), // 最小健康检查间隔（5秒）
-  MAX_CONSECUTIVE_FAILURES: parseInt(process.env.MAX_CONSECUTIVE_FAILURES || '3'),    // 最大连续失败次数
-  WARMUP_REQUEST_COUNT: parseInt(process.env.WARMUP_REQUEST_COUNT || '10'),          // 预热请求数
-  MAX_WARMUP_ATTEMPTS: parseInt(process.env.MAX_WARMUP_ATTEMPTS || '3')             // 最大预热尝试次数
-};
-
-// 重试配置
-const RETRY_CONFIG = {
-  MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '3'),                           // 最大重试次数
-  RETRY_DELAY_BASE: parseInt(process.env.RETRY_DELAY_BASE || '1000'),              // 基础重试延迟（毫秒）
-  RETRY_DELAY_MAX: parseInt(process.env.RETRY_DELAY_MAX || '10000'),               // 最大重试延迟（毫秒）
-  RETRY_JITTER: parseFloat(process.env.RETRY_JITTER || '0.1')                      // 重试抖动因子（0-1）
-};
-
-// 从环境变量获取配置，如果没有则使用默认值
-const config = {
+module.exports = {
   // 服务器配置
-  PORT: process.env.PORT || 3000,
-  NUM_WORKERS: parseInt(process.env.NUM_WORKERS || '4', 10),
+  PORT: process.env.PORT || 6635,
+  NUM_WORKERS: Math.max(1, os.cpus().length - 1),
+  UNHEALTHY_TIMEOUT: 900000,           // 不健康状态持续5分钟
+  MAX_ERRORS_BEFORE_UNHEALTHY: 3,      // 连续3次错误后标记为不健康
   
-  // 上游服务器配置
-  UPSTREAM_SERVERS: process.env.UPSTREAM_SERVERS,
-  UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb',
+  // 请求超时配置
+  INITIAL_TIMEOUT: 8000,               // 初始请求超时时间（8秒）
+  PARALLEL_TIMEOUT: 20000,             // 外部程序最大等待时间（20秒）
+  REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '30000'), // 单个请求的默认超时时间
   
-  // TMDB 配置
+  // TMDB 相关配置
+  UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb-api',
   TMDB_API_KEY: process.env.TMDB_API_KEY,
-  TMDB_IMAGE_TEST_URL: process.env.TMDB_IMAGE_TEST_URL || '/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png',
-
-  // 请求配置
-  REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '5000', 10),
+  TMDB_IMAGE_TEST_URL: process.env.TMDB_IMAGE_TEST_URL,
   
-  // 权重计算配置
-  BASE_WEIGHT_MULTIPLIER: parseFloat(process.env.BASE_WEIGHT_MULTIPLIER || '10'),
-  DYNAMIC_WEIGHT_MULTIPLIER: parseFloat(process.env.DYNAMIC_WEIGHT_MULTIPLIER || '15'),
-  ALPHA_INITIAL: parseFloat(process.env.ALPHA_INITIAL || '0.2'),
+  // 负载均衡配置
+  BASE_WEIGHT_MULTIPLIER: parseInt(process.env.BASE_WEIGHT_MULTIPLIER || '20'),
+  DYNAMIC_WEIGHT_MULTIPLIER: parseInt(process.env.DYNAMIC_WEIGHT_MULTIPLIER || '50'),
+  ALPHA_INITIAL: parseFloat(process.env.ALPHA_INITIAL || '0.5'),
   ALPHA_ADJUSTMENT_STEP: parseFloat(process.env.ALPHA_ADJUSTMENT_STEP || '0.05'),
+  MAX_SERVER_SWITCHES: parseInt(process.env.MAX_SERVER_SWITCHES || '3'),
   
-  // 健康检查配置
-  HEALTH_CHECK_CONFIG: {
-    HEALTH_CHECK_INTERVAL: parseInt(process.env.HEALTH_CHECK_INTERVAL || '30000', 10),
-    MIN_HEALTH_CHECK_INTERVAL: parseInt(process.env.MIN_HEALTH_CHECK_INTERVAL || '5000', 10),
-    MAX_CONSECUTIVE_FAILURES: parseInt(process.env.MAX_CONSECUTIVE_FAILURES || '3', 10),
-    WARMUP_REQUEST_COUNT: parseInt(process.env.WARMUP_REQUEST_COUNT || '10', 10),
-    MAX_WARMUP_ATTEMPTS: parseInt(process.env.MAX_WARMUP_ATTEMPTS || '3', 10),
-    UNHEALTHY_TIMEOUT: parseInt(process.env.UNHEALTHY_TIMEOUT || '900000', 10), // 15分钟
-  },
-
-  // 重试配置
-  RETRY_CONFIG: {
-    MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '3', 10),
-    RETRY_DELAY_BASE: parseInt(process.env.RETRY_DELAY_BASE || '1000', 10),
-    RETRY_DELAY_MAX: parseInt(process.env.RETRY_DELAY_MAX || '5000', 10),
-    RETRY_JITTER: parseFloat(process.env.RETRY_JITTER || '0.2', 10)
-  },
-
-  // 缓存配置
-  CACHE_CONFIG: {
-    CACHE_DIR: process.env.CACHE_DIR || './cache',
-    CACHE_INDEX_FILE: process.env.CACHE_INDEX_FILE || 'cache-index.json',
-    CACHE_TTL: parseInt(process.env.CACHE_TTL || '3600000', 10), // 1小时
-    MEMORY_CACHE_SIZE: parseInt(process.env.MEMORY_CACHE_SIZE || '100', 10), // 项目数
-    CACHE_MAX_SIZE: parseInt(process.env.CACHE_MAX_SIZE || '1073741824', 10), // 1GB
-    CACHE_CLEANUP_INTERVAL: parseInt(process.env.CACHE_CLEANUP_INTERVAL || '3600000', 10), // 1小时
-    CACHE_FILE_EXT: process.env.CACHE_FILE_EXT || '.cache'
-  }
+  // 代理配置
+  HTTP_PROXY: process.env.HTTP_PROXY || '',
+  HTTPS_PROXY: process.env.HTTPS_PROXY || '',
+  
+  // 时区配置
+  TZ: process.env.TZ || 'Asia/Shanghai',
+  
+  // Custom upstream 配置
+  CUSTOM_CONTENT_TYPE: process.env.CUSTOM_CONTENT_TYPE || 'application/json',  // 默认值
+  CACHE_CONFIG
 };
-
-// 验证必需的配置项
-function validateConfig() {
-  const requiredConfigs = [
-    'UPSTREAM_SERVERS',
-    'TMDB_API_KEY'
-  ];
-
-  const missingConfigs = requiredConfigs.filter(key => !config[key]);
-  
-  if (missingConfigs.length > 0) {
-    throw new Error(`缺少必需的配置项: ${missingConfigs.join(', ')}`);
-  }
-}
-
-// 在导出之前验证配置
-validateConfig();
-
-module.exports = config;
