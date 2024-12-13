@@ -6,10 +6,7 @@ const {
   tryRequestWithRetries,
   calculateBaseWeight,
   calculateDynamicWeight,
-  calculateCombinedWeight,
-  initializeCache,
-  getCacheKey,
-  checkServerHealth
+  calculateCombinedWeight
 } = require('./utils');
 
 // 健康状态枚举
