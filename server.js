@@ -64,6 +64,53 @@ function updateServerHealth(healthData) {
   }
 }
 
+// 设置工作线程事件处理器
+function setupWorkerEventHandlers(worker, workerId) {
+  worker.on('message', (message) => {
+    if (message.type === 'response_time') {
+      // 转发响应时间给health_checker
+      healthCheckerWorker.postMessage(message);
+    }
+  });
+
+  worker.on('error', (error) => {
+    console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
+  });
+
+  worker.on('exit', (code) => {
+    if (code !== 0) {
+      console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
+      setTimeout(() => initializeWorker(workerId), 1000);
+    }
+  });
+}
+
+// 设置健康检查线程的事件处理器
+function setupHealthCheckerEventHandlers() {
+  healthCheckerWorker.on('message', (message) => {
+    if (message.type === 'health_status_update') {
+      // 转发状态更新给所有worker
+      for (const worker of workers.values()) {
+        worker.postMessage({
+          type: 'server_health_update',
+          data: message.data
+        });
+      }
+    }
+  });
+
+  healthCheckerWorker.on('error', (error) => {
+    console.error(global.LOG_PREFIX.ERROR, `健康检查线程错误:`, error);
+  });
+
+  healthCheckerWorker.on('exit', (code) => {
+    if (code !== 0) {
+      console.error(global.LOG_PREFIX.ERROR, `健康检查线程异常退出，代码: ${code}`);
+      setTimeout(initializeHealthChecker, 1000);
+    }
+  });
+}
+
 // 初始化健康检查线程
 async function initializeHealthChecker() {
   healthCheckerWorker = new Worker('./health_checker.js', {
@@ -80,23 +127,8 @@ async function initializeHealthChecker() {
     }
   });
 
-  // 设置健康检查线程的事件处理器
-  healthCheckerWorker.on('message', (message) => {
-    if (message.type === 'health_status_update') {
-      updateServerHealth(message.data);
-    }
-  });
-
-  healthCheckerWorker.on('error', (error) => {
-    console.error(global.LOG_PREFIX.ERROR, `健康检查线程错误:`, error);
-  });
-
-  healthCheckerWorker.on('exit', (code) => {
-    if (code !== 0) {
-      console.error(global.LOG_PREFIX.ERROR, `健康检查线程异常退出，代码: ${code}`);
-      setTimeout(initializeHealthChecker, 1000);
-    }
-  });
+  // 设置事件处理器
+  setupHealthCheckerEventHandlers();
 
   // 初始化健康检查
   healthCheckerWorker.postMessage({
@@ -183,26 +215,6 @@ async function initializeWorker(workerId, workerData) {
 
   setupWorkerEventHandlers(worker, workerId);
   workers.set(workerId, worker);
-}
-
-// 设置工作线程事件处理器
-function setupWorkerEventHandlers(worker, workerId) {
-  worker.on('message', (message) => {
-    if (message && message.type === 'weight_update' && message.data) {
-      weightUpdateQueue.push(message.data);
-    }
-  });
-
-  worker.on('error', (error) => {
-    console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 错误:`, error);
-  });
-
-  worker.on('exit', (code) => {
-    if (code !== 0) {
-      console.error(global.LOG_PREFIX.ERROR, `工作线程 ${workerId} 异常退出，代码: ${code}`);
-      setTimeout(() => initializeWorker(workerId), 1000);
-    }
-  });
 }
 
 // 添加缺失的 getCacheItem 函数

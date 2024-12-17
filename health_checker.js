@@ -1,6 +1,5 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
-const { Worker } = require('worker_threads');
 const {
   calculateBaseWeight,
   calculateDynamicWeight,
@@ -91,14 +90,25 @@ function updateServerState(server, checkResult) {
     serverState.lastResponseTime = checkResult.responseTime;
     
     // 更新响应时间历史
+    if (!serverState.responseTimes) {
+      serverState.responseTimes = [];
+    }
     serverState.responseTimes.push(checkResult.responseTime);
     if (serverState.responseTimes.length > 10) {
       serverState.responseTimes.shift();
     }
     
-    // 更新权重
-    serverState.baseWeight = Math.max(1, BASE_WEIGHT_MULTIPLIER / checkResult.responseTime);
-    serverState.dynamicWeight = Math.max(1, DYNAMIC_WEIGHT_MULTIPLIER / checkResult.responseTime);
+    // 使用utils中的权重计算函数
+    const avgResponseTime = serverState.responseTimes.length >= 3
+      ? serverState.responseTimes.slice(-3).reduce((a, b) => a + b, 0) / 3
+      : checkResult.responseTime;
+    
+    serverState.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
+    serverState.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+    serverState.combinedWeight = calculateCombinedWeight({
+      baseWeight: serverState.baseWeight,
+      dynamicWeight: serverState.dynamicWeight
+    });
   } else {
     serverState.errorCount++;
     if (serverState.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
@@ -121,6 +131,7 @@ function updateServerState(server, checkResult) {
       status: serverState.status,
       baseWeight: serverState.baseWeight,
       dynamicWeight: serverState.dynamicWeight,
+      combinedWeight: serverState.combinedWeight,
       lastResponseTime: serverState.lastResponseTime,
       lastCheckTime: serverState.lastCheckTime,
       errorCount: serverState.errorCount,
@@ -153,16 +164,11 @@ function startHealthCheck() {
   performHealthCheck();
 }
 
-// 监听来自主线程的消息
-parentPort.on('message', (message) => {
-  if (message.type === 'initialize') {
-    initializeServers(message.data.upstreamServers);
-    startHealthCheck();
-  }
-});
+// 处理响应时间更新
+function handleResponseTime(url, responseTime, timestamp) {
+  const server = upstreamServers.get(url);
+  if (!server) return;
 
-// 处理worker发送的响应时间消息
-function handleResponseTime(server, responseTime, timestamp) {
   // 更新响应时间队列
   if (!server.responseTimes) {
     server.responseTimes = [];
@@ -187,40 +193,33 @@ function handleResponseTime(server, responseTime, timestamp) {
     dynamicWeight: server.dynamicWeight
   });
 
-  // 发送更新后的状态给所有worker
-  broadcastServerStatus(server);
-}
-
-// 监听worker消息
-function setupWorkerMessageHandling(worker) {
-  worker.on('message', (message) => {
-    if (message.type === 'response_time') {
-      const { url, responseTime, timestamp } = message.data;
-      const server = upstreamServers.find(s => s.url === url);
-      if (server) {
-        handleResponseTime(server, responseTime, timestamp);
-      }
+  // 通知主线程状态更新
+  parentPort.postMessage({
+    type: 'health_status_update',
+    data: {
+      url: server.url,
+      status: server.status,
+      baseWeight: server.baseWeight,
+      dynamicWeight: server.dynamicWeight,
+      combinedWeight: server.combinedWeight,
+      lastResponseTime: server.lastResponseTime,
+      lastCheckTime: server.lastCheckTime,
+      errorCount: server.errorCount,
+      recoveryTime: server.recoveryTime
     }
-    // ... existing message handling code ...
   });
 }
 
-// 广播服务器状态给所有worker
-function broadcastServerStatus(server) {
-  workers.forEach(worker => {
-    worker.postMessage({
-      type: 'server_health_update',
-      data: {
-        url: server.url,
-        status: server.status,
-        baseWeight: server.baseWeight,
-        dynamicWeight: server.dynamicWeight,
-        combinedWeight: server.combinedWeight,
-        lastResponseTime: server.lastResponseTime,
-        lastCheckTime: server.lastCheckTime,
-        errorCount: server.errorCount,
-        recoveryTime: server.recoveryTime
-      }
-    });
-  });
-} 
+// 监听来自主线程的消息
+parentPort.on('message', (message) => {
+  switch (message.type) {
+    case 'initialize':
+      initializeServers(message.data.upstreamServers);
+      startHealthCheck();
+      break;
+    case 'response_time':
+      const { url, responseTime, timestamp } = message.data;
+      handleResponseTime(url, responseTime, timestamp);
+      break;
+  }
+}); 
