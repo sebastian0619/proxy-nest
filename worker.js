@@ -190,15 +190,14 @@ function selectUpstreamServer() {
     weightSum += weight;
     
     if (weightSum > random) {
-      // 使用已有的响应时间数据
-      const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
-        ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
-        : server.lastResponseTime?.toFixed(0) || '未知';
-      
       console.log(global.LOG_PREFIX.SUCCESS, 
-        `选择服务器 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
-        `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
-        `最近响应=${avgResponseTime}ms]`
+        `选择服务器 ${server.url} [状态=${server.status} ` +
+        `基础权重=${server.baseWeight.toFixed(1)} ` +
+        `动态权重=${server.dynamicWeight.toFixed(1)} ` +
+        `综合权重=${combinedWeight.toFixed(1)} ` +
+        `实际权重=${combinedWeight.toFixed(1)} ` +
+        `概率=${(combinedWeight / totalWeight * 100).toFixed(1)}% ` +
+        `最近响应=${server.lastResponseTime || 0}ms]`
       );
       return server;
     }
@@ -206,18 +205,19 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = availableServers[0];
-  const baseWeight = server.baseWeight || 1;
-  const dynamicWeight = server.dynamicWeight || 1;
-  const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
-  const weight = server.status === HealthStatus.HEALTHY ? combinedWeight * 0.2 : combinedWeight;
-  const avgResponseTime = server.responseTimes && server.responseTimes.length > 0
-    ? (server.responseTimes.reduce((a, b) => a + b, 0) / server.responseTimes.length).toFixed(0)
-    : server.lastResponseTime?.toFixed(0) || '未知';
-    
+  const combinedWeight = calculateCombinedWeight({
+    baseWeight: server.baseWeight,
+    dynamicWeight: server.dynamicWeight
+  });
+  
   console.log(global.LOG_PREFIX.WARN, 
-    `保底服务器 ${server.url} [状态=${server.status} 基础权重=${baseWeight} 动态权重=${dynamicWeight} ` +
-    `综合权重=${combinedWeight.toFixed(1)} 实际权重=${weight.toFixed(1)} 概率=${(weight / totalWeight * 100).toFixed(1)}% ` +
-    `最近响应=${avgResponseTime}ms]`
+    `选择服务器 ${server.url} [状态=${server.status} ` +
+    `基础权重=${server.baseWeight.toFixed(1)} ` +
+    `动态权重=${server.dynamicWeight.toFixed(1)} ` +
+    `综合权重=${combinedWeight.toFixed(1)} ` +
+    `实际权重=${combinedWeight.toFixed(1)} ` +
+    `概率=${(combinedWeight / totalWeight * 100).toFixed(1)}% ` +
+    `最近响应=${server.lastResponseTime || 0}ms]`
   );
   return server;
 }
