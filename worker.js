@@ -6,7 +6,9 @@ const {
   tryRequestWithRetries,
   calculateBaseWeight,
   calculateDynamicWeight,
-  calculateCombinedWeight
+  calculateCombinedWeight,
+  initializeCache,
+  getCacheKey
 } = require('./utils');
 
 // 健康状态枚举
@@ -268,25 +270,13 @@ async function handleRequest(url) {
     return cachedResponse;
   }
 
-  // 第一阶段：使用权重选择的服务器
-  const selectedServer = selectUpstreamServer();
+  // 如果没有缓存，发起请求
   try {
+    const selectedServer = selectUpstreamServer();
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE
     }, global.LOG_PREFIX);
-    
-    // 成功后更新服务器权重
-    addWeightUpdate(selectedServer, result.responseTime);
-    
-    // 更新预热状态
-    if (selectedServer.status === HealthStatus.HEALTHY) {
-      selectedServer.warmupRequests++;
-      if (selectedServer.warmupRequests >= 10) {
-        selectedServer.status = HealthStatus.HEALTHY;
-        console.log(global.LOG_PREFIX.SUCCESS, `服务器 ${selectedServer.url} 预热完成，恢复正常服务`);
-      }
-    }
     
     // 验证响应
     try {
@@ -324,21 +314,8 @@ async function handleRequest(url) {
     return result;
     
   } catch (error) {
-    // 更新服务器错误计数
-    selectedServer.errorCount++;
-    
-    // 检查是否需要标记为不健康
-    if (selectedServer.errorCount >= MAX_ERRORS_BEFORE_UNHEALTHY) {
-      selectedServer.status = HealthStatus.UNHEALTHY;
-      selectedServer.recoveryTime = Date.now() + UNHEALTHY_TIMEOUT;
-      console.error(global.LOG_PREFIX.ERROR, 
-        `服务器 ${selectedServer.url} 已标记为不健康，将在 ${UNHEALTHY_TIMEOUT/1000} 秒后尝试恢复`
-      );
-    }
-    
-    // 记录错误并重新抛出
     console.error(global.LOG_PREFIX.ERROR, 
-      `服务器 ${selectedServer.url} 请求失败: ${error.message}`
+      `请求失败: ${error.message}`
     );
     throw error;
   }
