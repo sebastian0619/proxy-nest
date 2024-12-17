@@ -4,9 +4,6 @@ const {
   initializeLogPrefix,
   validateResponse,
   tryRequestWithRetries,
-  calculateBaseWeight,
-  calculateDynamicWeight,
-  calculateCombinedWeight,
   initializeCache,
   getCacheKey
 } = require('./utils');
@@ -260,6 +257,16 @@ async function handleRequest(url) {
       UPSTREAM_TYPE
     }, global.LOG_PREFIX);
     
+    // 发送响应时间给health_checker
+    parentPort.postMessage({
+      type: 'response_time',
+      data: {
+        url: selectedServer.url,
+        responseTime: result.responseTime,
+        timestamp: Date.now()
+      }
+    });
+    
     // 验证响应
     try {
       const isValid = validateResponse(
@@ -301,35 +308,4 @@ async function handleRequest(url) {
     );
     throw error;
   }
-}
-
-function addWeightUpdate(server, responseTime) {
-  // 更新响应时间队列
-  if (!server.responseTimes) {
-    server.responseTimes = [];
-  }
-  server.responseTimes.push(responseTime);
-  if (server.responseTimes.length > 3) {
-    server.responseTimes.shift();
-  }
-
-  // 计算平均响应时间
-  const avgResponseTime = server.responseTimes.length === 3
-    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
-    : responseTime;
-
-  // 更新权重
-  server.lastResponseTime = responseTime;
-  server.lastEWMA = avgResponseTime;
-  server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
-  server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
-  
-  parentPort.postMessage({
-    type: 'weight_update',
-    data: {
-      server,
-      responseTime,
-      timestamp: Date.now()
-    }
-  });
 }

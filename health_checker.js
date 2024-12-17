@@ -1,5 +1,11 @@
 const { parentPort, workerData } = require('worker_threads');
 const axios = require('axios');
+const { Worker } = require('worker_threads');
+const {
+  calculateBaseWeight,
+  calculateDynamicWeight,
+  calculateCombinedWeight
+} = require('./utils');
 
 const {
   UPSTREAM_TYPE,
@@ -153,4 +159,68 @@ parentPort.on('message', (message) => {
     initializeServers(message.data.upstreamServers);
     startHealthCheck();
   }
-}); 
+});
+
+// 处理worker发送的响应时间消息
+function handleResponseTime(server, responseTime, timestamp) {
+  // 更新响应时间队列
+  if (!server.responseTimes) {
+    server.responseTimes = [];
+  }
+  server.responseTimes.push(responseTime);
+  if (server.responseTimes.length > 3) {
+    server.responseTimes.shift();
+  }
+
+  // 计算平均响应时间
+  const avgResponseTime = server.responseTimes.length === 3
+    ? server.responseTimes.reduce((a, b) => a + b, 0) / 3
+    : responseTime;
+
+  // 更新服务器状态
+  server.lastResponseTime = responseTime;
+  server.lastEWMA = avgResponseTime;
+  server.baseWeight = calculateBaseWeight(avgResponseTime, BASE_WEIGHT_MULTIPLIER);
+  server.dynamicWeight = calculateDynamicWeight(avgResponseTime, DYNAMIC_WEIGHT_MULTIPLIER);
+  server.combinedWeight = calculateCombinedWeight({
+    baseWeight: server.baseWeight,
+    dynamicWeight: server.dynamicWeight
+  });
+
+  // 发送更新后的状态给所有worker
+  broadcastServerStatus(server);
+}
+
+// 监听worker消息
+function setupWorkerMessageHandling(worker) {
+  worker.on('message', (message) => {
+    if (message.type === 'response_time') {
+      const { url, responseTime, timestamp } = message.data;
+      const server = upstreamServers.find(s => s.url === url);
+      if (server) {
+        handleResponseTime(server, responseTime, timestamp);
+      }
+    }
+    // ... existing message handling code ...
+  });
+}
+
+// 广播服务器状态给所有worker
+function broadcastServerStatus(server) {
+  workers.forEach(worker => {
+    worker.postMessage({
+      type: 'server_health_update',
+      data: {
+        url: server.url,
+        status: server.status,
+        baseWeight: server.baseWeight,
+        dynamicWeight: server.dynamicWeight,
+        combinedWeight: server.combinedWeight,
+        lastResponseTime: server.lastResponseTime,
+        lastCheckTime: server.lastCheckTime,
+        errorCount: server.errorCount,
+        recoveryTime: server.recoveryTime
+      }
+    });
+  });
+} 
