@@ -76,8 +76,6 @@ async function initializeHealthChecker() {
       MAX_ERRORS_BEFORE_UNHEALTHY,
       BASE_WEIGHT_MULTIPLIER,
       DYNAMIC_WEIGHT_MULTIPLIER,
-      HTTP_PROXY,
-      HTTPS_PROXY,
       LOG_PREFIX: global.LOG_PREFIX
     }
   });

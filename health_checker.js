@@ -10,18 +10,8 @@ const {
   MAX_ERRORS_BEFORE_UNHEALTHY,
   BASE_WEIGHT_MULTIPLIER,
   DYNAMIC_WEIGHT_MULTIPLIER,
-  HTTP_PROXY,
-  HTTPS_PROXY,
   LOG_PREFIX
 } = workerData;
-
-// 配置axios代理
-if (HTTP_PROXY || HTTPS_PROXY) {
-  const HttpsProxyAgent = require('https-proxy-agent');
-  const proxy = HTTP_PROXY || HTTPS_PROXY;
-  axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
-  console.log(LOG_PREFIX.INFO, `已配置代理: ${proxy}`);
-}
 
 // 健康状态枚举
 const HealthStatus = {
