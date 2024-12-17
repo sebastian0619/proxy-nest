@@ -24,8 +24,6 @@ const {
   DYNAMIC_WEIGHT_MULTIPLIER,
   workerId,
   upstreamServers,
-  TMDB_API_KEY,
-  TMDB_IMAGE_TEST_URL,
   UNHEALTHY_TIMEOUT,
   MAX_ERRORS_BEFORE_UNHEALTHY
 } = workerData;
