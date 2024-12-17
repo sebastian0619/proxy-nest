@@ -158,13 +158,7 @@ function isServerHealthy(server) {
 
 function selectUpstreamServer() {
   const availableServers = localUpstreamServers.filter(server => {
-    // 如果服务器还没有权重数据，先进行一次健康检查
-    if (!server.baseWeight || !server.dynamicWeight) {
-      return false;  // 暂时不参与选择
-    }
-    return isServerHealthy(server) || 
-           (server.status === HealthStatus.HEALTHY && 
-            server.warmupRequests < 10);
+    return server.status === HealthStatus.HEALTHY;
   });
 
   if (availableServers.length === 0) {
@@ -173,30 +167,23 @@ function selectUpstreamServer() {
 
   // 计算总权重
   const totalWeight = availableServers.reduce((sum, server) => {
-    const baseWeight = server.baseWeight || 1;
-    const dynamicWeight = server.dynamicWeight || 1;
-    const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
-    return sum + (server.status === HealthStatus.HEALTHY ? combinedWeight * 0.2 : combinedWeight);
+    return sum + server.dynamicWeight;  // 直接使用health_checker提供的动态权重
   }, 0);
 
   const random = Math.random() * totalWeight;
   let weightSum = 0;
 
   for (const server of availableServers) {
-    const baseWeight = server.baseWeight || 1;
-    const dynamicWeight = server.dynamicWeight || 1;
-    const combinedWeight = calculateCombinedWeight({ baseWeight, dynamicWeight });
-    const weight = server.status === HealthStatus.HEALTHY ? combinedWeight * 0.2 : combinedWeight;
-    weightSum += weight;
+    weightSum += server.dynamicWeight;  // 使用动态权重进行选择
     
     if (weightSum > random) {
       console.log(global.LOG_PREFIX.SUCCESS, 
         `选择服务器 ${server.url} [状态=${server.status} ` +
-        `基础权重=${server.baseWeight.toFixed(1)} ` +
-        `动态权重=${server.dynamicWeight.toFixed(1)} ` +
-        `综合权重=${combinedWeight.toFixed(1)} ` +
-        `实际权重=${combinedWeight.toFixed(1)} ` +
-        `概率=${(combinedWeight / totalWeight * 100).toFixed(1)}% ` +
+        `基础权重=${server.baseWeight} ` +
+        `动态权重=${server.dynamicWeight} ` +
+        `综合权重=${server.dynamicWeight} ` +  // 使用动态权重作为综合权重
+        `实际权重=${server.dynamicWeight} ` +
+        `概率=${(server.dynamicWeight / totalWeight * 100).toFixed(1)}% ` +
         `最近响应=${server.lastResponseTime || 0}ms]`
       );
       return server;
@@ -205,18 +192,13 @@ function selectUpstreamServer() {
 
   // 保底返回第一个服务器
   const server = availableServers[0];
-  const combinedWeight = calculateCombinedWeight({
-    baseWeight: server.baseWeight,
-    dynamicWeight: server.dynamicWeight
-  });
-  
   console.log(global.LOG_PREFIX.WARN, 
     `选择服务器 ${server.url} [状态=${server.status} ` +
-    `基础权重=${server.baseWeight.toFixed(1)} ` +
-    `动态权重=${server.dynamicWeight.toFixed(1)} ` +
-    `综合权重=${combinedWeight.toFixed(1)} ` +
-    `实际权重=${combinedWeight.toFixed(1)} ` +
-    `概率=${(combinedWeight / totalWeight * 100).toFixed(1)}% ` +
+    `基础权重=${server.baseWeight} ` +
+    `动态权重=${server.dynamicWeight} ` +
+    `综合权重=${server.dynamicWeight} ` +  // 使用动态权重作为综合权重
+    `实际权重=${server.dynamicWeight} ` +
+    `概率=${(server.dynamicWeight / totalWeight * 100).toFixed(1)}% ` +
     `最近响应=${server.lastResponseTime || 0}ms]`
   );
   return server;
