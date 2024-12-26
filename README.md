@@ -1,70 +1,154 @@
-# 项目简介
+# TMDB 图片代理服务器
 
-本项目包含两个子项目：TMDB 图片代理服务器和 TMDB API 代理服务器。虽然项目的主要目的是作为中转服务，但如果在上游连接中填写 `api.tmdb.org`，也可以用作 TMDB 的 API 中转。
+一个高性能的TMDB图片代理服务器，支持多上游服务器、智能负载均衡、健康检查和缓存系统。
 
-## 子项目
+## 主要特点
 
-### TMDB 图片代理服务器
+- **多上游服务器支持**
+  - 支持配置多个TMDB图片服务器
+  - 自动故障转移
+  - 智能负载均衡
 
-TMDB 图片代理服务器用于缓存和中转 TMDB 图片请求。它通过 Redis 缓存图片数据，以提高响应速度和减少对上游服务器的请求。
+- **健康检查系统**
+  - 定期检查上游服务器健康状态
+  - 自动检测并隔离不健康的服务器
+  - 支持服务器恢复检测
 
-#### 部署方式
+- **智能负载均衡**
+  - 基于响应时间的动态权重计算
+  - 支持基础权重和动态权重
+  - 平滑的权重调整算法
+  - EWMA（指数加权移动平均）支持
 
-1. 确保已安装 Docker。
-2. 克隆项目到本地。
-3. 进入 `tmdb-image-proxy` 目录。
-4. 使用以下命令启动服务：
+- **高性能缓存系统**
+  - 双层缓存架构（内存 + 磁盘）
+  - LRU缓存策略
+  - 可配置的缓存清理策略
+  - 支持不同内容类型的缓存配置
 
-   ```bash
-   docker-compose up -d
-   ```
+- **多线程处理**
+  - Worker线程池处理请求
+  - 独立的健康检查线程
+  - 优化的线程间通信
 
-5. 服务将会在端口 6637 上运行。
+- **错误处理和重试**
+  - 自动请求重试机制
+  - 智能错误检测
+  - 优雅的错误恢复
 
-### TMDB API 代理服务器
+- **完善的日志系统**
+  - 彩色日志输出
+  - 详细的状态日志
+  - 性能监控日志
 
-TMDB API 代理服务器用于缓存和中转 TMDB API 请求。它同样使用 Redis 缓存 API 响应数据，以提高响应速度和减少对上游服务器的请求。
+## 安装
 
-#### 部署方式
+1. 克隆仓库：
+```bash
+git clone [repository-url]
+cd tmdb-image-proxy
+```
 
-1. 确保已安装 Docker。
-2. 克隆项目到本地。
-3. 进入 `tmdb-api-proxy` 目录。
-4. 使用以下命令启动服务：
+2. 安装依赖：
+```bash
+npm install
+```
 
-   ```bash
-   docker-compose up -d
-   ```
+## 配置
 
-5. 服务将会在端口 6637 上运行。
+1. 环境变量配置（创建 `.env` 文件）：
+```env
+# 服务器配置
+PORT=3000
+NUM_WORKERS=4
 
-## 环境变量配置
+# 上游服务器
+UPSTREAM_SERVERS=https://image.tmdb.org,https://image2.tmdb.org
 
-在 `docker-compose.yml` 文件中，可以配置以下环境变量：
+# TMDB配置
+TMDB_API_KEY=your_api_key
+UPSTREAM_TYPE=tmdb-image
+TMDB_IMAGE_TEST_URL=/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
 
-- `UPSTREAM_SERVERS`: 上游服务器的 URL 列表，用逗号分隔。
-- `REDIS_HOST`: Redis 服务的主机名。
-- `REDIS_PORT`: Redis 服务的端口。
-- `TMDB_API_KEY`: TMDB API 的密钥（仅适用于 TMDB API 代理服务器）。
+# 缓存配置
+CACHE_DIR=./cache
+CACHE_TTL=86400000
+MEMORY_CACHE_SIZE=1000
+DISK_CACHE_CLEANUP_INTERVAL=3600000
 
-## 代码参考
+# 健康检查配置
+REQUEST_TIMEOUT=5000
+UNHEALTHY_TIMEOUT=300000
+MAX_ERRORS_BEFORE_UNHEALTHY=3
 
-- `tmdb-image-proxy/docker-compose.yml`:
-  ```yaml:tmdb-image-proxy/docker-compose.yml
-  startLine: 1
-  endLine: 61
-  ```
+# 权重配置
+BASE_WEIGHT_MULTIPLIER=20
+DYNAMIC_WEIGHT_MULTIPLIER=50
+ALPHA_INITIAL=0.5
+ALPHA_ADJUSTMENT_STEP=0.1
+```
 
-- `tmdb-api-proxy/docker-compose.yml`:
-  ```yaml:tmdb-api-proxy/docker-compose.yml
-  startLine: 1
-  endLine: 62
-  ```
+2. 配置文件说明：
+- `config.js`: 主要配置文件
+- `utils.js`: 工具函数和缓存实现
+- `worker.js`: 工作线程处理逻辑
+- `health_checker.js`: 健康检查实现
 
-## 贡献
+## 运行
 
-欢迎提交问题和请求合并。请确保在提交之前运行所有测试并遵循代码风格指南。
+### 直接运行
+
+```bash
+npm start
+```
+
+### 使用Docker
+
+1. 构建镜像：
+```bash
+docker build -t tmdb-image-proxy .
+```
+
+2. 运行容器：
+```bash
+docker run -d \
+  -p 3000:3000 \
+  -e UPSTREAM_SERVERS=https://image.tmdb.org \
+  -e TMDB_API_KEY=your_api_key \
+  --name tmdb-proxy \
+  tmdb-image-proxy
+```
+
+### 使用Docker Compose
+
+```bash
+docker-compose up -d
+```
+
+## 监控和日志
+
+服务器启动后，可以通过日志查看各项指标：
+
+- 服务器健康状态
+- 请求处理情况
+- 缓存命中率
+- 负载均衡权重分配
+- 错误和警告信息
+
+## 性能优化
+
+1. 缓存配置优化：
+   - 调整`MEMORY_CACHE_SIZE`和`CACHE_TTL`
+   - 配置合适的清理间隔
+
+2. 负载均衡优化：
+   - 调整`BASE_WEIGHT_MULTIPLIER`和`DYNAMIC_WEIGHT_MULTIPLIER`
+   - 优化`ALPHA_INITIAL`和`ALPHA_ADJUSTMENT_STEP`
+
+3. 健康检查优化：
+   - 调整`REQUEST_TIMEOUT`和`UNHEALTHY_TIMEOUT`
+   - 配置`MAX_ERRORS_BEFORE_UNHEALTHY`
 
 ## 许可证
 
-本项目采用 MIT 许可证。详细信息请参阅 LICENSE 文件。
+MIT License
