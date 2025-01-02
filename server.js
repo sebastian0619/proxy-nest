@@ -29,40 +29,12 @@ const {
   ALPHA_ADJUSTMENT_STEP,
   MAX_SERVER_SWITCHES,
   UNHEALTHY_TIMEOUT,
-  MAX_ERRORS_BEFORE_UNHEALTHY,
-  CACHE_CONFIG
+  MAX_ERRORS_BEFORE_UNHEALTHY
 } = require('./config');
 
 // 全局变量
 const workers = new Map();
-const weightUpdateQueue = [];
-let upstreamServers = new Map();
 let healthCheckerWorker;
-
-// 更新服务器健康状态
-function updateServerHealth(healthData) {
-  const server = upstreamServers.get(healthData.url);
-  if (server) {
-    Object.assign(server, healthData);
-    upstreamServers.set(healthData.url, server);
-    
-    // 处理权重更新
-    processWeightUpdateQueue([{
-      url: healthData.url,
-      baseWeight: healthData.baseWeight,
-      dynamicWeight: healthData.dynamicWeight,
-      responseTime: healthData.lastResponseTime
-    }], upstreamServers, global.LOG_PREFIX, ALPHA_ADJUSTMENT_STEP, BASE_WEIGHT_MULTIPLIER);
-    
-    // 广播健康状态更新给所有worker
-    for (const worker of workers.values()) {
-      worker.postMessage({
-        type: 'server_health_update',
-        data: healthData
-      });
-    }
-  }
-}
 
 // 设置工作线程事件处理器
 function setupWorkerEventHandlers(worker, workerId) {

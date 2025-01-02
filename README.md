@@ -114,10 +114,10 @@ services:
     image: ghcr.io/sebastian0619/proxy-nest/proxy-js:latest
     container_name: tmdb-proxy
     ports:
-      - "3000:3000"
+      - "6635:6635"
     environment:
       # 服务器配置
-      - PORT=3000
+      - PORT=6635
       - NUM_WORKERS=4                # 工作线程数，建议设置为CPU核心数-1
       - TZ=Asia/Shanghai            # 时区
       
@@ -142,16 +142,11 @@ services:
       - DISK_CACHE_TTL=86400000      # 磁盘缓存过期时间（24小时）
       - DISK_CACHE_CLEANUP_INTERVAL=3600000  # 磁盘缓存清理间隔（1小时）
       
-      # 内容类型缓存配置
-      - API_CACHE_TTL=3600000       # API缓存1小时
-      - IMAGE_CACHE_TTL=86400000    # 图片缓存24小时
-      - JSON_CACHE_TTL=3600000      # JSON缓存1小时
-      
       # 健康检查配置
       - REQUEST_TIMEOUT=5000        # 请求超时时间（5秒）
-      - UNHEALTHY_TIMEOUT=300000    # 不健康状态超时（5分钟）
+      - UNHEALTHY_TIMEOUT=663500    # 不健康状态超时（5分钟）
       - MAX_ERRORS_BEFORE_UNHEALTHY=3
-      - HEALTH_CHECK_INTERVAL=30000 # 健康检查间隔（30秒）
+      - HEALTH_CHECK_INTERVAL=66350 # 健康检查间隔（30秒）
       
       # 负载均衡配置
       - BASE_WEIGHT_MULTIPLIER=20    # 基础权重乘数
@@ -162,13 +157,7 @@ services:
     volumes:
       - ./cache:/app/cache
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-```
+
 
 2. 启动服务：
 ```bash
@@ -180,25 +169,25 @@ docker-compose up -d
 ### 🎬 TMDB API 代理
 ```bash
 # 获取电影详情
-curl http://localhost:3000/3/movie/550
+curl http://localhost:6635/3/movie/550
 
 # 搜索电影
-curl http://localhost:3000/3/search/movie?query=inception
+curl http://localhost:6635/3/search/movie?query=inception
 ```
 
 ### 🖼️ TMDB 图片代理
 ```bash
 # 获取海报图片
-curl http://localhost:3000/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
+curl http://localhost:6635/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
 
 # 获取背景图片
-curl http://localhost:3000/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.jpg
+curl http://localhost:6635/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.jpg
 ```
 
 ### 🌐 自定义上游
 ```bash
 # 代理任意请求
-curl http://localhost:3000/your/custom/path
+curl http://localhost:6635/your/custom/path
 ```
 
 ## 📊 监控和日志

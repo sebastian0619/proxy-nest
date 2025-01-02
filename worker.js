@@ -234,22 +234,60 @@ async function handleRequest(url) {
   if (!cachedResponse) {
     cachedResponse = await global.cache.diskCache.get(cacheKey);
     if (cachedResponse) {
-      // 找到磁盘缓存，检查是否需要加载到内存
-      const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
-      const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
-      
-      if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
-        global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
+      // 验证缓存内容
+      try {
+        const isValid = validateResponse(
+          cachedResponse.data,
+          cachedResponse.contentType,
+          UPSTREAM_TYPE
+        );
+        
+        if (!isValid) {
+          console.error(global.LOG_PREFIX.ERROR, `磁盘缓存验证失败，删除缓存: ${url}`);
+          await global.cache.diskCache.delete(cacheKey);
+          cachedResponse = null;
+        } else {
+          // 找到磁盘缓存，检查是否需要加载到内存
+          const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
+          const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
+          
+          if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
+            global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
+          }
+          console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
+          return cachedResponse;
+        }
+      } catch (error) {
+        console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
+        await global.cache.diskCache.delete(cacheKey);
+        cachedResponse = null;
       }
-      console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
-      return cachedResponse;
     }
   } else {
-    console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
-    return cachedResponse;
+    // 验证内存缓存内容
+    try {
+      const isValid = validateResponse(
+        cachedResponse.data,
+        cachedResponse.contentType,
+        UPSTREAM_TYPE
+      );
+      
+      if (!isValid) {
+        console.error(global.LOG_PREFIX.ERROR, `内存缓存验证失败，删除缓存: ${url}`);
+        global.cache.lruCache.delete(cacheKey);
+        cachedResponse = null;
+      } else {
+        console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
+        return cachedResponse;
+      }
+    } catch (error) {
+      console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
+      global.cache.lruCache.delete(cacheKey);
+      cachedResponse = null;
+    }
   }
 
-  // 如果没有缓存，发起请求
+  // 如果没有缓存或缓存验证失败，发起请求
   try {
     const selectedServer = selectUpstreamServer();
     const result = await tryRequestWithRetries(selectedServer, url, {
