@@ -11,7 +11,6 @@ const {
   initializeLogPrefix,
   initializeCache,
   getCacheKey,
-  processWeightUpdateQueue,
   validateResponse
 } = require('./utils');
 
