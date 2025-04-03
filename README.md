@@ -132,6 +132,7 @@ services:
       # 缓存配置
       - CACHE_DIR=/app/cache
       - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
+      - CACHE_ENABLED=true           # 是否启用本地缓存，设置为false可完全禁用缓存功能
       
       # 内存缓存配置
       - MEMORY_CACHE_SIZE=1000       # 内存缓存条目数
@@ -217,6 +218,6 @@ docker logs --tail 100 tmdb-proxy
    - 调整`UNHEALTHY_TIMEOUT`（建议: 5分钟）
    - 调整`MAX_ERRORS_BEFORE_UNHEALTHY`（建议: 3-5）
 
-## 📄 许可证
+## �� 许可证
 
 MIT License

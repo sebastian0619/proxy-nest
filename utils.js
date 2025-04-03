@@ -33,10 +33,20 @@ class LRUCache {
     return value.data;
   }
 
-  set(key, value) {
+  set(key, value, contentType) {
+    // 获取内容类型配置，以确定过期时间
+    let expireTime = this.config.MEMORY_CACHE_TTL;
+    if (contentType) {
+      const mimeCategory = contentType.split(';')[0].trim().toLowerCase();
+      const typeConfig = this.getContentTypeConfig(mimeCategory);
+      if (typeConfig && typeConfig.memory_ttl) {
+        expireTime = typeConfig.memory_ttl;
+      }
+    }
+
     const cacheItem = {
       data: value,
-      expireAt: Date.now() + this.config.CACHE_TTL,
+      expireAt: Date.now() + expireTime,
       lastAccessed: Date.now()
     };
 
@@ -47,6 +57,26 @@ class LRUCache {
       this.cache.delete(firstKey);
     }
     this.cache.set(key, cacheItem);
+  }
+  
+  // 添加获取内容类型配置的方法
+  getContentTypeConfig(mimeType) {
+    if (!mimeType || !this.config.CONTENT_TYPE_CONFIG) return null;
+    
+    // 提取主要MIME类型
+    const mainType = mimeType.split('/')[0];
+    
+    // 检查是否有精确匹配
+    if (this.config.CONTENT_TYPE_CONFIG[mimeType]) {
+      return this.config.CONTENT_TYPE_CONFIG[mimeType];
+    }
+    
+    // 检查是否有主类型匹配
+    if (this.config.CONTENT_TYPE_CONFIG[mainType]) {
+      return this.config.CONTENT_TYPE_CONFIG[mainType];
+    }
+    
+    return null;
   }
 
   startCleanup() {
@@ -140,7 +170,7 @@ class DiskCache {
     }
   }
 
-  async set(key, value) {
+  async set(key, value, contentType) {
     // 等待任何现有的写操作完成
     while (this.lock.has(key)) {
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -152,13 +182,25 @@ class DiskCache {
       // 确保缓存目录存在
       await fs.mkdir(this.cacheDir, { recursive: true });
       
+      // 获取过期时间
+      let expireTime = this.config.DISK_CACHE_TTL;
+      if (contentType) {
+        const mimeCategory = contentType.split(';')[0].trim().toLowerCase();
+        if (this.config.CONTENT_TYPE_CONFIG && this.config.CONTENT_TYPE_CONFIG[mimeCategory]) {
+          const typeConfig = this.config.CONTENT_TYPE_CONFIG[mimeCategory];
+          if (typeConfig && typeConfig.disk_ttl) {
+            expireTime = typeConfig.disk_ttl;
+          }
+        }
+      }
+      
       const filePath = path.join(this.cacheDir, `${key}${this.config.CACHE_FILE_EXT}`);
       const meta = {
         key,
         filePath,
         size: JSON.stringify(value).length,
         createdAt: Date.now(),
-        expireAt: Date.now() + this.config.CACHE_TTL,
+        expireAt: Date.now() + expireTime,
         lastAccessed: Date.now()
       };
 
@@ -248,6 +290,32 @@ class DiskCache {
 
 // 修改 initializeCache 函数
 async function initializeCache() {
+  // 如果禁用缓存，返回空缓存对象
+  if (config.CACHE_CONFIG.CACHE_ENABLED === false) {
+    console.log('本地缓存已禁用 (CACHE_ENABLED=false)');
+    
+    // 返回空缓存实现（无操作）
+    const noCacheDisk = {
+      init: async () => {},
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      saveIndex: async () => {},
+      cleanup: async () => {}
+    };
+    
+    const noCacheMemory = {
+      get: () => null,
+      set: () => {},
+      delete: () => {},
+      getContentTypeConfig: () => null,
+      cleanup: () => {}
+    };
+    
+    return { diskCache: noCacheDisk, lruCache: noCacheMemory };
+  }
+  
+  console.log('本地缓存已启用');
   const diskCache = new DiskCache(config.CACHE_CONFIG);
   await diskCache.init();
   

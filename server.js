@@ -223,7 +223,12 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
         console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${cacheKey}`);
         // 检查是否应该加载到内存缓存
         const mimeCategory = cachedItem.contentType.split(';')[0].trim().toLowerCase();
-        const contentTypeConfig = lruCache.getContentTypeConfig(mimeCategory);
+        
+        // 检查lruCache是否有getContentTypeConfig方法
+        let contentTypeConfig = null;
+        if (lruCache && typeof lruCache.getContentTypeConfig === 'function') {
+          contentTypeConfig = lruCache.getContentTypeConfig(mimeCategory);
+        }
         
         if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
           lruCache.set(cacheKey, cachedItem, cachedItem.contentType);
@@ -243,16 +248,19 @@ async function getCacheItem(cacheKey, diskCache, lruCache) {
 function setupRoutes(app, diskCache, lruCache) {
   app.use('/', async (req, res, next) => {
     const cacheKey = getCacheKey(req);
+    const cacheEnabled = require('./config').CACHE_CONFIG.CACHE_ENABLED;
     
     try {
-      // 处理缓存响应
-      const cachedItem = await getCacheItem(cacheKey, diskCache, lruCache);
-      if (cachedItem) {
-        res.setHeader('Content-Type', cachedItem.contentType);
-        if (Buffer.isBuffer(cachedItem.data)) {
-          return res.end(cachedItem.data);
+      // 处理缓存响应（如果启用缓存）
+      if (cacheEnabled) {
+        const cachedItem = await getCacheItem(cacheKey, diskCache, lruCache);
+        if (cachedItem) {
+          res.setHeader('Content-Type', cachedItem.contentType);
+          if (Buffer.isBuffer(cachedItem.data)) {
+            return res.end(cachedItem.data);
+          }
+          return res.json(cachedItem.data);
         }
-        return res.json(cachedItem.data);
       }
 
       // 处理新请求
@@ -290,19 +298,21 @@ function setupRoutes(app, diskCache, lruCache) {
         throw new Error('响应验证失败');
       }
 
-      // 保存缓存
-      const cacheItem = {
-        data: responseData,
-        contentType: response.contentType,
-        timestamp: Date.now()
-      };
-      
-      try {
-        await diskCache.set(cacheKey, cacheItem);
-        lruCache.set(cacheKey, cacheItem);
-        console.log(global.LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
-      } catch (error) {
-        console.error(global.LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
+      // 保存缓存（如果启用缓存）
+      if (cacheEnabled) {
+        const cacheItem = {
+          data: responseData,
+          contentType: response.contentType,
+          timestamp: Date.now()
+        };
+        
+        try {
+          await diskCache.set(cacheKey, cacheItem, response.contentType);
+          lruCache.set(cacheKey, cacheItem, response.contentType);
+          console.log(global.LOG_PREFIX.CACHE.INFO, `缓存已保存: ${cacheKey}`);
+        } catch (error) {
+          console.error(global.LOG_PREFIX.ERROR, `缓存写入失败: ${error.message}`);
+        }
       }
 
       // 发送响应

@@ -1,0 +1,46 @@
+# Instructions
+
+During you interaction with the user, if you find anything reusable in this project (e.g. version of a library, model name), especially about a fix to a mistake you made or a correction you received, you should take note in the `Lessons` section in the `.cursorrules` file so you will not make the same mistake again. 
+
+You should also use the `.cursorrules` file as a scratchpad to organize your thoughts. Especially when you receive a new task, you should first review the content of the scratchpad, clear old different task if necessary, first explain the task, and plan the steps you need to take to complete the task. You can use todo markers to indicate the progress, e.g.
+[X] Task 1
+[ ] Task 2
+Also update the progress of the task in the Scratchpad when you finish a subtask.
+Especially when you finished a milestone, it will help to improve your depth of task accomplishment to use the scratchpad to reflect and plan.
+The goal is to help you maintain a big picture as well as the progress of the task. Always refer to the Scratchpad when you plan the next step.
+
+# Lessons
+
+## User Specified Lessons
+
+- You have a python venv in ./venv.
+- Include info useful for debugging in the program output.
+- Read the file before you try to edit it.
+- Use LLM to perform flexible text understanding tasks. First test on a few files. After success, make it parallel.
+
+## Cursor learned
+
+- 添加环境变量配置时，应设计合理的默认值和类型转换处理，如 `CACHE_ENABLED` 默认为 true
+- 禁用功能时，应提供空操作（no-op）实现，以避免在其他代码中进行大量条件判断
+- LRU缓存类应该提供辅助方法（如 `getContentTypeConfig`）以支持特定内容类型的缓存策略
+- 为了保持代码可读性和一致性，在处理缓存时应统一处理不同类型的数据（如Buffer、JSON等）
+- 调用可能不存在的方法前应先检查该方法是否存在（如 `typeof obj.method === 'function'`）
+- 扩展类的方法接口时，确保所有相关调用都更新了参数列表（如向 `diskCache.set` 添加 contentType 参数）
+
+# Scratchpad
+
+## 当前任务：通过环境变量允许控制是否开启本地缓存
+
+[X] 查看和理解当前代码结构及缓存实现
+[X] 修改 config.js 添加 CACHE_ENABLED 环境变量配置
+[X] 修改 utils.js 中的 initializeCache 函数，增加缓存禁用支持
+[X] 在 LRUCache 类中添加 getContentTypeConfig 方法
+[X] 修改 server.js 中的 setupRoutes 函数，添加缓存条件判断
+[X] 修改 worker.js 中的 handleRequest 函数，添加缓存条件判断
+[X] 更新 README.md，添加新环境变量的说明
+
+实现总结：
+- 添加了 CACHE_ENABLED 环境变量（默认为 true）
+- 当禁用缓存时，提供了空操作实现，避免在代码中频繁判断
+- 保持了代码的一致性，即使禁用缓存，其他功能也能正常工作
+- 优化了图片数据处理，确保正确返回 Buffer 类型数据 

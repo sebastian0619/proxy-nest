@@ -226,15 +226,58 @@ parentPort.on('message', async (message) => {
 });
 
 async function handleRequest(url) {
-  // 检查缓存
-  const cacheKey = getCacheKey({ originalUrl: url });
-  let cachedResponse = global.cache.lruCache.get(cacheKey);
+  // 获取缓存启用状态
+  const cacheEnabled = require('./config').CACHE_CONFIG.CACHE_ENABLED;
   
-  // 如果内存没有，检查磁盘缓存
-  if (!cachedResponse) {
-    cachedResponse = await global.cache.diskCache.get(cacheKey);
-    if (cachedResponse) {
-      // 验证缓存内容
+  // 生成缓存键
+  const cacheKey = getCacheKey({ originalUrl: url });
+  let cachedResponse = null;
+  
+  // 如果启用缓存，尝试从缓存获取
+  if (cacheEnabled) {
+    // 检查内存缓存
+    cachedResponse = global.cache.lruCache.get(cacheKey);
+    
+    // 如果内存没有，检查磁盘缓存
+    if (!cachedResponse) {
+      cachedResponse = await global.cache.diskCache.get(cacheKey);
+      if (cachedResponse) {
+        // 验证缓存内容
+        try {
+          const isValid = validateResponse(
+            cachedResponse.data,
+            cachedResponse.contentType,
+            UPSTREAM_TYPE
+          );
+          
+          if (!isValid) {
+            console.error(global.LOG_PREFIX.ERROR, `磁盘缓存验证失败，删除缓存: ${url}`);
+            await global.cache.diskCache.delete(cacheKey);
+            cachedResponse = null;
+          } else {
+            // 找到磁盘缓存，检查是否需要加载到内存
+            const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
+            
+            // 检查是否有getContentTypeConfig方法
+            let contentTypeConfig = null;
+            if (global.cache.lruCache && typeof global.cache.lruCache.getContentTypeConfig === 'function') {
+              contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
+            }
+            
+            if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
+              global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
+            }
+            console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
+            return cachedResponse;
+          }
+        } catch (error) {
+          console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
+          await global.cache.diskCache.delete(cacheKey);
+          cachedResponse = null;
+        }
+      }
+    } else {
+      // 验证内存缓存内容
       try {
         const isValid = validateResponse(
           cachedResponse.data,
@@ -243,47 +286,18 @@ async function handleRequest(url) {
         );
         
         if (!isValid) {
-          console.error(global.LOG_PREFIX.ERROR, `磁盘缓存验证失败，删除缓存: ${url}`);
-          await global.cache.diskCache.delete(cacheKey);
+          console.error(global.LOG_PREFIX.ERROR, `内存缓存验证失败，删除缓存: ${url}`);
+          global.cache.lruCache.delete(cacheKey);
           cachedResponse = null;
         } else {
-          // 找到磁盘缓存，检查是否需要加载到内存
-          const mimeCategory = cachedResponse.contentType.split(';')[0].trim().toLowerCase();
-          const contentTypeConfig = global.cache.lruCache.getContentTypeConfig(mimeCategory);
-          
-          if (!contentTypeConfig || !contentTypeConfig.skip_memory) {
-            global.cache.lruCache.set(cacheKey, cachedResponse, cachedResponse.contentType);
-          }
-          console.log(global.LOG_PREFIX.CACHE.HIT, `磁盘缓存命中: ${url}`);
+          console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
           return cachedResponse;
         }
       } catch (error) {
         console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
-        await global.cache.diskCache.delete(cacheKey);
-        cachedResponse = null;
-      }
-    }
-  } else {
-    // 验证内存缓存内容
-    try {
-      const isValid = validateResponse(
-        cachedResponse.data,
-        cachedResponse.contentType,
-        UPSTREAM_TYPE
-      );
-      
-      if (!isValid) {
-        console.error(global.LOG_PREFIX.ERROR, `内存缓存验证失败，删除缓存: ${url}`);
         global.cache.lruCache.delete(cacheKey);
         cachedResponse = null;
-      } else {
-        console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
-        return cachedResponse;
       }
-    } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
-      global.cache.lruCache.delete(cacheKey);
-      cachedResponse = null;
     }
   }
 
@@ -322,23 +336,21 @@ async function handleRequest(url) {
     }
 
     // 确保图片数据以 Buffer 形式返回
-    if (result.contentType.startsWith('image/')) {
-      const finalResult = {
-        data: Buffer.from(result.data),
-        contentType: result.contentType,
-        responseTime: result.responseTime
-      };
-      // 写入缓存
-      global.cache.lruCache.set(cacheKey, finalResult, result.contentType);
-      await global.cache.diskCache.set(cacheKey, finalResult, result.contentType);
-      return finalResult;
+    const finalResult = result.contentType.startsWith('image/') 
+      ? {
+          data: Buffer.isBuffer(result.data) ? result.data : Buffer.from(result.data),
+          contentType: result.contentType,
+          responseTime: result.responseTime
+        }
+      : result;
+    
+    // 如果启用缓存，写入缓存
+    if (cacheEnabled) {
+      global.cache.lruCache.set(cacheKey, finalResult, finalResult.contentType);
+      await global.cache.diskCache.set(cacheKey, finalResult, finalResult.contentType);
     }
     
-    // 其他类型数据保持原样
-    // 写入缓存
-    global.cache.lruCache.set(cacheKey, result, result.contentType);
-    await global.cache.diskCache.set(cacheKey, result, result.contentType);
-    return result;
+    return finalResult;
     
   } catch (error) {
     console.error(global.LOG_PREFIX.ERROR, 

@@ -3,6 +3,9 @@ const path = require('path');
 
 // 缓存相关配置
 const CACHE_CONFIG = {
+  // 缓存开关配置
+  CACHE_ENABLED: process.env.CACHE_ENABLED !== 'false', // 默认启用缓存，除非明确设置为 'false'
+  
   // 缓存目录配置
   CACHE_DIR: process.env.CACHE_DIR || path.join(process.cwd(), 'cache'),
   CACHE_INDEX_FILE: 'cache_index.json',
