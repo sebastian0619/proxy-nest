@@ -605,7 +605,7 @@ function validateResponse(data, contentType, upstreamType) {
 }
 
 // 添加重试请求函数
-async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
+async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = {}) {
   let retryCount = 0;
   
   while (retryCount < 3) {
@@ -613,11 +613,29 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX) {
       const requestUrl = `${server.url}${url}`;
       console.log(LOG_PREFIX.INFO, `请求: ${requestUrl}`);
       
-      const startTime = Date.now();
-      const proxyRes = await axios.get(requestUrl, {
+      // 构建请求配置
+      const requestConfig = {
         timeout: config.REQUEST_TIMEOUT,
-        responseType: 'arraybuffer'  // 默认使用二进制数据
-      });
+        responseType: 'arraybuffer',  // 默认使用二进制数据
+        headers: {}
+      };
+      
+      // 转发重要的请求头
+      if (headers.authorization) {
+        requestConfig.headers.Authorization = headers.authorization;
+      }
+      if (headers['content-type']) {
+        requestConfig.headers['Content-Type'] = headers['content-type'];
+      }
+      if (headers.accept) {
+        requestConfig.headers.Accept = headers.accept;
+      }
+      if (headers['user-agent']) {
+        requestConfig.headers['User-Agent'] = headers['user-agent'];
+      }
+      
+      const startTime = Date.now();
+      const proxyRes = await axios.get(requestUrl, requestConfig);
       
       const responseTime = Date.now() - startTime;
 

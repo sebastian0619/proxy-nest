@@ -360,10 +360,27 @@ async function handleRequestWithWorker(req, cacheKey) {
     };
 
     worker.on('message', messageHandler);
+    
+    // 提取重要的请求头
+    const headers = {};
+    if (req.headers.authorization) {
+      headers.authorization = req.headers.authorization;
+    }
+    if (req.headers['content-type']) {
+      headers['content-type'] = req.headers['content-type'];
+    }
+    if (req.headers.accept) {
+      headers.accept = req.headers.accept;
+    }
+    if (req.headers['user-agent']) {
+      headers['user-agent'] = req.headers['user-agent'];
+    }
+    
     worker.postMessage({
       type: 'request',
       requestId: cacheKey,
-      url: req.originalUrl
+      url: req.originalUrl,
+      headers: headers
     });
   });
 }

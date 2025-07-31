@@ -204,7 +204,7 @@ function selectUpstreamServer() {
 parentPort.on('message', async (message) => {
   if (message.type === 'request') {
     try {
-      const result = await handleRequest(message.url);
+      const result = await handleRequest(message.url, message.headers);
       
       // 确保返回正确的消息格式
       parentPort.postMessage({
@@ -225,7 +225,7 @@ parentPort.on('message', async (message) => {
   }
 });
 
-async function handleRequest(url) {
+async function handleRequest(url, headers = {}) {
   // 获取缓存启用状态
   const cacheEnabled = require('./config').CACHE_CONFIG.CACHE_ENABLED;
   
@@ -307,7 +307,7 @@ async function handleRequest(url) {
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE
-    }, global.LOG_PREFIX);
+    }, global.LOG_PREFIX, headers);
     
     // 发送响应时间给health_checker
     parentPort.postMessage({

@@ -29,7 +29,21 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 
 # Scratchpad
 
-## 当前任务：通过环境变量允许控制是否开启本地缓存
+## 当前任务：修复Authorization头部转发问题
+
+[X] 分析问题：代理服务器没有转发客户端的Authorization头部
+[X] 修改 utils.js 中的 tryRequestWithRetries 函数，添加对请求头的支持
+[X] 修改 worker.js 中的消息处理，传递请求头参数
+[X] 修改 worker.js 中的 handleRequest 函数，接收并传递请求头
+[X] 修改 server.js 中的 handleRequestWithWorker 函数，提取并传递请求头
+
+实现总结：
+- 添加了对 Authorization、Content-Type、Accept、User-Agent 等关键请求头的转发
+- 保持了向后兼容性，没有破坏现有功能
+- 现在支持 Bearer Token 认证方式
+- 修复了 TMDB API 代理的认证问题
+
+## 之前任务：通过环境变量允许控制是否开启本地缓存
 
 [X] 查看和理解当前代码结构及缓存实现
 [X] 修改 config.js 添加 CACHE_ENABLED 环境变量配置
