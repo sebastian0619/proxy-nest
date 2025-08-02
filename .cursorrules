@@ -35,9 +35,10 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 任务说明：为用户创建一个新的GitHub Release，内容关于项目新增的多架构支持功能。
 
 计划步骤：
-[ ] 检查当前版本号
-[ ] 更新package.json版本号
-[ ] 创建Release说明文档
+[X] 检查当前版本号
+[X] 更新package.json版本号
+[X] 创建Release说明文档
+[X] 修复Dockerfile构建问题
 [ ] 使用GitHub CLI创建Release
 [ ] 验证Release创建成功
 
