@@ -1,13 +1,8 @@
-name: Build and Push TMDB Proxy JS (Multi-Arch)
+name: Release Multi-Arch Docker Images
 
 on:
-  push:
-    branches: [ JS ]
-    paths:
-      - '**'
   release:
-    types: [created]
-  workflow_dispatch:
+    types: [published]
 
 env:
   REGISTRY: ghcr.io
@@ -45,10 +40,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS'}}
-            type=ref,event=branch
-            type=sha,format=short
-            type=raw,value={{date 'YYYYMMDD'}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -63,7 +58,17 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
 
-      - name: Show image info
+      - name: Create Release Assets
         run: |
-          echo "Built images:"
-          docker images ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+          echo "## Docker Images" >> $GITHUB_OUTPUT
+          echo "The following Docker images have been built and pushed:" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Supported Architectures:" >> $GITHUB_OUTPUT
+          echo "- linux/amd64 (Intel/AMD x86_64)" >> $GITHUB_OUTPUT
+          echo "- linux/arm64 (ARM 64-bit, Apple Silicon, etc.)" >> $GITHUB_OUTPUT
+          echo "- linux/arm/v7 (ARM 32-bit v7)" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Pull Command:" >> $GITHUB_OUTPUT
+          echo "```bash" >> $GITHUB_OUTPUT
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "```" >> $GITHUB_OUTPUT 

@@ -1,6 +1,6 @@
 {
   "name": "proxy-nest-js",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TMDB API and Image proxy service",
   "main": "server.js",
   "scripts": {

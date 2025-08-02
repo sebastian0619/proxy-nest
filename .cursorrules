@@ -26,10 +26,47 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 - 为了保持代码可读性和一致性，在处理缓存时应统一处理不同类型的数据（如Buffer、JSON等）
 - 调用可能不存在的方法前应先检查该方法是否存在（如 `typeof obj.method === 'function'`）
 - 扩展类的方法接口时，确保所有相关调用都更新了参数列表（如向 `diskCache.set` 添加 contentType 参数）
+- 多架构Docker构建时，使用QEMU和Buildx可以同时构建多个架构的镜像，提高部署效率
 
 # Scratchpad
 
-## 当前任务：修复Authorization头部转发问题
+## 当前任务：创建多架构支持Release
+
+任务说明：为用户创建一个新的GitHub Release，内容关于项目新增的多架构支持功能。
+
+计划步骤：
+[ ] 检查当前版本号
+[ ] 更新package.json版本号
+[ ] 创建Release说明文档
+[ ] 使用GitHub CLI创建Release
+[ ] 验证Release创建成功
+
+实现内容：
+- 支持 linux/amd64 (Intel/AMD x86_64)
+- 支持 linux/arm64 (ARM 64位，Apple Silicon等)
+- 支持 linux/arm/v7 (ARM 32位 v7)
+- 优化了Dockerfile多阶段构建
+- 添加了.dockerignore优化构建
+- 创建了专门的release.yml工作流
+- 更新了README.md文档
+
+## 之前任务：实现多架构Docker构建支持
+
+[X] 分析现有GitHub Actions工作流
+[X] 修改proxy-nest.yml添加多架构支持
+[X] 优化Dockerfile支持多阶段构建
+[X] 创建.dockerignore文件优化构建
+[X] 创建release.yml专门用于版本发布
+[X] 更新README.md添加多架构说明
+
+实现总结：
+- 使用QEMU和Docker Buildx实现多架构构建
+- 支持AMD64、ARM64、ARMv7三种主要架构
+- 优化了构建缓存和构建效率
+- 添加了健康检查和安全性改进
+- 保持了向后兼容性
+
+## 更早任务：修复Authorization头部转发问题
 
 [X] 分析问题：代理服务器没有转发客户端的Authorization头部
 [X] 修改 utils.js 中的 tryRequestWithRetries 函数，添加对请求头的支持
@@ -41,20 +78,4 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 - 添加了对 Authorization、Content-Type、Accept、User-Agent 等关键请求头的转发
 - 保持了向后兼容性，没有破坏现有功能
 - 现在支持 Bearer Token 认证方式
-- 修复了 TMDB API 代理的认证问题
-
-## 之前任务：通过环境变量允许控制是否开启本地缓存
-
-[X] 查看和理解当前代码结构及缓存实现
-[X] 修改 config.js 添加 CACHE_ENABLED 环境变量配置
-[X] 修改 utils.js 中的 initializeCache 函数，增加缓存禁用支持
-[X] 在 LRUCache 类中添加 getContentTypeConfig 方法
-[X] 修改 server.js 中的 setupRoutes 函数，添加缓存条件判断
-[X] 修改 worker.js 中的 handleRequest 函数，添加缓存条件判断
-[X] 更新 README.md，添加新环境变量的说明
-
-实现总结：
-- 添加了 CACHE_ENABLED 环境变量（默认为 true）
-- 当禁用缓存时，提供了空操作实现，避免在代码中频繁判断
-- 保持了代码的一致性，即使禁用缓存，其他功能也能正常工作
-- 优化了图片数据处理，确保正确返回 Buffer 类型数据 
+- 修复了 TMDB API 代理的认证问题 
