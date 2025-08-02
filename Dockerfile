@@ -24,8 +24,11 @@ COPY . .
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
 
-# 更改文件所有权
-RUN chown -R nodejs:nodejs /app
+# 创建缓存目录并设置权限
+RUN mkdir -p /app/cache && \
+    chown -R nodejs:nodejs /app && \
+    chmod -R 755 /app/cache
+
 USER nodejs
 
 # 暴露应用运行的端口
