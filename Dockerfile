@@ -20,16 +20,8 @@ FROM base AS production
 # 复制项目文件
 COPY . .
 
-# 创建非 root 用户
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
-
-# 创建缓存目录并设置权限
-RUN mkdir -p /app/cache && \
-    chown -R nodejs:nodejs /app && \
-    chmod -R 755 /app/cache
-
-USER nodejs
+# 创建缓存目录
+RUN mkdir -p /app/cache
 
 # 暴露应用运行的端口
 EXPOSE 6635
