@@ -23,7 +23,10 @@ ENV GO111MODULE=on
 RUN go env && \
     go list -m all && \
     go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go main.go
+    ls -la && \
+    pwd && \
+    cat go.mod && \
+    GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
 
 # 运行阶段
 FROM alpine:latest
