@@ -18,11 +18,12 @@ COPY . .
 
 # 设置Go模块环境
 ENV GO111MODULE=on
-ENV GOPATH=/go
-ENV GOCACHE=/go/cache
 
-# 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go main.go
+# 调试信息和构建应用
+RUN go env && \
+    go list -m all && \
+    go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go main.go
 
 # 运行阶段
 FROM alpine:latest
