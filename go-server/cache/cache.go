@@ -399,4 +399,19 @@ func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 func GetCacheKey(url string) string {
 	hash := md5.Sum([]byte(url))
 	return fmt.Sprintf("%x", hash)
+}
+
+// GetConfig 获取配置
+func (cm *CacheManager) GetConfig() *config.CacheConfig {
+	return cm.config
+}
+
+// GetDiskCache 获取磁盘缓存
+func (cm *CacheManager) GetDiskCache() *DiskCache {
+	return cm.diskCache
+}
+
+// GetMemoryCache 获取内存缓存
+func (cm *CacheManager) GetMemoryCache() *MemoryCache {
+	return cm.memoryCache
 } 

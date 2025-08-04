@@ -22,7 +22,7 @@ func main() {
 	cfg := config.LoadConfig()
 	
 	// 初始化日志
-	logPrefix := logger.InitLogger()
+	logger.InitLogger()
 	
 	// 初始化缓存管理器
 	cacheManager, err := cache.NewCacheManager(&cfg.Cache)
@@ -107,8 +107,8 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	cacheKey := cache.GetCacheKey(path)
 	
 	// 检查缓存
-	if cacheManager.config.CacheEnabled {
-		if cachedItem, err := cacheManager.diskCache.Get(cacheKey); err == nil && cachedItem != nil {
+	if cacheManager.GetConfig().CacheEnabled {
+		if cachedItem, err := cacheManager.GetDiskCache().Get(cacheKey); err == nil && cachedItem != nil {
 			// 验证缓存内容
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
@@ -118,7 +118,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			}
 		}
 		
-		if cachedItem, exists := cacheManager.memoryCache.Get(cacheKey); exists {
+		if cachedItem, exists := cacheManager.GetMemoryCache().Get(cacheKey); exists {
 			// 验证缓存内容
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
@@ -150,20 +150,20 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	}
 	
 	// 保存缓存
-	if cacheManager.config.CacheEnabled {
+	if cacheManager.GetConfig().CacheEnabled {
 		cacheItem := &cache.CacheItem{
 			Data:        response.Data,
 			ContentType: response.ContentType,
 			CreatedAt:   time.Now(),
-			ExpireAt:    time.Now().Add(cacheManager.config.DiskCacheTTL),
+			ExpireAt:    time.Now().Add(cacheManager.GetConfig().DiskCacheTTL),
 			LastAccessed: time.Now(),
 		}
 		
 		// 保存到内存缓存
-		cacheManager.memoryCache.Set(cacheKey, cacheItem, response.ContentType)
+		cacheManager.GetMemoryCache().Set(cacheKey, cacheItem, response.ContentType)
 		
 		// 保存到磁盘缓存
-		if err := cacheManager.diskCache.Set(cacheKey, cacheItem, response.ContentType); err != nil {
+		if err := cacheManager.GetDiskCache().Set(cacheKey, cacheItem, response.ContentType); err != nil {
 			logger.Error("保存磁盘缓存失败: %v", err)
 		}
 	}

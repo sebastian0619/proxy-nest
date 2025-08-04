@@ -8,10 +8,10 @@ WORKDIR /app
 RUN apk add --no-cache git ca-certificates tzdata
 
     # 复制go mod文件
-COPY go.mod ./
+COPY go.mod go.sum ./
 
-# 下载依赖并生成go.sum
-RUN go mod download && go mod tidy && go mod verify
+# 下载依赖并验证
+RUN go mod download && go mod verify
 
 # 复制源代码
 COPY . .
