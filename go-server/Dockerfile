@@ -29,10 +29,6 @@ FROM alpine:latest
 # 安装必要的包
 RUN apk --no-cache add ca-certificates tzdata
 
-# 创建非root用户
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
-
 # 设置工作目录
 WORKDIR /app
 
@@ -41,11 +37,10 @@ COPY --from=builder /app/proxy-nest-go .
 
 # 创建缓存目录并设置权限
 RUN mkdir -p /app/cache && \
-    chown -R appuser:appgroup /app && \
-    chmod -R 755 /app/cache
+    chmod -R 777 /app/cache
 
-# 切换到非root用户
-USER appuser
+# 保持使用root用户
+# USER root (默认已经是root)
 
 # 暴露端口
 EXPOSE 6635
