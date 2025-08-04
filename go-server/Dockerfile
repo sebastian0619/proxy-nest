@@ -22,7 +22,7 @@ ENV GOPATH=/go
 ENV GOCACHE=/go/cache
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go proxy-nest-go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go main.go
 
 # 运行阶段
 FROM alpine:latest
