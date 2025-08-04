@@ -2,15 +2,9 @@ name: Build and Push Go Proxy Docker Image
 
 on:
   push:
-    branches: [ main, develop ]
-    paths:
-      - 'go-server/**'
-      - '.github/workflows/go-build.yml'
+    branches: [ JS, main, master, develop ]
   pull_request:
-    branches: [ main ]
-    paths:
-      - 'go-server/**'
-      - '.github/workflows/go-build.yml'
+    branches: [ JS, main, master ]
   workflow_dispatch:
 
 env:
