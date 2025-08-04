@@ -1,8 +1,8 @@
 package logger
 
 import (
+	"fmt"
 	"os"
-	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -29,20 +29,20 @@ var Logger *logrus.Logger
 // InitLogger 初始化日志系统
 func InitLogger() *LogPrefix {
 	Logger = logrus.New()
-	
-	// 设置日志格式
+
+	// 设置自定义格式器，不显示时间戳和级别
 	Logger.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp:   true,
-		TimestampFormat: time.RFC3339,
-		ForceColors:     true,
+		DisableTimestamp: true,
+		DisableColors:    false,
+		ForceColors:      true,
 	})
-	
+
 	// 设置输出
 	Logger.SetOutput(os.Stdout)
-	
+
 	// 设置日志级别
 	Logger.SetLevel(logrus.InfoLevel)
-	
+
 	// 创建日志前缀
 	prefix := &LogPrefix{
 		Info:    "[ 信息 ]",
@@ -55,42 +55,42 @@ func InitLogger() *LogPrefix {
 			Info: "[ 缓存信息 ]",
 		},
 	}
-	
+
 	Logger.Info(prefix.Info, "日志系统初始化成功")
 	return prefix
 }
 
 // Info 信息日志
 func Info(message string, args ...interface{}) {
-	Logger.Infof(message, args...)
+	fmt.Printf("[ 信息 ] "+message+"\n", args...)
 }
 
 // Error 错误日志
 func Error(message string, args ...interface{}) {
-	Logger.Errorf(message, args...)
+	fmt.Printf("[ 错误 ] "+message+"\n", args...)
 }
 
 // Warn 警告日志
 func Warn(message string, args ...interface{}) {
-	Logger.Warnf(message, args...)
+	fmt.Printf("[ 警告 ] "+message+"\n", args...)
 }
 
 // Success 成功日志
 func Success(message string, args ...interface{}) {
-	Logger.Infof(message, args...)
+	fmt.Printf("[ 成功 ] "+message+"\n", args...)
 }
 
 // CacheHit 缓存命中日志
 func CacheHit(message string, args ...interface{}) {
-	Logger.Infof(message, args...)
+	fmt.Printf("[ 缓存命中 ] "+message+"\n", args...)
 }
 
 // CacheMiss 缓存未命中日志
 func CacheMiss(message string, args ...interface{}) {
-	Logger.Infof(message, args...)
+	fmt.Printf("[ 缓存未命中 ] "+message+"\n", args...)
 }
 
 // CacheInfo 缓存信息日志
 func CacheInfo(message string, args ...interface{}) {
-	Logger.Infof(message, args...)
-} 
+	fmt.Printf("[ 缓存信息 ] "+message+"\n", args...)
+}

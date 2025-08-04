@@ -19,13 +19,8 @@ COPY . .
 # 设置Go模块环境
 ENV GO111MODULE=on
 
-# 调试信息和构建应用
-RUN go env && \
-    go list -m all && \
-    go mod tidy && \
-    ls -la && \
-    pwd && \
-    cat go.mod && \
+# 构建应用
+RUN go mod tidy && \
     GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
 
 # 运行阶段
@@ -44,9 +39,10 @@ WORKDIR /app
 # 从builder阶段复制二进制文件
 COPY --from=builder /app/proxy-nest-go .
 
-# 创建缓存目录
+# 创建缓存目录并设置权限
 RUN mkdir -p /app/cache && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app && \
+    chmod -R 755 /app/cache
 
 # 切换到非root用户
 USER appuser

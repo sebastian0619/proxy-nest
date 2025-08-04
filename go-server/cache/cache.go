@@ -10,27 +10,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2"
 	"proxy-nest-go/config"
 	"proxy-nest-go/logger"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // CacheItem 缓存项
 type CacheItem struct {
-	Data        interface{} `json:"data"`
-	ContentType string      `json:"contentType"`
-	CreatedAt   time.Time   `json:"createdAt"`
-	ExpireAt    time.Time   `json:"expireAt"`
-	LastAccessed time.Time  `json:"lastAccessed"`
+	Data         interface{} `json:"data"`
+	ContentType  string      `json:"contentType"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	ExpireAt     time.Time   `json:"expireAt"`
+	LastAccessed time.Time   `json:"lastAccessed"`
 }
 
 // CacheMeta 缓存元数据
 type CacheMeta struct {
-	Key         string    `json:"key"`
-	FilePath    string    `json:"filePath"`
-	Size        int       `json:"size"`
-	CreatedAt   time.Time `json:"createdAt"`
-	ExpireAt    time.Time `json:"expireAt"`
+	Key          string    `json:"key"`
+	FilePath     string    `json:"filePath"`
+	Size         int       `json:"size"`
+	CreatedAt    time.Time `json:"createdAt"`
+	ExpireAt     time.Time `json:"expireAt"`
 	LastAccessed time.Time `json:"lastAccessed"`
 }
 
@@ -157,10 +158,10 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 
 	// 创建缓存项
 	item := &CacheItem{
-		Data:        value.Data,
-		ContentType: value.ContentType,
-		CreatedAt:   time.Now(),
-		ExpireAt:    time.Now().Add(expireTime),
+		Data:         value.Data,
+		ContentType:  value.ContentType,
+		CreatedAt:    time.Now(),
+		ExpireAt:     time.Now().Add(expireTime),
 		LastAccessed: time.Now(),
 	}
 
@@ -178,11 +179,11 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 
 	// 更新索引
 	meta := &CacheMeta{
-		Key:         key,
-		FilePath:    filePath,
-		Size:        len(data),
-		CreatedAt:   item.CreatedAt,
-		ExpireAt:    item.ExpireAt,
+		Key:          key,
+		FilePath:     filePath,
+		Size:         len(data),
+		CreatedAt:    item.CreatedAt,
+		ExpireAt:     item.ExpireAt,
 		LastAccessed: item.LastAccessed,
 	}
 
@@ -195,7 +196,7 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 		logger.Error("保存缓存索引失败: %v", err)
 	}
 
-	logger.Info("缓存写入成功: %s", key)
+	// 不在这里输出日志，由调用方处理
 	return nil
 }
 
@@ -397,6 +398,8 @@ func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 
 // GetCacheKey 生成缓存键
 func GetCacheKey(url string) string {
+	// 简化版本，直接使用URL生成MD5哈希
+	// 与JavaScript版本保持兼容
 	hash := md5.Sum([]byte(url))
 	return fmt.Sprintf("%x", hash)
 }
@@ -414,4 +417,4 @@ func (cm *CacheManager) GetDiskCache() *DiskCache {
 // GetMemoryCache 获取内存缓存
 func (cm *CacheManager) GetMemoryCache() *MemoryCache {
 	return cm.memoryCache
-} 
+}
