@@ -91,15 +91,22 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 // initializeServers 初始化服务器
 func (hm *HealthManager) initializeServers() {
 	upstreamServers := os.Getenv("UPSTREAM_SERVERS")
+	logger.Info("读取UPSTREAM_SERVERS环境变量: '%s'", upstreamServers)
+
 	if upstreamServers == "" {
-		logger.Error("未配置上游服务器")
+		logger.Error("未配置上游服务器 - UPSTREAM_SERVERS环境变量为空")
 		return
 	}
 
 	servers := strings.Split(upstreamServers, ",")
-	for _, serverURL := range servers {
+	logger.Info("解析到 %d 个服务器URL", len(servers))
+
+	for i, serverURL := range servers {
 		serverURL = strings.TrimSpace(serverURL)
+		logger.Info("处理服务器 %d: '%s'", i+1, serverURL)
+
 		if serverURL == "" {
+			logger.Warn("跳过空的服务器URL")
 			continue
 		}
 
@@ -116,10 +123,20 @@ func (hm *HealthManager) initializeServers() {
 			CombinedWeight:   1,
 			LastEWMA:         0,
 		}
-		logger.Info("初始化服务器: %s (等待健康检查确认状态)", serverURL)
+		logger.Success("成功初始化服务器: %s (状态=健康, 权重=1)", serverURL)
 	}
 
-	logger.Info("已初始化 %d 个上游服务器", len(hm.servers))
+	logger.Info("服务器初始化完成 - 总共初始化 %d 个上游服务器", len(hm.servers))
+
+	// 输出最终的服务器映射
+	if len(hm.servers) > 0 {
+		logger.Info("服务器映射详情:")
+		for url, server := range hm.servers {
+			logger.Info("  - %s: 状态=%s, 权重=%d", url, server.Status, server.CombinedWeight)
+		}
+	} else {
+		logger.Error("警告: 没有成功初始化任何服务器!")
+	}
 }
 
 // StartHealthCheck 启动健康检查

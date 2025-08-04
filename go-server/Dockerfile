@@ -45,9 +45,7 @@ RUN mkdir -p /app/cache && \
 # 暴露端口
 EXPOSE 6635
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:6635/ || exit 1
+# 健康检查已移除，与JavaScript版本保持一致
 
 # 启动应用
 CMD ["./proxy-nest-go"] 
