@@ -15,8 +15,7 @@ Thumbs.db
 # Logs
 *.log
 
-# Cache
-cache/
+# Cache files (but keep source cache directory)
 *.cache
 
 # Build artifacts
