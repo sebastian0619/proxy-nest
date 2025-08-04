@@ -7,7 +7,7 @@ WORKDIR /app
 # 安装必要的包
 RUN apk add --no-cache git ca-certificates tzdata
 
-    # 复制go mod文件
+# 复制go mod文件
 COPY go.mod go.sum ./
 
 # 下载依赖并验证
@@ -16,8 +16,13 @@ RUN go mod download && go mod verify
 # 复制源代码
 COPY . .
 
+# 设置Go模块环境
+ENV GO111MODULE=on
+ENV GOPATH=/go
+ENV GOCACHE=/go/cache
+
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go proxy-nest-go
 
 # 运行阶段
 FROM alpine:latest
