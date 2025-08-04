@@ -77,6 +77,10 @@ func (dc *DiskCache) Init() error {
 	// 加载索引
 	if err := dc.loadIndex(); err != nil {
 		logger.Error("加载缓存索引失败: %v", err)
+		// 确保即使加载失败，索引也不为nil
+		if dc.index == nil {
+			dc.index = make(map[string]*CacheMeta)
+		}
 	}
 
 	// 启动清理任务
@@ -239,7 +243,18 @@ func (dc *DiskCache) loadIndex() error {
 
 	var index map[string]*CacheMeta
 	if err := json.Unmarshal(data, &index); err != nil {
-		return err
+		// 如果反序列化失败（可能是格式不兼容），删除损坏的索引文件重新开始
+		logger.Error("缓存索引文件格式不兼容，将重新构建: %v", err)
+		if removeErr := os.Remove(indexPath); removeErr != nil {
+			logger.Error("删除损坏的索引文件失败: %v", removeErr)
+		} else {
+			logger.Info("已删除损坏的缓存索引文件，将重新构建")
+		}
+		// 初始化空索引
+		dc.indexMutex.Lock()
+		dc.index = make(map[string]*CacheMeta)
+		dc.indexMutex.Unlock()
+		return nil
 	}
 
 	dc.indexMutex.Lock()
