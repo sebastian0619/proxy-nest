@@ -90,7 +90,7 @@ func main() {
 
 // setupRoutes 设置路由
 func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
-	// 过滤掉根路径的直接访问
+	// 根路径处理 - 返回服务信息而不是代理处理
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"service": "proxy-nest-go",
@@ -99,16 +99,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 通用代理路由
-	router.Any("/*path", func(c *gin.Context) {
+	// 其他所有路径的代理处理
+	router.NoRoute(func(c *gin.Context) {
 		handleProxyRequest(c, proxyManager, cacheManager)
 	})
 }
 
 // handleProxyRequest 处理代理请求
 func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
-	// 获取请求路径
-	path := c.Param("path")
+	// 获取请求路径 - 由于使用NoRoute，直接从URL获取路径
+	path := c.Request.URL.Path
 	if path == "" {
 		path = "/"
 	}

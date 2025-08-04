@@ -486,12 +486,19 @@ func (hm *HealthManager) GetHealthyServers() []*Server {
 	defer hm.mutex.RUnlock()
 
 	var healthyServers []*Server
-	for _, server := range hm.servers {
+	logger.Info("GetHealthyServers 调用 - 开始检查服务器状态:")
+	for url, server := range hm.servers {
+		logger.Info("  服务器 %s: 状态=%s, 错误次数=%d, 最后检查=%v",
+			url, server.Status, server.ErrorCount, server.LastCheckTime)
 		if server.Status == HealthStatusHealthy {
 			healthyServers = append(healthyServers, server)
+			logger.Info("    ✓ 添加到健康服务器列表")
+		} else {
+			logger.Info("    ✗ 服务器不健康，跳过")
 		}
 	}
 
+	logger.Info("GetHealthyServers 结果: 找到 %d 个健康服务器", len(healthyServers))
 	return healthyServers
 }
 
