@@ -143,10 +143,14 @@ function updateHealthyServers(healthyServers) {
   console.log(global.LOG_PREFIX.INFO, `本地服务器列表已更新`);
 }
 
-// 初始化工作线程
+// 初始化工作线程  
 async function initializeWorker() {
   try {
-    if (!upstreamServers) {
+    // 如果没有配置上游服务器，使用默认值
+    const servers = upstreamServers || process.env.UPSTREAM_SERVERS || 'https://api.themoviedb.org';
+    console.log(global.LOG_PREFIX.INFO, `使用上游服务器: ${servers}`);
+    
+    if (!servers) {
       throw new Error('未配置上游服务器');
     }
 
@@ -162,7 +166,7 @@ async function initializeWorker() {
     global.cache = { diskCache, lruCache };
 
     // 初始化服务器列表
-    localUpstreamServers = upstreamServers.split(',').map(url => ({
+    localUpstreamServers = servers.split(',').map(url => ({
       url: url.trim(),
       status: HealthStatus.HEALTHY,
       errorCount: 0,
