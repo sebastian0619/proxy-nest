@@ -92,6 +92,13 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 	logger.Info("服务器状态检查: 总共%d个服务器, 健康%d个", len(allServers), len(healthyServers))
 
+	// 详细输出所有服务器状态
+	logger.Info("所有服务器状态详情:")
+	for _, server := range allServers {
+		logger.Info("  - %s: 状态=%s, 错误次数=%d, 最后检查=%v, 权重=%d",
+			server.URL, server.Status, server.ErrorCount, server.LastCheckTime, server.CombinedWeight)
+	}
+
 	if len(healthyServers) == 0 {
 		logger.Error("没有健康的上游服务器可用:")
 		for _, server := range allServers {
@@ -99,6 +106,11 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 				server.URL, server.Status, server.ErrorCount, server.LastCheckTime)
 		}
 		return nil
+	}
+
+	logger.Info("健康服务器列表:")
+	for _, server := range healthyServers {
+		logger.Info("  - %s: 权重=%d, EWMA=%.0fms", server.URL, server.CombinedWeight, server.LastEWMA)
 	}
 
 	// 计算总权重（使用综合权重）

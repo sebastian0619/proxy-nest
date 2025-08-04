@@ -213,7 +213,7 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 	var err error
 	var healthCheckURL string
 	var method string
-	
+
 	if hm.config.UpstreamType == "tmdb-api" {
 		healthCheckURL = fmt.Sprintf("%s/3/configuration?api_key=%s", server.URL, hm.config.TMDBAPIKey)
 		method = "GET"
@@ -333,13 +333,13 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 
 	} else {
 		server.ErrorCount++
-		logger.Warn("服务器 %s 健康检查失败，错误次数: %d/%d", 
+		logger.Warn("服务器 %s 健康检查失败，错误次数: %d/%d",
 			server.URL, server.ErrorCount, hm.config.MaxErrorsBeforeUnhealthy)
-		
+
 		if server.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
 			server.Status = HealthStatusUnhealthy
 			server.RecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
-			logger.Error("服务器 %s 标记为不健康 (错误次数达到阈值: %d)", 
+			logger.Error("服务器 %s 标记为不健康 (错误次数达到阈值: %d)",
 				server.URL, hm.config.MaxErrorsBeforeUnhealthy)
 		}
 	}
