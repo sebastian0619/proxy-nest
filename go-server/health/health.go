@@ -125,7 +125,12 @@ func (hm *HealthManager) initializeServers() {
 // StartHealthCheck 启动健康检查
 func (hm *HealthManager) StartHealthCheck() {
 	go hm.healthCheckLoop()
-	logger.Info("健康检查已启动")
+	logger.Info("健康检查已启动，将检查以下上游服务器:")
+	hm.mutex.RLock()
+	for url := range hm.servers {
+		logger.Info("  - %s", url)
+	}
+	hm.mutex.RUnlock()
 }
 
 // StopHealthCheck 停止健康检查
@@ -170,10 +175,13 @@ func (hm *HealthManager) performHealthCheck() {
 
 			// 检查是否需要进行恢复检查
 			if s.Status == HealthStatusUnhealthy && time.Now().Before(s.RecoveryTime) {
+				logger.Info("跳过服务器 %s 的检查，仍在恢复期 (恢复时间: %v)", s.URL, s.RecoveryTime)
 				return
 			}
 
+			logger.Info("开始检查服务器: %s", s.URL)
 			checkResult := hm.checkServerHealth(s)
+			logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
 			hm.updateServerState(s, checkResult)
 		}(server)
 	}
@@ -203,20 +211,35 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 	startTime := time.Now()
 
 	var err error
+	var healthCheckURL string
+	var method string
+	
 	if hm.config.UpstreamType == "tmdb-api" {
-		url := fmt.Sprintf("%s/3/configuration?api_key=%s", server.URL, hm.config.TMDBAPIKey)
-		_, err = hm.makeRequest("GET", url, nil)
+		healthCheckURL = fmt.Sprintf("%s/3/configuration?api_key=%s", server.URL, hm.config.TMDBAPIKey)
+		method = "GET"
+		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
+		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "tmdb-image" {
 		testURL := hm.config.TMDBImageTestURL
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		url := fmt.Sprintf("%s%s", server.URL, testURL)
-		_, err = hm.makeRequest("HEAD", url, nil)
+		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
+		method = "HEAD"
+		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
+		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "custom" {
 		// 自定义类型：对根路径进行简单的HEAD请求检查
-		url := fmt.Sprintf("%s/", server.URL)
-		_, err = hm.makeRequest("HEAD", url, nil)
+		healthCheckURL = fmt.Sprintf("%s/", server.URL)
+		method = "HEAD"
+		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
+		_, err = hm.makeRequest(method, healthCheckURL, nil)
+	} else {
+		logger.Error("未知的上游类型: %s", hm.config.UpstreamType)
+		return &CheckResult{
+			Success: false,
+			Error:   fmt.Sprintf("未知的上游类型: %s", hm.config.UpstreamType),
+		}
 	}
 
 	responseTime := time.Since(startTime).Milliseconds()
@@ -310,10 +333,14 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 
 	} else {
 		server.ErrorCount++
+		logger.Warn("服务器 %s 健康检查失败，错误次数: %d/%d", 
+			server.URL, server.ErrorCount, hm.config.MaxErrorsBeforeUnhealthy)
+		
 		if server.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
 			server.Status = HealthStatusUnhealthy
 			server.RecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
-			logger.Error("服务器 %s 标记为不健康", server.URL)
+			logger.Error("服务器 %s 标记为不健康 (错误次数达到阈值: %d)", 
+				server.URL, hm.config.MaxErrorsBeforeUnhealthy)
 		}
 	}
 
