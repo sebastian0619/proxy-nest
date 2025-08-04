@@ -12,10 +12,11 @@ services:
       - NUM_WORKERS=4                # 工作线程数，建议设置为CPU核心数-1
       - TZ=Asia/Shanghai            # 时区
       
-      # TMDB配置
-      - UPSTREAM_TYPE=tmdb-api       # 上游服务器类型：tmdb-api 或 tmdb-image
+      # 上游配置
+      - UPSTREAM_TYPE=tmdb-api       # 上游服务器类型：tmdb-api, tmdb-image, 或 custom
       - TMDB_API_KEY=your_api_key    # 替换为你的TMDB API密钥
       - TMDB_IMAGE_TEST_URL=/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
+      - CUSTOM_CONTENT_TYPE=application/json  # 自定义上游的默认Content-Type
       
       # 上游服务器列表
       - UPSTREAM_SERVERS=https://api.themoviedb.org,https://api.tmdb.org

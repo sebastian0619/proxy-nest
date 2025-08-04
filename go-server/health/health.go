@@ -26,28 +26,28 @@ const (
 
 // Server 服务器信息
 type Server struct {
-	URL              string      `json:"url"`
+	URL              string       `json:"url"`
 	Status           HealthStatus `json:"status"`
-	ErrorCount       int         `json:"errorCount"`
-	RecoveryTime     time.Time   `json:"recoveryTime"`
-	LastCheckTime    time.Time   `json:"lastCheckTime"`
-	ResponseTimes    []int64     `json:"responseTimes"`
-	LastResponseTime int64       `json:"lastResponseTime"`
-	BaseWeight       int         `json:"baseWeight"`
-	DynamicWeight    int         `json:"dynamicWeight"`
-	CombinedWeight   int         `json:"combinedWeight"`
-	LastEWMA         float64     `json:"lastEWMA"`
+	ErrorCount       int          `json:"errorCount"`
+	RecoveryTime     time.Time    `json:"recoveryTime"`
+	LastCheckTime    time.Time    `json:"lastCheckTime"`
+	ResponseTimes    []int64      `json:"responseTimes"`
+	LastResponseTime int64        `json:"lastResponseTime"`
+	BaseWeight       int          `json:"baseWeight"`
+	DynamicWeight    int          `json:"dynamicWeight"`
+	CombinedWeight   int          `json:"combinedWeight"`
+	LastEWMA         float64      `json:"lastEWMA"`
 }
 
 // HealthData 健康数据
 type HealthData struct {
-	URL              string      `json:"url"`
-	Status           HealthStatus `json:"status"`
-	ErrorCount       int         `json:"errorCount"`
-	LastError        *ErrorInfo  `json:"lastError,omitempty"`
-	LastCheckTime    time.Time   `json:"lastCheckTime"`
-	LastUpdate       time.Time   `json:"lastUpdate"`
-	UnhealthySince   *time.Time  `json:"unhealthySince,omitempty"`
+	URL            string       `json:"url"`
+	Status         HealthStatus `json:"status"`
+	ErrorCount     int          `json:"errorCount"`
+	LastError      *ErrorInfo   `json:"lastError,omitempty"`
+	LastCheckTime  time.Time    `json:"lastCheckTime"`
+	LastUpdate     time.Time    `json:"lastUpdate"`
+	UnhealthySince *time.Time   `json:"unhealthySince,omitempty"`
 }
 
 // ErrorInfo 错误信息
@@ -59,18 +59,18 @@ type ErrorInfo struct {
 
 // HealthManager 健康管理器
 type HealthManager struct {
-	servers     map[string]*Server
-	healthData  map[string]*HealthData
-	config      *config.Config
-	mutex       sync.RWMutex
-	healthFile  string
-	stopChan    chan struct{}
+	servers    map[string]*Server
+	healthData map[string]*HealthData
+	config     *config.Config
+	mutex      sync.RWMutex
+	healthFile string
+	stopChan   chan struct{}
 }
 
 // NewHealthManager 创建健康管理器
 func NewHealthManager(cfg *config.Config) *HealthManager {
 	healthFile := filepath.Join(cfg.Cache.CacheDir, "health_data.json")
-	
+
 	hm := &HealthManager{
 		servers:    make(map[string]*Server),
 		healthData: make(map[string]*HealthData),
@@ -78,13 +78,13 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 		healthFile: healthFile,
 		stopChan:   make(chan struct{}),
 	}
-	
+
 	// 初始化服务器
 	hm.initializeServers()
-	
+
 	// 加载健康数据
 	hm.loadHealthData()
-	
+
 	return hm
 }
 
@@ -95,20 +95,20 @@ func (hm *HealthManager) initializeServers() {
 		logger.Error("未配置上游服务器")
 		return
 	}
-	
+
 	servers := strings.Split(upstreamServers, ",")
 	for _, serverURL := range servers {
 		serverURL = strings.TrimSpace(serverURL)
 		if serverURL == "" {
 			continue
 		}
-		
+
 		hm.servers[serverURL] = &Server{
 			URL:              serverURL,
-			Status:           HealthStatusHealthy,
+			Status:           HealthStatusHealthy, // 初始状态假设健康，等待第一次检查确认
 			ErrorCount:       0,
 			RecoveryTime:     time.Time{},
-			LastCheckTime:    time.Now(),
+			LastCheckTime:    time.Time{}, // 初始时间为零值，表示尚未检查
 			ResponseTimes:    make([]int64, 0),
 			LastResponseTime: 0,
 			BaseWeight:       1,
@@ -116,8 +116,9 @@ func (hm *HealthManager) initializeServers() {
 			CombinedWeight:   1,
 			LastEWMA:         0,
 		}
+		logger.Info("初始化服务器: %s (等待健康检查确认状态)", serverURL)
 	}
-	
+
 	logger.Info("已初始化 %d 个上游服务器", len(hm.servers))
 }
 
@@ -136,10 +137,10 @@ func (hm *HealthManager) StopHealthCheck() {
 func (hm *HealthManager) healthCheckLoop() {
 	ticker := time.NewTicker(30 * time.Second) // 每30秒检查一次
 	defer ticker.Stop()
-	
+
 	// 立即执行第一次检查
 	hm.performHealthCheck()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -153,7 +154,7 @@ func (hm *HealthManager) healthCheckLoop() {
 // performHealthCheck 执行健康检查
 func (hm *HealthManager) performHealthCheck() {
 	logger.Info("开始执行健康检查...")
-	
+
 	var wg sync.WaitGroup
 	hm.mutex.RLock()
 	servers := make([]*Server, 0, len(hm.servers))
@@ -161,30 +162,46 @@ func (hm *HealthManager) performHealthCheck() {
 		servers = append(servers, server)
 	}
 	hm.mutex.RUnlock()
-	
+
 	for _, server := range servers {
 		wg.Add(1)
 		go func(s *Server) {
 			defer wg.Done()
-			
+
 			// 检查是否需要进行恢复检查
 			if s.Status == HealthStatusUnhealthy && time.Now().Before(s.RecoveryTime) {
 				return
 			}
-			
+
 			checkResult := hm.checkServerHealth(s)
 			hm.updateServerState(s, checkResult)
 		}(server)
 	}
-	
+
 	wg.Wait()
-	logger.Info("健康检查完成")
+
+	// 输出所有服务器状态
+	logger.Info("健康检查完成，服务器状态:")
+	hm.mutex.RLock()
+	healthyCount := 0
+	for _, server := range hm.servers {
+		if server.Status == HealthStatusHealthy {
+			healthyCount++
+			logger.Success("  ✓ %s: 健康 (基础权重=%d, 动态权重=%d, 综合权重=%d, EWMA=%.0fms)",
+				server.URL, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.LastEWMA)
+		} else {
+			logger.Error("  ✗ %s: 不健康 (错误次数=%d, 恢复时间=%v)",
+				server.URL, server.ErrorCount, server.RecoveryTime)
+		}
+	}
+	hm.mutex.RUnlock()
+	logger.Info("健康检查统计: %d/%d 服务器健康", healthyCount, len(hm.servers))
 }
 
 // checkServerHealth 检查单个服务器健康状态
 func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 	startTime := time.Now()
-	
+
 	var err error
 	if hm.config.UpstreamType == "tmdb-api" {
 		url := fmt.Sprintf("%s/3/configuration?api_key=%s", server.URL, hm.config.TMDBAPIKey)
@@ -196,10 +213,14 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		}
 		url := fmt.Sprintf("%s%s", server.URL, testURL)
 		_, err = hm.makeRequest("HEAD", url, nil)
+	} else if hm.config.UpstreamType == "custom" {
+		// 自定义类型：对根路径进行简单的HEAD请求检查
+		url := fmt.Sprintf("%s/", server.URL)
+		_, err = hm.makeRequest("HEAD", url, nil)
 	}
-	
+
 	responseTime := time.Since(startTime).Milliseconds()
-	
+
 	if err != nil {
 		logger.Error("健康检查失败 - %s: %v", server.URL, err)
 		return &CheckResult{
@@ -207,7 +228,7 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			Error:   err.Error(),
 		}
 	}
-	
+
 	return &CheckResult{
 		Success:      true,
 		ResponseTime: responseTime,
@@ -225,12 +246,12 @@ type CheckResult struct {
 func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hm.config.RequestTimeout)
 	defer cancel()
-	
+
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	client := &http.Client{}
 	return client.Do(req)
 }
@@ -239,36 +260,54 @@ func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.
 func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckResult) {
 	hm.mutex.Lock()
 	defer hm.mutex.Unlock()
-	
+
 	if checkResult.Success {
 		if server.Status == HealthStatusUnhealthy {
 			logger.Success("服务器 %s 已恢复健康状态", server.URL)
 		}
-		
+
 		server.Status = HealthStatusHealthy
 		server.ErrorCount = 0
 		server.RecoveryTime = time.Time{}
 		server.LastResponseTime = checkResult.ResponseTime
-		
-		// 更新响应时间历史
+
+		// 更新响应时间历史（保留最近3次，用于计算平均值）
 		server.ResponseTimes = append(server.ResponseTimes, checkResult.ResponseTime)
-		if len(server.ResponseTimes) > 10 {
+		if len(server.ResponseTimes) > 3 {
 			server.ResponseTimes = server.ResponseTimes[1:]
 		}
-		
-		// 计算平均响应时间
-		var total int64
-		for _, rt := range server.ResponseTimes {
-			total += rt
+
+		// 计算最近3次响应时间的平均值
+		var avgResponseTime float64
+		if len(server.ResponseTimes) == 3 {
+			var total int64
+			for _, rt := range server.ResponseTimes {
+				total += rt
+			}
+			avgResponseTime = float64(total) / 3.0
+		} else {
+			avgResponseTime = float64(checkResult.ResponseTime)
 		}
-		avgResponseTime := float64(total) / float64(len(server.ResponseTimes))
-		
-		// 更新权重
-		server.LastEWMA = avgResponseTime
-		server.BaseWeight = hm.calculateBaseWeight(avgResponseTime)
+
+		// 使用EWMA算法更新LastEWMA
+		if server.LastEWMA == 0 {
+			// 首次初始化
+			server.LastEWMA = avgResponseTime
+		} else {
+			// EWMA计算：beta * newValue + (1 - beta) * oldValue
+			const beta = 0.2 // EWMA衰减因子，与JS版本保持一致
+			server.LastEWMA = beta*avgResponseTime + (1-beta)*server.LastEWMA
+		}
+
+		// 使用EWMA值计算基础权重，使用当前响应时间计算动态权重
+		server.BaseWeight = hm.calculateBaseWeight(server.LastEWMA)
 		server.DynamicWeight = hm.calculateDynamicWeight(avgResponseTime)
 		server.CombinedWeight = hm.calculateCombinedWeight(server)
-		
+
+		logger.Success("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 动态权重=%d, 综合权重=%d",
+			server.URL, checkResult.ResponseTime, avgResponseTime, server.LastEWMA,
+			server.BaseWeight, server.DynamicWeight, server.CombinedWeight)
+
 	} else {
 		server.ErrorCount++
 		if server.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
@@ -277,33 +316,79 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 			logger.Error("服务器 %s 标记为不健康", server.URL)
 		}
 	}
-	
+
 	server.LastCheckTime = time.Now()
-	
+
 	// 更新健康数据
 	hm.updateHealthData(server)
 }
 
-// calculateBaseWeight 计算基础权重
+// calculateBaseWeight 计算基础权重（与JS版本保持一致）
 func (hm *HealthManager) calculateBaseWeight(responseTime float64) int {
+	if responseTime <= 0 {
+		return 1
+	}
+
 	multiplier := float64(hm.config.BaseWeightMultiplier)
-	return int(multiplier / (responseTime + 1))
+	// 基础权重计算：响应时间越短，权重越大
+	weight := int(multiplier * (1000 / max(responseTime, 1)))
+
+	// 确保权重在合理范围内 (1-100)
+	if weight < 1 {
+		weight = 1
+	}
+	if weight > 100 {
+		weight = 100
+	}
+	return weight
 }
 
-// calculateDynamicWeight 计算动态权重
-func (hm *HealthManager) calculateDynamicWeight(responseTime float64) int {
+// calculateDynamicWeight 计算动态权重（与JS版本保持一致）
+func (hm *HealthManager) calculateDynamicWeight(avgResponseTime float64) int {
+	if avgResponseTime <= 0 {
+		return 1
+	}
+
 	multiplier := float64(hm.config.DynamicWeightMultiplier)
-	return int(multiplier / (responseTime + 1))
+	// 动态权重计算：响应时间越短，权重越大
+	weight := int(multiplier * (1000 / max(avgResponseTime, 1)))
+
+	// 确保权重在合理范围内 (1-100)
+	if weight < 1 {
+		weight = 1
+	}
+	if weight > 100 {
+		weight = 100
+	}
+	return weight
 }
 
-// calculateCombinedWeight 计算综合权重
+// calculateCombinedWeight 计算综合权重（与JS版本保持一致）
 func (hm *HealthManager) calculateCombinedWeight(server *Server) int {
-	alpha := hm.config.AlphaInitial
-	combined := int(float64(server.BaseWeight)*(1-alpha) + float64(server.DynamicWeight)*alpha)
+	if server.BaseWeight == 0 || server.DynamicWeight == 0 {
+		return 1
+	}
+
+	// 使用加权平均计算综合权重，alpha为基础权重的比重
+	const alpha = 0.7 // 与JS版本保持一致
+	combined := int(alpha*float64(server.BaseWeight) + (1-alpha)*float64(server.DynamicWeight))
+
+	// 确保权重在合理范围内 (1-100)
 	if combined < 1 {
 		combined = 1
 	}
+	if combined > 100 {
+		combined = 100
+	}
 	return combined
+}
+
+// max 辅助函数
+func max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // updateHealthData 更新健康数据
@@ -315,14 +400,14 @@ func (hm *HealthManager) updateHealthData(server *Server) {
 		LastCheckTime: server.LastCheckTime,
 		LastUpdate:    time.Now(),
 	}
-	
+
 	if server.Status == HealthStatusUnhealthy {
 		now := time.Now()
 		healthData.UnhealthySince = &now
 	}
-	
+
 	hm.healthData[server.URL] = healthData
-	
+
 	// 保存健康数据
 	hm.saveHealthData()
 }
@@ -331,18 +416,18 @@ func (hm *HealthManager) updateHealthData(server *Server) {
 func (hm *HealthManager) ReportUnhealthyServer(url, workerID, errorInfo string) error {
 	hm.mutex.Lock()
 	defer hm.mutex.Unlock()
-	
+
 	healthData := hm.healthData[url]
 	if healthData == nil {
 		healthData = &HealthData{
-			URL:        url,
-			Status:     HealthStatusHealthy,
-			ErrorCount: 0,
+			URL:           url,
+			Status:        HealthStatusHealthy,
+			ErrorCount:    0,
 			LastCheckTime: time.Now(),
 			LastUpdate:    time.Now(),
 		}
 	}
-	
+
 	healthData.ErrorCount++
 	healthData.LastError = &ErrorInfo{
 		WorkerID:  workerID,
@@ -350,21 +435,21 @@ func (hm *HealthManager) ReportUnhealthyServer(url, workerID, errorInfo string) 
 		Timestamp: time.Now(),
 	}
 	healthData.LastUpdate = time.Now()
-	
+
 	// 如果错误次数超过阈值，标记为不健康
 	if healthData.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
 		healthData.Status = HealthStatusUnhealthy
 		now := time.Now()
 		healthData.UnhealthySince = &now
 	}
-	
+
 	hm.healthData[url] = healthData
-	
+
 	// 保存健康数据
 	hm.saveHealthData()
-	
+
 	logger.Info("Worker %s 报告服务器 %s 不健康 (错误次数: %d)", workerID, url, healthData.ErrorCount)
-	
+
 	return nil
 }
 
@@ -372,14 +457,14 @@ func (hm *HealthManager) ReportUnhealthyServer(url, workerID, errorInfo string) 
 func (hm *HealthManager) GetHealthyServers() []*Server {
 	hm.mutex.RLock()
 	defer hm.mutex.RUnlock()
-	
+
 	var healthyServers []*Server
 	for _, server := range hm.servers {
 		if server.Status == HealthStatusHealthy {
 			healthyServers = append(healthyServers, server)
 		}
 	}
-	
+
 	return healthyServers
 }
 
@@ -387,12 +472,12 @@ func (hm *HealthManager) GetHealthyServers() []*Server {
 func (hm *HealthManager) GetAllServers() []*Server {
 	hm.mutex.RLock()
 	defer hm.mutex.RUnlock()
-	
+
 	servers := make([]*Server, 0, len(hm.servers))
 	for _, server := range hm.servers {
 		servers = append(servers, server)
 	}
-	
+
 	return servers
 }
 
@@ -405,16 +490,16 @@ func (hm *HealthManager) loadHealthData() error {
 		}
 		return err
 	}
-	
+
 	var healthData map[string]*HealthData
 	if err := json.Unmarshal(data, &healthData); err != nil {
 		return err
 	}
-	
+
 	hm.mutex.Lock()
 	hm.healthData = healthData
 	hm.mutex.Unlock()
-	
+
 	logger.Info("已加载 %d 个服务器的健康数据", len(healthData))
 	return nil
 }
@@ -427,11 +512,11 @@ func (hm *HealthManager) saveHealthData() error {
 		data[k] = v
 	}
 	hm.mutex.RUnlock()
-	
+
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(hm.healthFile, jsonData, 0644)
-} 
+}

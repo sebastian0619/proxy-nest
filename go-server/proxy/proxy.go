@@ -52,12 +52,13 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 	// 选择上游服务器
 	server := pm.selectUpstreamServer()
 	if server == nil {
+		logger.Error("没有可用的上游服务器")
 		return nil, fmt.Errorf("没有可用的上游服务器")
 	}
 
 	// 构建请求URL
 	requestURL := fmt.Sprintf("%s%s", server.URL, path)
-	// 不输出每个请求的详细信息，避免日志过于冗余
+	logger.Info("发送上游请求: %s", requestURL)
 
 	// 发送请求
 	startTime := time.Now()
@@ -67,8 +68,11 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 	if err != nil {
 		// 报告服务器不健康
 		pm.healthManager.ReportUnhealthyServer(server.URL, "main", err.Error())
+		logger.Error("上游请求失败: %s -> %v", requestURL, err)
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
+
+	logger.Success("上游请求成功: %s (响应时间: %dms)", requestURL, responseTime)
 
 	// 更新响应时间
 	pm.updateServerResponseTime(server, responseTime)
@@ -80,14 +84,23 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 // selectUpstreamServer 选择上游服务器
 func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	healthyServers := pm.healthManager.GetHealthyServers()
+	allServers := pm.healthManager.GetAllServers()
+
+	logger.Info("服务器状态检查: 总共%d个服务器, 健康%d个", len(allServers), len(healthyServers))
+
 	if len(healthyServers) == 0 {
+		logger.Error("没有健康的上游服务器可用:")
+		for _, server := range allServers {
+			logger.Error("  - %s: 状态=%s, 错误次数=%d, 最后检查=%v",
+				server.URL, server.Status, server.ErrorCount, server.LastCheckTime)
+		}
 		return nil
 	}
 
-	// 计算总权重
+	// 计算总权重（使用综合权重）
 	var totalWeight int
 	for _, server := range healthyServers {
-		totalWeight += server.DynamicWeight
+		totalWeight += server.CombinedWeight
 	}
 
 	// 按权重概率选择
@@ -95,20 +108,20 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	weightSum := 0
 
 	for _, server := range healthyServers {
-		weightSum += server.DynamicWeight
+		weightSum += server.CombinedWeight
 		if float64(weightSum) > random*float64(totalWeight) {
-			logger.Success("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% 最近响应=%dms]",
-				server.URL, server.Status, server.BaseWeight, server.DynamicWeight, server.DynamicWeight, server.DynamicWeight,
-				float64(server.DynamicWeight)/float64(totalWeight)*100, server.LastResponseTime)
+			logger.Success("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% EWMA=%.0fms]",
+				server.URL, server.Status, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.CombinedWeight,
+				float64(server.CombinedWeight)/float64(totalWeight)*100, server.LastEWMA)
 			return server
 		}
 	}
 
 	// 保底返回第一个服务器
 	server := healthyServers[0]
-	logger.Warn("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% 最近响应=%dms]",
-		server.URL, server.Status, server.BaseWeight, server.DynamicWeight, server.DynamicWeight, server.DynamicWeight,
-		float64(server.DynamicWeight)/float64(totalWeight)*100, server.LastResponseTime)
+	logger.Warn("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% EWMA=%.0fms]",
+		server.URL, server.Status, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.CombinedWeight,
+		float64(server.CombinedWeight)/float64(totalWeight)*100, server.LastEWMA)
 	return server
 }
 
@@ -172,6 +185,10 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 
 	case "custom":
 		// 自定义类型根据Content-Type判断
+		if pm.config.CustomContentType != "" {
+			contentType = pm.config.CustomContentType
+		}
+
 		if strings.Contains(contentType, "json") {
 			var jsonData interface{}
 			if err := json.Unmarshal(body, &jsonData); err != nil {
@@ -250,6 +267,39 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 			logger.Error("图片数据格式错误: %T", data)
 			return false
 		}
+
+	case "custom":
+		// 自定义类型验证：更灵活的验证规则
+		if strings.Contains(mimeCategory, "application/json") {
+			switch v := data.(type) {
+			case map[string]interface{}, []interface{}:
+				return true
+			case string:
+				var jsonData interface{}
+				return json.Unmarshal([]byte(v), &jsonData) == nil
+			default:
+				logger.Error("自定义类型JSON解析失败: %T", data)
+				return false
+			}
+		} else if strings.HasPrefix(mimeCategory, "image/") {
+			switch data.(type) {
+			case []byte, string:
+				return true
+			default:
+				logger.Error("自定义类型图片数据格式错误: %T", data)
+				return false
+			}
+		} else if strings.HasPrefix(mimeCategory, "text/") {
+			switch data.(type) {
+			case string, []byte:
+				return true
+			default:
+				logger.Error("自定义类型文本数据格式错误: %T", data)
+				return false
+			}
+		}
+		// 其他类型确保数据非空
+		return data != nil
 
 	default:
 		// 默认验证

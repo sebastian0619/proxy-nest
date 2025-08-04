@@ -141,10 +141,15 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	}
 
 	// 处理新请求
+	logger.Info("处理新请求: %s", fullURL)
 	response, err := proxyManager.HandleRequest(path, c.Request.Header)
 	if err != nil {
-		logger.Error("请求处理失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logger.Error("请求处理失败: %s -> %v", fullURL, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":     err.Error(),
+			"url":       fullURL,
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
 		return
 	}
 
@@ -154,8 +159,10 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	// 发送响应
 	if response.IsImage {
 		c.Data(http.StatusOK, response.ContentType, response.Data.([]byte))
+		logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(response.Data.([]byte)), response.ResponseTime)
 	} else {
 		c.JSON(http.StatusOK, response.Data)
+		logger.Success("响应已发送: %s (JSON, %dms)", fullURL, response.ResponseTime)
 	}
 
 	// 保存缓存
