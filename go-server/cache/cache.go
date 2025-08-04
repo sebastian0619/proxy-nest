@@ -1,11 +1,9 @@
 package cache
 
 import (
-	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
