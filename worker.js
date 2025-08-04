@@ -375,8 +375,9 @@ async function handleRequest(url, headers = {}) {
   }
 
   // 如果没有缓存或缓存验证失败，发起请求
+  let selectedServer = null;
   try {
-    const selectedServer = selectUpstreamServer();
+    selectedServer = selectUpstreamServer();
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE
@@ -425,12 +426,13 @@ async function handleRequest(url, headers = {}) {
     
     return finalResult;
     
-      } catch (error) {
-      console.error(global.LOG_PREFIX.ERROR, 
-        `请求失败: ${error.message}`
-      );
-      
-      // 报告服务器不健康
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, 
+      `请求失败: ${error.message}`
+    );
+    
+    // 只有在成功选择了服务器的情况下才报告服务器不健康
+    if (selectedServer) {
       parentPort.postMessage({
         type: 'unhealthy_server_report',
         data: {
@@ -443,7 +445,8 @@ async function handleRequest(url, headers = {}) {
           }
         }
       });
-      
-      throw error;
     }
+    
+    throw error;
+  }
 }

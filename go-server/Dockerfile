@@ -11,13 +11,13 @@ RUN apk add --no-cache git ca-certificates tzdata
 COPY go.mod ./
 
 # 下载依赖并生成go.sum
-RUN go mod download && go mod tidy
+RUN go mod download && go mod tidy && go mod verify
 
 # 复制源代码
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o proxy-nest-go ./main.go
 
 # 运行阶段
 FROM alpine:latest
