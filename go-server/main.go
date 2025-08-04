@@ -137,7 +137,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			}
 		}
 
-		logger.CacheMiss("缓存未命中: %s", cacheKey)
+		logger.CacheMiss("缓存未命中: %s (key: %s)", fullURL, cacheKey)
 	}
 
 	// 处理新请求
