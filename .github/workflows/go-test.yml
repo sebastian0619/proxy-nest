@@ -1,0 +1,34 @@
+name: Test Go Build
+
+on:
+  push:
+    branches: [ JS ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+        
+    - name: Install dependencies
+      run: |
+        cd go-server
+        go mod download
+        
+    - name: Build binary
+      run: |
+        cd go-server
+        go build -o proxy-nest-go .
+        
+    - name: Test build
+      run: |
+        cd go-server
+        ./proxy-nest-go --help || echo "Binary built successfully" 

@@ -7,8 +7,8 @@ WORKDIR /app
 # 安装必要的包
 RUN apk add --no-cache git ca-certificates tzdata
 
-# 复制go mod文件
-COPY go.mod go.sum ./
+    # 复制go mod文件
+    COPY go.mod go.sum ./
 
 # 下载依赖
 RUN go mod download
