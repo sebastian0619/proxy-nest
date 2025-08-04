@@ -105,6 +105,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	}
 
 	// 获取完整的请求URL（包括查询参数）
+	// 与JS版本保持一致，处理所有请求包括"/"
 	fullURL := c.Request.URL.Path
 	if c.Request.URL.RawQuery != "" {
 		fullURL += "?" + c.Request.URL.RawQuery
@@ -142,7 +143,11 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 处理新请求
 	logger.Info("处理新请求: %s", fullURL)
+	logger.Info("调用proxyManager.HandleRequest，路径: %s", path)
+
 	response, err := proxyManager.HandleRequest(path, c.Request.Header)
+
+	logger.Info("proxyManager.HandleRequest返回，错误: %v", err)
 	if err != nil {
 		logger.Error("请求处理失败: %s -> %v", fullURL, err)
 		c.JSON(http.StatusInternalServerError, gin.H{

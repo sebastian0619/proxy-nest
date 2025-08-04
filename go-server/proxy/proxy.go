@@ -49,8 +49,12 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 
 // HandleRequest 处理请求
 func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyResponse, error) {
+	logger.Info("进入HandleRequest，路径: %s", path)
+
 	// 选择上游服务器
+	logger.Info("开始选择上游服务器...")
 	server := pm.selectUpstreamServer()
+	logger.Info("选择上游服务器完成，结果: %v", server != nil)
 	if server == nil {
 		logger.Error("没有可用的上游服务器")
 		return nil, fmt.Errorf("没有可用的上游服务器")
