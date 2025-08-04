@@ -34,6 +34,9 @@ const {
 // 全局变量
 const workers = new Map();
 let healthCheckerWorker;
+let diskCache; // 主程序独占的磁盘缓存实例
+let lruCache;  // 主程序独占的内存缓存实例
+let healthDataManager; // 健康数据管理器
 
 // 设置工作线程事件处理器
 function setupWorkerEventHandlers(worker, workerId) {
@@ -41,6 +44,12 @@ function setupWorkerEventHandlers(worker, workerId) {
     if (message.type === 'response_time') {
       // 转发响应时间给health_checker
       healthCheckerWorker.postMessage(message);
+    } else if (message.type === 'cache_delete_request') {
+      // 处理worker的缓存删除请求
+      handleCacheDeleteRequest(message.data, workerId);
+    } else if (message.type === 'unhealthy_server_report') {
+      // 处理worker报告的不健康服务器
+      handleUnhealthyServerReport(message.data, workerId);
     }
   });
 
@@ -56,10 +65,84 @@ function setupWorkerEventHandlers(worker, workerId) {
   });
 }
 
+// 处理缓存删除请求
+async function handleCacheDeleteRequest(cacheKey, workerId) {
+  try {
+    console.log(global.LOG_PREFIX.INFO, `收到缓存删除请求: ${cacheKey} (来自worker ${workerId})`);
+    
+    // 主程序执行删除操作
+    if (lruCache) {
+      lruCache.delete(cacheKey);
+      console.log(global.LOG_PREFIX.INFO, `已删除内存缓存: ${cacheKey}`);
+    }
+    
+    if (diskCache) {
+      await diskCache.delete(cacheKey);
+      console.log(global.LOG_PREFIX.INFO, `已删除磁盘缓存: ${cacheKey}`);
+    }
+    
+    // 通知所有worker缓存已删除
+    for (const [id, worker] of workers.entries()) {
+      worker.postMessage({
+        type: 'cache_deleted',
+        data: { cacheKey, deletedBy: workerId }
+      });
+    }
+    
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `缓存删除失败: ${error.message}`);
+  }
+}
+
+// 处理不健康服务器报告
+async function handleUnhealthyServerReport(data, workerId) {
+  try {
+    const { serverUrl, errorInfo } = data;
+    console.log(global.LOG_PREFIX.INFO, `收到不健康服务器报告: ${serverUrl} (来自worker ${workerId})`);
+    
+    if (healthDataManager) {
+      const serverData = await healthDataManager.reportUnhealthyServer(serverUrl, workerId, errorInfo);
+      
+      // 如果服务器状态发生变化，通知所有worker更新健康服务器列表
+      if (serverData.status === 'unhealthy') {
+        await broadcastHealthyServers();
+      }
+    }
+    
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `处理不健康服务器报告失败: ${error.message}`);
+  }
+}
+
+// 广播健康服务器列表给所有worker
+async function broadcastHealthyServers() {
+  try {
+    if (!healthDataManager) return;
+    
+    const healthyServers = healthDataManager.getHealthyServers();
+    console.log(global.LOG_PREFIX.INFO, `广播健康服务器列表: ${healthyServers.length} 个服务器`);
+    
+    for (const [id, worker] of workers.entries()) {
+      worker.postMessage({
+        type: 'healthy_servers_update',
+        data: healthyServers
+      });
+    }
+    
+  } catch (error) {
+    console.error(global.LOG_PREFIX.ERROR, `广播健康服务器列表失败: ${error.message}`);
+  }
+}
+
 // 设置健康检查线程的事件处理器
 function setupHealthCheckerEventHandlers() {
   healthCheckerWorker.on('message', (message) => {
     if (message.type === 'health_status_update') {
+      // 更新健康数据管理器
+      if (healthDataManager) {
+        healthDataManager.updateServerHealth(message.data.url, message.data);
+      }
+      
       // 转发状态更新给所有worker
       for (const worker of workers.values()) {
         worker.postMessage({
@@ -126,7 +209,10 @@ async function startServer() {
     app.use(morgan('combined'));
 
     // 初始化缓存
-    const { diskCache, lruCache } = await initializeCache();
+    const cacheInstances = await initializeCache();
+    diskCache = cacheInstances.diskCache;
+    lruCache = cacheInstances.lruCache;
+    healthDataManager = cacheInstances.healthDataManager;
 
     // 初始化健康检查线程
     await initializeHealthChecker();
@@ -143,6 +229,11 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(global.LOG_PREFIX.SUCCESS, `服务器启动在端口 ${PORT}`);
     });
+
+    // 定期广播健康服务器列表
+    setInterval(async () => {
+      await broadcastHealthyServers();
+    }, 60000); // 每分钟广播一次
 
   } catch (error) {
     console.error(global.LOG_PREFIX?.ERROR || '[ 错误 ]', `服务器启动失败: ${error.message}`);

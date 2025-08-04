@@ -288,6 +288,141 @@ class DiskCache {
   }
 }
 
+// 添加健康数据持久化管理类
+class HealthDataManager {
+  constructor(cacheDir) {
+    this.healthDataFile = path.join(cacheDir, 'health_data.json');
+    this.healthData = new Map();
+    this.lock = new Set();
+  }
+
+  async init() {
+    try {
+      await fs.mkdir(path.dirname(this.healthDataFile), { recursive: true });
+      await this.loadHealthData();
+      console.log('健康数据管理器初始化完成');
+    } catch (error) {
+      console.error(`健康数据管理器初始化失败: ${error.message}`);
+    }
+  }
+
+  async loadHealthData() {
+    try {
+      const data = await fs.readFile(this.healthDataFile, 'utf-8');
+      const healthData = JSON.parse(data);
+      
+      // 恢复Map结构
+      this.healthData.clear();
+      for (const [url, serverData] of Object.entries(healthData)) {
+        this.healthData.set(url, serverData);
+      }
+      
+      console.log(`已加载 ${this.healthData.size} 个服务器的健康数据`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error(`加载健康数据失败: ${error.message}`);
+      }
+    }
+  }
+
+  async saveHealthData() {
+    try {
+      // 等待任何现有的写操作完成
+      while (this.lock.has('save')) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      
+      this.lock.add('save');
+      
+      const healthDataObj = Object.fromEntries(this.healthData);
+      await fs.writeFile(this.healthDataFile, JSON.stringify(healthDataObj, null, 2));
+      
+      console.log(`健康数据已保存到: ${this.healthDataFile}`);
+    } catch (error) {
+      console.error(`保存健康数据失败: ${error.message}`);
+    } finally {
+      this.lock.delete('save');
+    }
+  }
+
+  async updateServerHealth(url, healthInfo) {
+    this.healthData.set(url, {
+      ...healthInfo,
+      lastUpdate: Date.now()
+    });
+    
+    await this.saveHealthData();
+  }
+
+  async reportUnhealthyServer(url, workerId, errorInfo) {
+    const serverData = this.healthData.get(url) || {
+      url,
+      status: 'healthy',
+      errorCount: 0,
+      lastCheckTime: Date.now(),
+      lastUpdate: Date.now()
+    };
+
+    serverData.errorCount = (serverData.errorCount || 0) + 1;
+    serverData.lastError = {
+      workerId,
+      error: errorInfo,
+      timestamp: Date.now()
+    };
+    serverData.lastUpdate = Date.now();
+
+    // 如果错误次数超过阈值，标记为不健康
+    if (serverData.errorCount >= 3) {
+      serverData.status = 'unhealthy';
+      serverData.unhealthySince = Date.now();
+    }
+
+    this.healthData.set(url, serverData);
+    await this.saveHealthData();
+    
+    console.log(`Worker ${workerId} 报告服务器 ${url} 不健康 (错误次数: ${serverData.errorCount})`);
+    
+    return serverData;
+  }
+
+  getHealthyServers() {
+    const healthyServers = [];
+    for (const [url, data] of this.healthData.entries()) {
+      if (data.status === 'healthy') {
+        healthyServers.push({
+          url,
+          ...data
+        });
+      }
+    }
+    return healthyServers;
+  }
+
+  getAllServers() {
+    return Array.from(this.healthData.values());
+  }
+
+  async removeServer(url) {
+    this.healthData.delete(url);
+    await this.saveHealthData();
+    console.log(`已移除服务器: ${url}`);
+  }
+
+  async addServer(url, initialData = {}) {
+    this.healthData.set(url, {
+      url,
+      status: 'healthy',
+      errorCount: 0,
+      lastCheckTime: Date.now(),
+      lastUpdate: Date.now(),
+      ...initialData
+    });
+    
+    await this.saveHealthData();
+    console.log(`已添加服务器: ${url}`);
+  }
+}
+
 // 修改 initializeCache 函数
 async function initializeCache() {
   // 如果禁用缓存，返回空缓存对象
@@ -321,7 +456,11 @@ async function initializeCache() {
   
   const lruCache = new LRUCache(config.CACHE_CONFIG);
   
-  return { diskCache, lruCache };
+  // 初始化健康数据管理器
+  const healthDataManager = new HealthDataManager(config.CACHE_CONFIG.CACHE_DIR);
+  await healthDataManager.init();
+  
+  return { diskCache, lruCache, healthDataManager };
 }
 
 // 初始化日志前缀
@@ -558,7 +697,12 @@ function validateResponse(data, contentType, upstreamType) {
       }
       // 验证图片数据
       if (!Buffer.isBuffer(data)) {
-        if (typeof data === 'string' || data instanceof Uint8Array) {
+        // 检查是否是可以转换为Buffer的数据类型
+        if (typeof data === 'string' || 
+            data instanceof Uint8Array || 
+            data instanceof ArrayBuffer ||
+            Array.isArray(data) ||
+            (data && typeof data === 'object' && data.buffer)) {
           try {
             Buffer.from(data);
             return true;
@@ -567,7 +711,7 @@ function validateResponse(data, contentType, upstreamType) {
             return false;
           }
         }
-        console.error(global.LOG_PREFIX.ERROR, '图片数据格式错误');
+        console.error(global.LOG_PREFIX.ERROR, `图片数据格式错误: ${typeof data}, 构造函数: ${data?.constructor?.name}`);
         return false;
       }
       return true;
@@ -605,7 +749,7 @@ function validateResponse(data, contentType, upstreamType) {
 }
 
 // 添加重试请求函数
-async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = {}) {
+async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = {}, workerId = null) {
   let retryCount = 0;
   
   while (retryCount < 3) {
@@ -681,6 +825,12 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = 
       console.error(LOG_PREFIX.ERROR, 
         `请求失败 (${retryCount}/3) - ${server.url}: ${error.message}`
       );
+      
+      // 如果是最后一次重试失败，报告服务器不健康
+      if (retryCount === 3 && workerId !== null) {
+        // 这里不能直接调用parentPort，需要通过返回值来通知调用者
+        console.error(LOG_PREFIX.ERROR, `服务器 ${server.url} 连续失败，建议报告为不健康`);
+      }
       
       if (retryCount === 3) {
         throw error;

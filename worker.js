@@ -80,11 +80,68 @@ async function initializeWorkerWithLogs() {
   }
 }
 
+// 设置主程序消息处理器
+parentPort.on('message', (message) => {
+  if (message.type === 'server_health_update') {
+    // 更新服务器健康状态
+    updateServerHealthStatus(message.data);
+  } else if (message.type === 'cache_deleted') {
+    // 处理缓存删除通知
+    handleCacheDeleted(message.data);
+  } else if (message.type === 'healthy_servers_update') {
+    // 更新健康服务器列表
+    updateHealthyServers(message.data);
+  }
+});
+
 // 立即调用初始化函数
 initializeWorkerWithLogs().catch(error => {
   console.error(global.LOG_PREFIX.ERROR, `工作线程初始化失败: ${error.message}`);
   process.exit(1);
 });
+
+// 处理缓存删除通知
+function handleCacheDeleted(data) {
+  const { cacheKey, deletedBy } = data;
+  console.log(global.LOG_PREFIX.INFO, `收到缓存删除通知: ${cacheKey} (由worker ${deletedBy} 删除)`);
+  
+  // 从本地内存缓存中删除
+  if (global.cache && global.cache.lruCache) {
+    global.cache.lruCache.delete(cacheKey);
+  }
+}
+
+// 更新服务器健康状态
+function updateServerHealthStatus(healthData) {
+  // 更新本地服务器状态
+  for (const serverUrl in healthData) {
+    const server = localUpstreamServers.find(s => s.url === serverUrl);
+    if (server) {
+      server.healthStatus = healthData[serverUrl].healthStatus;
+      server.lastHealthCheck = healthData[serverUrl].lastHealthCheck;
+    }
+  }
+}
+
+// 更新健康服务器列表
+function updateHealthyServers(healthyServers) {
+  console.log(global.LOG_PREFIX.INFO, `收到健康服务器列表更新: ${healthyServers.length} 个服务器`);
+  
+  // 更新本地服务器列表
+  localUpstreamServers = healthyServers.map(server => ({
+    url: server.url,
+    status: server.status || 'healthy',
+    errorCount: server.errorCount || 0,
+    recoveryTime: server.recoveryTime || 0,
+    lastCheckTime: server.lastCheckTime || Date.now(),
+    responseTimes: server.responseTimes || [],
+    lastResponseTime: server.lastResponseTime || 0,
+    baseWeight: server.baseWeight || 1,
+    dynamicWeight: server.dynamicWeight || 1
+  }));
+  
+  console.log(global.LOG_PREFIX.INFO, `本地服务器列表已更新`);
+}
 
 // 初始化工作线程
 async function initializeWorker() {
@@ -127,7 +184,7 @@ async function initializeWorker() {
 }
 
 // 监听来自主线程的消息
-parentPort.on('message', (message) => {
+parentPort.on('message', async (message) => {
   if (message.type === 'server_health_update') {
     // 更新本地服务器状态
     const server = localUpstreamServers.find(s => s.url === message.data.url);
@@ -139,6 +196,28 @@ parentPort.on('message', (message) => {
       server.lastCheckTime = message.data.lastCheckTime;
       server.errorCount = message.data.errorCount;
       server.recoveryTime = message.data.recoveryTime;
+    }
+  } else if (message.type === 'cache_deleted') {
+    // 处理缓存删除通知
+    handleCacheDeleted(message.data);
+  } else if (message.type === 'request') {
+    try {
+      const result = await handleRequest(message.url, message.headers);
+      
+      // 确保返回正确的消息格式
+      parentPort.postMessage({
+        requestId: message.requestId,
+        response: {
+          data: result.data,
+          contentType: result.contentType,
+          responseTime: result.responseTime
+        }
+      });
+    } catch (error) {
+      parentPort.postMessage({
+        requestId: message.requestId,
+        error: error.message
+      });
     }
   }
 });
@@ -201,29 +280,7 @@ function selectUpstreamServer() {
   return server;
 }
 
-parentPort.on('message', async (message) => {
-  if (message.type === 'request') {
-    try {
-      const result = await handleRequest(message.url, message.headers);
-      
-      // 确保返回正确的消息格式
-      parentPort.postMessage({
-        requestId: message.requestId,
-        response: {
-          data: result.data,
-          contentType: result.contentType,
-          responseTime: result.responseTime
-        }
-      });
-      
-    } catch (error) {
-      parentPort.postMessage({
-        requestId: message.requestId,
-        error: error.message
-      });
-    }
-  }
-});
+
 
 async function handleRequest(url, headers = {}) {
   // 获取缓存启用状态
@@ -251,8 +308,12 @@ async function handleRequest(url, headers = {}) {
           );
           
           if (!isValid) {
-            console.error(global.LOG_PREFIX.ERROR, `磁盘缓存验证失败，删除缓存: ${url}`);
-            await global.cache.diskCache.delete(cacheKey);
+            console.error(global.LOG_PREFIX.ERROR, `磁盘缓存验证失败，请求删除缓存: ${url}`);
+            // 发送删除请求给主程序，而不是直接删除
+            parentPort.postMessage({
+              type: 'cache_delete_request',
+              data: cacheKey
+            });
             cachedResponse = null;
           } else {
             // 找到磁盘缓存，检查是否需要加载到内存
@@ -272,7 +333,11 @@ async function handleRequest(url, headers = {}) {
           }
         } catch (error) {
           console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
-          await global.cache.diskCache.delete(cacheKey);
+          // 发送删除请求给主程序，而不是直接删除
+          parentPort.postMessage({
+            type: 'cache_delete_request',
+            data: cacheKey
+          });
           cachedResponse = null;
         }
       }
@@ -286,8 +351,12 @@ async function handleRequest(url, headers = {}) {
         );
         
         if (!isValid) {
-          console.error(global.LOG_PREFIX.ERROR, `内存缓存验证失败，删除缓存: ${url}`);
-          global.cache.lruCache.delete(cacheKey);
+          console.error(global.LOG_PREFIX.ERROR, `内存缓存验证失败，请求删除缓存: ${url}`);
+          // 发送删除请求给主程序，而不是直接删除
+          parentPort.postMessage({
+            type: 'cache_delete_request',
+            data: cacheKey
+          });
           cachedResponse = null;
         } else {
           console.log(global.LOG_PREFIX.CACHE.HIT, `内存缓存命中: ${url}`);
@@ -295,7 +364,11 @@ async function handleRequest(url, headers = {}) {
         }
       } catch (error) {
         console.error(global.LOG_PREFIX.ERROR, `缓存验证失败: ${error.message}`);
-        global.cache.lruCache.delete(cacheKey);
+        // 发送删除请求给主程序，而不是直接删除
+        parentPort.postMessage({
+          type: 'cache_delete_request',
+          data: cacheKey
+        });
         cachedResponse = null;
       }
     }
@@ -307,7 +380,7 @@ async function handleRequest(url, headers = {}) {
     const result = await tryRequestWithRetries(selectedServer, url, {
       REQUEST_TIMEOUT,
       UPSTREAM_TYPE
-    }, global.LOG_PREFIX, headers);
+    }, global.LOG_PREFIX, headers, workerId);
     
     // 发送响应时间给health_checker
     parentPort.postMessage({
@@ -352,10 +425,25 @@ async function handleRequest(url, headers = {}) {
     
     return finalResult;
     
-  } catch (error) {
-    console.error(global.LOG_PREFIX.ERROR, 
-      `请求失败: ${error.message}`
-    );
-    throw error;
-  }
+      } catch (error) {
+      console.error(global.LOG_PREFIX.ERROR, 
+        `请求失败: ${error.message}`
+      );
+      
+      // 报告服务器不健康
+      parentPort.postMessage({
+        type: 'unhealthy_server_report',
+        data: {
+          serverUrl: selectedServer.url,
+          errorInfo: {
+            message: error.message,
+            code: error.code,
+            status: error.response?.status,
+            timestamp: Date.now()
+          }
+        }
+      });
+      
+      throw error;
+    }
 }
