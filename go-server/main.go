@@ -150,18 +150,28 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	// 检查缓存
 	if cacheManager.GetConfig().CacheEnabled {
 		if cachedItem, err := cacheManager.GetDiskCache().Get(cacheKey); err == nil && cachedItem != nil {
-			// 验证缓存内容
-			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
-				c.Header("Content-Type", cachedItem.ContentType)
-				// 根据内容类型处理数据
-				if strings.HasPrefix(cachedItem.ContentType, "image/") {
-					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
-				} else {
+					// 验证缓存内容
+		if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
+			c.Header("Content-Type", cachedItem.ContentType)
+			// 根据内容类型处理数据
+			if strings.HasPrefix(cachedItem.ContentType, "image/") {
+				c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+			} else if strings.Contains(cachedItem.ContentType, "application/json") {
+				c.JSON(http.StatusOK, cachedItem.Data)
+			} else {
+				// 非JSON响应，根据数据类型处理
+				switch data := cachedItem.Data.(type) {
+				case string:
+					c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
+				case []byte:
+					c.Data(http.StatusOK, cachedItem.ContentType, data)
+				default:
 					c.JSON(http.StatusOK, cachedItem.Data)
 				}
-				logger.CacheHit("磁盘缓存命中: %s", fullURL)
-				return
 			}
+			logger.CacheHit("磁盘缓存命中: %s", fullURL)
+			return
+		}
 		}
 
 		if cachedItem, exists := cacheManager.GetMemoryCache().Get(cacheKey); exists {
@@ -171,8 +181,18 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 				// 根据内容类型处理数据
 				if strings.HasPrefix(cachedItem.ContentType, "image/") {
 					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
-				} else {
+				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
+				} else {
+					// 非JSON响应，根据数据类型处理
+					switch data := cachedItem.Data.(type) {
+					case string:
+						c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
+					case []byte:
+						c.Data(http.StatusOK, cachedItem.ContentType, data)
+					default:
+						c.JSON(http.StatusOK, cachedItem.Data)
+					}
 				}
 				logger.CacheHit("内存缓存命中: %s", fullURL)
 				return
@@ -206,9 +226,21 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	if response.IsImage {
 		c.Data(http.StatusOK, response.ContentType, response.Data.([]byte))
 		logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(response.Data.([]byte)), response.ResponseTime)
-	} else {
+	} else if strings.Contains(response.ContentType, "application/json") {
 		c.JSON(http.StatusOK, response.Data)
 		logger.Success("响应已发送: %s (JSON, %dms)", fullURL, response.ResponseTime)
+	} else {
+		// 非JSON响应，根据数据类型处理
+		switch data := response.Data.(type) {
+		case string:
+			c.Data(http.StatusOK, response.ContentType, []byte(data))
+		case []byte:
+			c.Data(http.StatusOK, response.ContentType, data)
+		default:
+			// 尝试转换为JSON
+			c.JSON(http.StatusOK, response.Data)
+		}
+		logger.Success("响应已发送: %s (非JSON, %dms)", fullURL, response.ResponseTime)
 	}
 
 	// 保存缓存

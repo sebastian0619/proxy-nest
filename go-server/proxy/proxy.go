@@ -204,19 +204,25 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
-		// API响应必须解析为JSON
-		var jsonData interface{}
-		if err := json.Unmarshal(body, &jsonData); err != nil {
-			// 添加调试信息，显示响应的前100个字符
-			responsePreview := string(body)
-			if len(responsePreview) > 100 {
-				responsePreview = responsePreview[:100] + "..."
+		// 检查Content-Type是否为JSON
+		if strings.Contains(contentType, "application/json") {
+			// API响应解析为JSON
+			var jsonData interface{}
+			if err := json.Unmarshal(body, &jsonData); err != nil {
+				// 添加调试信息，显示响应的前100个字符
+				responsePreview := string(body)
+				if len(responsePreview) > 100 {
+					responsePreview = responsePreview[:100] + "..."
+				}
+				logger.Error("JSON解析失败 - Content-Type: %s, 响应预览: %s", contentType, responsePreview)
+				return nil, fmt.Errorf("解析JSON失败: %w", err)
 			}
-			logger.Error("JSON解析失败 - Content-Type: %s, 响应预览: %s", contentType, responsePreview)
-			return nil, fmt.Errorf("解析JSON失败: %w", err)
+			responseData = jsonData
+		} else {
+			// 如果不是JSON类型，直接返回原始数据
+			responseData = string(body)
+			logger.Warn("API响应不是JSON格式 - Content-Type: %s, 长度: %d", contentType, len(body))
 		}
-		responseData = jsonData
-		contentType = "application/json"
 
 	case "tmdb-image":
 		// 图片数据直接返回
@@ -272,22 +278,30 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
-		// API响应验证 - 必须返回JSON
-		if !strings.Contains(mimeCategory, "application/json") {
-			logger.Error("API响应类型错误: %s", contentType)
-			return false
-		}
-
-		// 验证JSON数据
-		switch v := data.(type) {
-		case map[string]interface{}, []interface{}:
-			return true
-		case string:
-			var jsonData interface{}
-			return json.Unmarshal([]byte(v), &jsonData) == nil
-		default:
-			logger.Error("API响应数据格式错误: %T", data)
-			return false
+		// API响应验证 - 支持JSON和非JSON响应
+		if strings.Contains(mimeCategory, "application/json") {
+			// 验证JSON数据
+			switch v := data.(type) {
+			case map[string]interface{}, []interface{}:
+				return true
+			case string:
+				var jsonData interface{}
+				return json.Unmarshal([]byte(v), &jsonData) == nil
+			default:
+				logger.Error("API响应JSON数据格式错误: %T", data)
+				return false
+			}
+		} else {
+			// 非JSON响应验证 - 确保数据非空
+			switch v := data.(type) {
+			case string:
+				return len(v) > 0
+			case []byte:
+				return len(v) > 0
+			default:
+				logger.Error("API响应非JSON数据格式错误: %T", data)
+				return false
+			}
 		}
 
 	case "tmdb-image":
