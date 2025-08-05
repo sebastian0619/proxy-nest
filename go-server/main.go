@@ -206,7 +206,13 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	logger.Info("处理新请求: %s", fullURL)
 	logger.Info("调用proxyManager.HandleRequest，路径: %s", path)
 
-	response, err := proxyManager.HandleRequest(path, c.Request.Header)
+	// 构建完整的请求路径（包括查询参数）
+	requestPath := path
+	if c.Request.URL.RawQuery != "" {
+		requestPath += "?" + c.Request.URL.RawQuery
+	}
+
+	response, err := proxyManager.HandleRequest(requestPath, c.Request.Header)
 
 	logger.Info("proxyManager.HandleRequest返回，错误: %v", err)
 	if err != nil {

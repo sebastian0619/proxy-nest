@@ -1,33 +1,27 @@
-# 多阶段构建 - 优化版本
+# 多阶段构建
 FROM golang:1.21-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
 
-# 安装必要的包（优化：合并RUN命令）
+# 安装必要的包
 RUN apk add --no-cache git ca-certificates tzdata
 
-# 设置Go构建环境变量（优化：提前设置）
-ENV GO111MODULE=on
-ENV CGO_ENABLED=0
-ENV GOOS=linux
-ENV GOARCH=amd64
-
-# 复制go mod文件（优化：分层缓存）
+# 复制go mod文件
 COPY go.mod go.sum ./
 
-# 下载依赖并验证（优化：使用缓存）
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download && go mod verify
+# 下载依赖并验证
+RUN go mod download && go mod verify
 
 # 复制源代码
 COPY . .
 
-# 构建应用（优化：使用缓存和并行构建）
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && \
-    go build -ldflags="-s -w" -o proxy-nest-go .
+# 设置Go模块环境
+ENV GO111MODULE=on
+
+# 构建应用
+RUN go mod tidy && \
+    GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
 
 # 运行阶段
 FROM alpine:latest
