@@ -62,7 +62,7 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 
 	// 构建请求URL
 	requestURL := fmt.Sprintf("%s%s", server.URL, path)
-	logger.Info("发送上游请求: %s", requestURL)
+	logger.Info("发送上游请求: %s (服务器: %s)", requestURL, server.URL)
 
 	// 发送请求
 	startTime := time.Now()
@@ -76,13 +76,20 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 
-	logger.Success("上游请求成功: %s (响应时间: %dms)", requestURL, responseTime)
+	logger.Success("上游请求成功: %s (响应时间: %dms, 状态码: %d)", requestURL, responseTime, response.StatusCode)
 
 	// 更新动态权重（基于实际请求）
 	pm.healthManager.UpdateDynamicWeight(server.URL, responseTime)
 
 	// 处理响应
-	return pm.processResponse(response, responseTime)
+	proxyResponse, err := pm.processResponse(response, responseTime)
+	if err != nil {
+		// 不立即标记为不健康，先记录错误信息
+		logger.Error("响应处理失败: %s -> %v", requestURL, err)
+		return nil, fmt.Errorf("响应处理失败: %w", err)
+	}
+
+	return proxyResponse, nil
 }
 
 // selectUpstreamServer 选择上游服务器
@@ -165,6 +172,17 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 		req.Header.Set("User-Agent", userAgent)
 	}
 
+	// 设置默认请求头（如果没有的话）
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "proxy-nest-go/1.0")
+	}
+
+	// 调试：显示请求头
+	logger.Info("发送请求头 - Accept: %s, User-Agent: %s", req.Header.Get("Accept"), req.Header.Get("User-Agent"))
+
 	return pm.client.Do(req)
 }
 
@@ -189,6 +207,12 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		// API响应必须解析为JSON
 		var jsonData interface{}
 		if err := json.Unmarshal(body, &jsonData); err != nil {
+			// 添加调试信息，显示响应的前100个字符
+			responsePreview := string(body)
+			if len(responsePreview) > 100 {
+				responsePreview = responsePreview[:100] + "..."
+			}
+			logger.Error("JSON解析失败 - Content-Type: %s, 响应预览: %s", contentType, responsePreview)
 			return nil, fmt.Errorf("解析JSON失败: %w", err)
 		}
 		responseData = jsonData
