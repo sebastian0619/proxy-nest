@@ -107,7 +107,7 @@ func LoadConfig() *Config {
 		// 缓存配置
 		Cache: CacheConfig{
 			CacheEnabled:               getEnvAsBool("CACHE_ENABLED", true),
-			CacheDir:                   getEnv("CACHE_DIR", "/app/cache"),
+			CacheDir:                   getEnv("CACHE_DIR", "cache"),
 			CacheIndexFile:             "cache_index.json",
 			DiskCacheTTL:               time.Duration(getEnvAsInt("DISK_CACHE_TTL", 1440)) * time.Minute,
 			MemoryCacheTTL:             time.Duration(getEnvAsInt("MEMORY_CACHE_TTL", 60)) * time.Minute,

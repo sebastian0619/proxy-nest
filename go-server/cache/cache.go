@@ -92,6 +92,11 @@ func (dc *DiskCache) Init() error {
 
 // Get 获取缓存
 func (dc *DiskCache) Get(key string) (*CacheItem, error) {
+	// 如果缓存被禁用，直接返回nil
+	if dc.config != nil && !dc.config.CacheEnabled {
+		return nil, nil
+	}
+
 	dc.indexMutex.RLock()
 	meta, exists := dc.index[key]
 	dc.indexMutex.RUnlock()
@@ -134,6 +139,11 @@ func (dc *DiskCache) Get(key string) (*CacheItem, error) {
 
 // Set 设置缓存
 func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error {
+	// 如果缓存被禁用，直接返回
+	if dc.config != nil && !dc.config.CacheEnabled {
+		return nil
+	}
+
 	// 等待锁释放
 	for {
 		dc.lockMutex.Lock()
@@ -354,6 +364,11 @@ func (mc *MemoryCache) Get(key string) (*CacheItem, bool) {
 
 // Set 设置内存缓存
 func (mc *MemoryCache) Set(key string, value *CacheItem, contentType string) {
+	// 如果缓存为nil（禁用状态），直接返回
+	if mc.cache == nil {
+		return
+	}
+
 	// 检查内容类型配置
 	if contentType != "" {
 		mimeCategory := strings.Split(contentType, ";")[0]
@@ -386,8 +401,9 @@ func (mc *MemoryCache) startCleanup(interval time.Duration) {
 func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 	if !cfg.CacheEnabled {
 		logger.Info("本地缓存已禁用")
+		// 返回空操作缓存对象
 		return &CacheManager{
-			diskCache:   &DiskCache{},
+			diskCache:   &DiskCache{config: cfg},
 			memoryCache: &MemoryCache{},
 			config:      cfg,
 		}, nil

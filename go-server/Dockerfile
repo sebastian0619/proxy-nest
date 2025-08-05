@@ -21,7 +21,7 @@ ENV GO111MODULE=on
 
 # 构建应用
 RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
+    GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
 
 # 运行阶段
 FROM alpine:latest
@@ -36,8 +36,8 @@ WORKDIR /app
 COPY --from=builder /app/proxy-nest-go .
 
 # 创建缓存目录并设置权限
-RUN mkdir -p /app/cache && \
-    chmod -R 777 /app/cache
+RUN mkdir -p cache && \
+    chmod -R 777 cache
 
 # 保持使用root用户
 # USER root (默认已经是root)
