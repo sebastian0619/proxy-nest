@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"main/cache"
-	"main/config"
-	"main/health"
-	"main/logger"
+	"proxy-nest-go/cache"
+	"proxy-nest-go/config"
+	"proxy-nest-go/health"
+	"proxy-nest-go/logger"
 )
 
 // ProxyResponse 代理响应
@@ -177,7 +177,7 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 		req.Header.Set("Accept", "application/json")
 	}
 	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "main/1.0")
+		req.Header.Set("User-Agent", "proxy-nest-go/1.0")
 	}
 
 	// 调试：显示请求头
