@@ -7,7 +7,7 @@
 *.dll
 *.so
 *.dylib
-
+.cursorrules
 # Test binary, built with `go test -c`
 *.test
 
