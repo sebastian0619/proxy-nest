@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"proxy-nest-go/config"
-	"proxy-nest-go/logger"
+	"main/config"
+	"main/logger"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 )
