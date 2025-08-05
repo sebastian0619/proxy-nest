@@ -90,16 +90,7 @@ func main() {
 
 // setupRoutes 设置路由
 func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
-	// 根路径处理 - 返回服务信息而不是代理处理
-	router.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"service": "proxy-nest-go",
-			"status":  "running",
-			"message": "Proxy service is running",
-		})
-	})
-
-	// 其他所有路径的代理处理
+	// 所有路径都走代理处理，包括根路径"/"
 	router.NoRoute(func(c *gin.Context) {
 		handleProxyRequest(c, proxyManager, cacheManager)
 	})

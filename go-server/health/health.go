@@ -298,30 +298,25 @@ func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.
 
 // updateServerState 更新服务器状态
 func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckResult) {
-	hm.mutex.Lock()
-	defer hm.mutex.Unlock()
+	// 先在锁外计算所有需要的值
+	var avgResponseTime float64
+	var newEWMA float64
+	var newBaseWeight, newDynamicWeight, newCombinedWeight int
+	var newStatus HealthStatus
+	var newErrorCount int
+	var newRecoveryTime time.Time
+	var logMessage string
 
 	if checkResult.Success {
-		if server.Status == HealthStatusUnhealthy {
-			logger.Success("服务器 %s 已恢复健康状态", server.URL)
+		// 计算响应时间相关数据
+		newResponseTimes := append(server.ResponseTimes, checkResult.ResponseTime)
+		if len(newResponseTimes) > 3 {
+			newResponseTimes = newResponseTimes[1:]
 		}
 
-		server.Status = HealthStatusHealthy
-		server.ErrorCount = 0
-		server.RecoveryTime = time.Time{}
-		server.LastResponseTime = checkResult.ResponseTime
-
-		// 更新响应时间历史（保留最近3次，用于计算平均值）
-		server.ResponseTimes = append(server.ResponseTimes, checkResult.ResponseTime)
-		if len(server.ResponseTimes) > 3 {
-			server.ResponseTimes = server.ResponseTimes[1:]
-		}
-
-		// 计算最近3次响应时间的平均值
-		var avgResponseTime float64
-		if len(server.ResponseTimes) == 3 {
+		if len(newResponseTimes) == 3 {
 			var total int64
-			for _, rt := range server.ResponseTimes {
+			for _, rt := range newResponseTimes {
 				total += rt
 			}
 			avgResponseTime = float64(total) / 3.0
@@ -329,41 +324,94 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 			avgResponseTime = float64(checkResult.ResponseTime)
 		}
 
-		// 使用EWMA算法更新LastEWMA
+		// 计算EWMA
 		if server.LastEWMA == 0 {
-			// 首次初始化
-			server.LastEWMA = avgResponseTime
+			newEWMA = avgResponseTime
 		} else {
-			// EWMA计算：beta * newValue + (1 - beta) * oldValue
-			const beta = 0.2 // EWMA衰减因子，与JS版本保持一致
-			server.LastEWMA = beta*avgResponseTime + (1-beta)*server.LastEWMA
+			const beta = 0.2
+			newEWMA = beta*avgResponseTime + (1-beta)*server.LastEWMA
 		}
 
-		// 使用EWMA值计算基础权重，使用当前响应时间计算动态权重
-		server.BaseWeight = hm.calculateBaseWeight(server.LastEWMA)
-		server.DynamicWeight = hm.calculateDynamicWeight(avgResponseTime)
-		server.CombinedWeight = hm.calculateCombinedWeight(server)
+		// 计算权重
+		newBaseWeight = hm.calculateBaseWeight(newEWMA)
+		newDynamicWeight = hm.calculateDynamicWeight(avgResponseTime)
 
-		logger.Success("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 动态权重=%d, 综合权重=%d",
-			server.URL, checkResult.ResponseTime, avgResponseTime, server.LastEWMA,
-			server.BaseWeight, server.DynamicWeight, server.CombinedWeight)
+		// 直接计算综合权重
+		if newBaseWeight == 0 || newDynamicWeight == 0 {
+			newCombinedWeight = 1
+		} else {
+			const alpha = 0.7
+			combined := int(alpha*float64(newBaseWeight) + (1-alpha)*float64(newDynamicWeight))
+			if combined < 1 {
+				newCombinedWeight = 1
+			} else if combined > 100 {
+				newCombinedWeight = 100
+			} else {
+				newCombinedWeight = combined
+			}
+		}
 
+		newStatus = HealthStatusHealthy
+		newErrorCount = 0
+		newRecoveryTime = time.Time{}
+
+		logMessage = fmt.Sprintf("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 动态权重=%d, 综合权重=%d",
+			server.URL, checkResult.ResponseTime, avgResponseTime, newEWMA,
+			newBaseWeight, newDynamicWeight, newCombinedWeight)
 	} else {
-		server.ErrorCount++
-		logger.Warn("服务器 %s 健康检查失败，错误次数: %d/%d",
-			server.URL, server.ErrorCount, hm.config.MaxErrorsBeforeUnhealthy)
+		newStatus = server.Status
+		newErrorCount = server.ErrorCount + 1
+		newRecoveryTime = server.RecoveryTime
 
-		if server.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
-			server.Status = HealthStatusUnhealthy
-			server.RecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
-			logger.Error("服务器 %s 标记为不健康 (错误次数达到阈值: %d)",
-				server.URL, hm.config.MaxErrorsBeforeUnhealthy)
+		if newErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
+			newStatus = HealthStatusUnhealthy
+			newRecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
+			logMessage = fmt.Sprintf("服务器 %s 标记为不健康 (错误次数达到阈值: %d)", server.URL, hm.config.MaxErrorsBeforeUnhealthy)
+		} else {
+			logMessage = fmt.Sprintf("服务器 %s 健康检查失败，错误次数: %d/%d", server.URL, newErrorCount, hm.config.MaxErrorsBeforeUnhealthy)
 		}
+	}
+
+	// 现在才获取锁，快速更新服务器状态
+	hm.mutex.Lock()
+
+	if checkResult.Success {
+		if server.Status == HealthStatusUnhealthy {
+			logger.Success("服务器 %s 已恢复健康状态", server.URL)
+		}
+
+		server.Status = newStatus
+		server.ErrorCount = newErrorCount
+		server.RecoveryTime = newRecoveryTime
+		server.LastResponseTime = checkResult.ResponseTime
+		server.ResponseTimes = append(server.ResponseTimes, checkResult.ResponseTime)
+		if len(server.ResponseTimes) > 3 {
+			server.ResponseTimes = server.ResponseTimes[1:]
+		}
+		server.LastEWMA = newEWMA
+		server.BaseWeight = newBaseWeight
+		server.DynamicWeight = newDynamicWeight
+		server.CombinedWeight = newCombinedWeight
+	} else {
+		server.Status = newStatus
+		server.ErrorCount = newErrorCount
+		server.RecoveryTime = newRecoveryTime
 	}
 
 	server.LastCheckTime = time.Now()
 
-	// 更新健康数据
+	hm.mutex.Unlock()
+
+	// 输出日志（在锁外）
+	if checkResult.Success {
+		logger.Success(logMessage)
+	} else if newErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
+		logger.Error(logMessage)
+	} else {
+		logger.Warn(logMessage)
+	}
+
+	// 更新健康数据（在锁外）
 	hm.updateHealthData(server)
 }
 
@@ -450,9 +498,12 @@ func (hm *HealthManager) updateHealthData(server *Server) {
 		healthData.UnhealthySince = &now
 	}
 
+	// 使用独立的锁保护healthData访问
+	hm.mutex.Lock()
 	hm.healthData[server.URL] = healthData
+	hm.mutex.Unlock()
 
-	// 保存健康数据
+	// 保存健康数据（在锁外）
 	hm.saveHealthData()
 }
 
