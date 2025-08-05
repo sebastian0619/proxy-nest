@@ -54,6 +54,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **Docker构建修复**：修复Go模块路径问题，添加明确的Go模块环境变量
 [X] **GitHub Actions缓存修复**：禁用缓存确保使用最新的Dockerfile版本
 [X] **Go模块路径深度修复**：添加更多Go模块环境变量，使用明确的main.go路径
+[X] **Go模块名称简化**：将模块名称简化为main，更新所有import语句
 
 修复内容：
 - 在`processResponse`中，只有当Content-Type包含"application/json"时才解析JSON
@@ -68,6 +69,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 - **Go模块路径修复**：在Docker构建中添加明确的Go模块环境变量（GO111MODULE=on, GOPATH=/go, GOCACHE=/go/cache），解决模块路径解析问题
 - **GitHub Actions缓存问题**：当Dockerfile更新后，GitHub Actions可能使用缓存的旧版本，需要禁用缓存（no-cache: true）确保使用最新版本
 - **Go模块路径深度修复**：在Docker构建中添加更多Go模块环境变量（GOMODCACHE=/go/pkg/mod, GOWORK=off），并使用明确的main.go路径进行构建
+- **Go模块名称简化**：将模块名称从`proxy-nest-go`简化为`main`，避免复杂的模块路径解析问题
 
 ## 之前任务：创建多架构支持Release
 

@@ -7,6 +7,13 @@ WORKDIR /app
 # 安装必要的包
 RUN apk add --no-cache git ca-certificates tzdata
 
+# 设置Go模块环境
+ENV GO111MODULE=on
+ENV GOPATH=/go
+ENV GOCACHE=/go/cache
+ENV GOMODCACHE=/go/pkg/mod
+ENV GOWORK=off
+
 # 复制go mod文件
 COPY go.mod go.sum ./
 
@@ -16,16 +23,9 @@ RUN go mod download && go mod verify
 # 复制源代码
 COPY . .
 
-# 设置Go模块环境
-ENV GO111MODULE=on
-ENV GOPATH=/go
-ENV GOCACHE=/go/cache
-ENV GOMODCACHE=/go/pkg/mod
-ENV GOWORK=off
-
 # 构建应用
 RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go ./main.go
 
 # 运行阶段
 FROM alpine:latest
