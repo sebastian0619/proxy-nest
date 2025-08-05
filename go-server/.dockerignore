@@ -1,39 +1,49 @@
-# Git
+# Git相关
 .git
 .gitignore
 
-# IDE
-.vscode
-.idea
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Cache files (but keep source cache directory)
-*.cache
-
-# Build artifacts
+# 构建产物
 proxy-nest-go
 *.exe
 *.dll
 *.so
 *.dylib
 
-# Test files
+# 测试文件
 *_test.go
 testdata/
 
-# Documentation
-README.md
+# 文档
 *.md
+docs/
 
-# Docker
+# IDE相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+
+# 临时文件
+tmp/
+temp/
+
+# 缓存目录
+cache/
+.cache/
+
+# 环境文件
+.env
+.env.local
+
+# Docker相关
 Dockerfile*
 docker-compose*
-.dockerignore 
+.dockerignore
+
+# 其他
+.DS_Store
+Thumbs.db 
