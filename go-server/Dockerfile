@@ -16,14 +16,9 @@ RUN go mod download && go mod verify
 # 复制源代码
 COPY . .
 
-# 设置Go模块环境
-ENV GO111MODULE=on
-ENV GOPATH=/go
-ENV GOCACHE=/go/cache
-
-# 构建应用
+# 构建应用 - 使用明确的模块路径
 RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go .
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy-nest-go proxy-nest-go
 
 # 运行阶段
 FROM alpine:latest
