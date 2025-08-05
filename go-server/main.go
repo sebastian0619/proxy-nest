@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -122,7 +123,12 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			// 验证缓存内容
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
-				c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+				// 根据内容类型处理数据
+				if strings.HasPrefix(cachedItem.ContentType, "image/") {
+					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+				} else {
+					c.JSON(http.StatusOK, cachedItem.Data)
+				}
 				logger.CacheHit("磁盘缓存命中: %s", fullURL)
 				return
 			}
@@ -132,7 +138,12 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			// 验证缓存内容
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
-				c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+				// 根据内容类型处理数据
+				if strings.HasPrefix(cachedItem.ContentType, "image/") {
+					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+				} else {
+					c.JSON(http.StatusOK, cachedItem.Data)
+				}
 				logger.CacheHit("内存缓存命中: %s", fullURL)
 				return
 			}
