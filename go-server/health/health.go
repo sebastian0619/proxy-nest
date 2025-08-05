@@ -37,6 +37,8 @@ type Server struct {
 	DynamicWeight    int          `json:"dynamicWeight"`
 	CombinedWeight   int          `json:"combinedWeight"`
 	LastEWMA         float64      `json:"lastEWMA"`
+	RequestCount     int          `json:"requestCount"` // 请求计数器
+	DynamicEWMA      float64      `json:"dynamicEWMA"`  // 动态EWMA（基于实际请求）
 }
 
 // HealthData 健康数据
@@ -122,6 +124,8 @@ func (hm *HealthManager) initializeServers() {
 			DynamicWeight:    1,
 			CombinedWeight:   1,
 			LastEWMA:         0,
+			RequestCount:     0,
+			DynamicEWMA:      0,
 		}
 		logger.Success("成功初始化服务器: %s (状态=健康, 权重=1)", serverURL)
 	}
@@ -209,12 +213,33 @@ func (hm *HealthManager) performHealthCheck() {
 	logger.Info("健康检查完成，服务器状态:")
 	hm.mutex.RLock()
 	healthyCount := 0
+	var healthyServers []*Server
 	for _, server := range hm.servers {
 		if server.Status == HealthStatusHealthy {
 			healthyCount++
-			logger.Success("  ✓ %s: 健康 (基础权重=%d, 动态权重=%d, 综合权重=%d, EWMA=%.0fms)",
-				server.URL, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.LastEWMA)
-		} else {
+			healthyServers = append(healthyServers, server)
+		}
+	}
+
+	// 计算总权重和选择概率
+	var totalWeight int
+	for _, server := range healthyServers {
+		totalWeight += server.CombinedWeight
+	}
+
+	// 输出健康服务器状态和选择概率
+	for _, server := range healthyServers {
+		selectionProbability := 0.0
+		if totalWeight > 0 {
+			selectionProbability = float64(server.CombinedWeight) / float64(totalWeight) * 100
+		}
+		logger.Success("  ✓ %s: 健康 (基础权重=%d, 动态权重=%d, 综合权重=%d, EWMA=%.0fms, 选择概率=%.1f%%)",
+			server.URL, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.LastEWMA, selectionProbability)
+	}
+
+	// 输出不健康服务器
+	for _, server := range hm.servers {
+		if server.Status == HealthStatusUnhealthy {
 			logger.Error("  ✗ %s: 不健康 (错误次数=%d, 恢复时间=%v)",
 				server.URL, server.ErrorCount, server.RecoveryTime)
 		}
@@ -301,7 +326,7 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 	// 先在锁外计算所有需要的值
 	var avgResponseTime float64
 	var newEWMA float64
-	var newBaseWeight, newDynamicWeight, newCombinedWeight int
+	var newBaseWeight, newCombinedWeight int
 	var newStatus HealthStatus
 	var newErrorCount int
 	var newRecoveryTime time.Time
@@ -332,16 +357,14 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 			newEWMA = beta*avgResponseTime + (1-beta)*server.LastEWMA
 		}
 
-		// 计算权重
+		// 健康检查只更新基础权重，动态权重由实际请求更新
 		newBaseWeight = hm.calculateBaseWeight(newEWMA)
-		newDynamicWeight = hm.calculateDynamicWeight(avgResponseTime)
-
-		// 直接计算综合权重
-		if newBaseWeight == 0 || newDynamicWeight == 0 {
+		// 使用当前的动态权重重新计算综合权重
+		if newBaseWeight == 0 || server.DynamicWeight == 0 {
 			newCombinedWeight = 1
 		} else {
-			const alpha = 0.7
-			combined := int(alpha*float64(newBaseWeight) + (1-alpha)*float64(newDynamicWeight))
+			const alpha = 0.3 // 降低基础权重比重，提高动态权重比重
+			combined := int(alpha*float64(newBaseWeight) + (1-alpha)*float64(server.DynamicWeight))
 			if combined < 1 {
 				newCombinedWeight = 1
 			} else if combined > 100 {
@@ -355,9 +378,9 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 		newErrorCount = 0
 		newRecoveryTime = time.Time{}
 
-		logMessage = fmt.Sprintf("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 动态权重=%d, 综合权重=%d",
+		logMessage = fmt.Sprintf("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 综合权重=%d",
 			server.URL, checkResult.ResponseTime, avgResponseTime, newEWMA,
-			newBaseWeight, newDynamicWeight, newCombinedWeight)
+			newBaseWeight, newCombinedWeight)
 	} else {
 		newStatus = server.Status
 		newErrorCount = server.ErrorCount + 1
@@ -390,7 +413,6 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 		}
 		server.LastEWMA = newEWMA
 		server.BaseWeight = newBaseWeight
-		server.DynamicWeight = newDynamicWeight
 		server.CombinedWeight = newCombinedWeight
 	} else {
 		server.Status = newStatus
@@ -455,14 +477,14 @@ func (hm *HealthManager) calculateDynamicWeight(avgResponseTime float64) int {
 	return weight
 }
 
-// calculateCombinedWeight 计算综合权重（与JS版本保持一致）
+// calculateCombinedWeight 计算综合权重
 func (hm *HealthManager) calculateCombinedWeight(server *Server) int {
 	if server.BaseWeight == 0 || server.DynamicWeight == 0 {
 		return 1
 	}
 
 	// 使用加权平均计算综合权重，alpha为基础权重的比重
-	const alpha = 0.7 // 与JS版本保持一致
+	const alpha = 0.3 // 降低基础权重比重，提高动态权重比重
 	combined := int(alpha*float64(server.BaseWeight) + (1-alpha)*float64(server.DynamicWeight))
 
 	// 确保权重在合理范围内 (1-100)
@@ -481,6 +503,51 @@ func max(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// UpdateDynamicWeight 更新服务器的动态权重（基于实际请求）
+func (hm *HealthManager) UpdateDynamicWeight(serverURL string, responseTime int64) {
+	hm.mutex.Lock()
+	defer hm.mutex.Unlock()
+
+	server, exists := hm.servers[serverURL]
+	if !exists {
+		return
+	}
+
+	// 增加请求计数
+	server.RequestCount++
+
+	// 更新动态EWMA
+	if server.DynamicEWMA == 0 {
+		server.DynamicEWMA = float64(responseTime)
+	} else {
+		const beta = 0.2 // 与健康检查使用相同的衰减因子
+		server.DynamicEWMA = beta*float64(responseTime) + (1-beta)*server.DynamicEWMA
+	}
+
+	// 每3次请求更新一次动态权重
+	if server.RequestCount%3 == 0 {
+		server.DynamicWeight = hm.calculateDynamicWeight(server.DynamicEWMA)
+
+		// 重新计算综合权重
+		if server.BaseWeight == 0 || server.DynamicWeight == 0 {
+			server.CombinedWeight = 1
+		} else {
+			const alpha = 0.3 // 降低基础权重比重，提高动态权重比重
+			combined := int(alpha*float64(server.BaseWeight) + (1-alpha)*float64(server.DynamicWeight))
+			if combined < 1 {
+				server.CombinedWeight = 1
+			} else if combined > 100 {
+				server.CombinedWeight = 100
+			} else {
+				server.CombinedWeight = combined
+			}
+		}
+
+		logger.Info("动态权重更新 - %s: 请求计数=%d, 动态EWMA=%.0fms, 动态权重=%d, 综合权重=%d",
+			serverURL, server.RequestCount, server.DynamicEWMA, server.DynamicWeight, server.CombinedWeight)
+	}
 }
 
 // updateHealthData 更新健康数据

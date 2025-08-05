@@ -78,8 +78,8 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 
 	logger.Success("上游请求成功: %s (响应时间: %dms)", requestURL, responseTime)
 
-	// 更新响应时间
-	pm.updateServerResponseTime(server, responseTime)
+	// 更新动态权重（基于实际请求）
+	pm.healthManager.UpdateDynamicWeight(server.URL, responseTime)
 
 	// 处理响应
 	return pm.processResponse(response, responseTime)
@@ -186,7 +186,7 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
-		// API响应解析为JSON
+		// API响应必须解析为JSON
 		var jsonData interface{}
 		if err := json.Unmarshal(body, &jsonData); err != nil {
 			return nil, fmt.Errorf("解析JSON失败: %w", err)
@@ -248,7 +248,7 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
-		// API响应验证
+		// API响应验证 - 必须返回JSON
 		if !strings.Contains(mimeCategory, "application/json") {
 			logger.Error("API响应类型错误: %s", contentType)
 			return false
@@ -275,9 +275,7 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 
 		// 验证图片数据
 		switch data.(type) {
-		case []byte:
-			return true
-		case string:
+		case []byte, string:
 			return true
 		default:
 			logger.Error("图片数据格式错误: %T", data)
@@ -349,10 +347,4 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 		// 其他类型确保数据非空
 		return data != nil
 	}
-}
-
-// updateServerResponseTime 更新服务器响应时间
-func (pm *ProxyManager) updateServerResponseTime(server *health.Server, responseTime int64) {
-	// 这里可以添加更新服务器响应时间的逻辑
-	// 由于健康管理器已经处理了响应时间更新，这里暂时不需要额外处理
 }

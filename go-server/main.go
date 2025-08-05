@@ -89,6 +89,27 @@ func main() {
 	logger.Info("服务器已关闭")
 }
 
+// shouldSkipRequest 判断是否应该跳过某些请求
+func shouldSkipRequest(path string) bool {
+	// 过滤掉常见的非API请求
+	skipPaths := []string{
+		"/favicon.ico",
+		"/robots.txt",
+		"/sitemap.xml",
+		"/.well-known/",
+		"/health",
+		"/status",
+	}
+
+	for _, skipPath := range skipPaths {
+		if path == skipPath || strings.HasPrefix(path, skipPath) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // setupRoutes 设置路由
 func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
 	// 所有路径都走代理处理，包括根路径"/"
@@ -103,6 +124,15 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	path := c.Request.URL.Path
 	if path == "" {
 		path = "/"
+	}
+
+	// 过滤掉常见的非API请求
+	if shouldSkipRequest(path) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":   "Not Found",
+			"message": "This endpoint is not supported",
+		})
+		return
 	}
 
 	// 获取完整的请求URL（包括查询参数）
