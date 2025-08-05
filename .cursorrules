@@ -51,6 +51,8 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] 修改缓存处理逻辑，支持非JSON响应的缓存和返回
 [X] **关键修复**：在`handleProxyRequest`中，传递完整的请求路径（包括查询参数）给`HandleRequest`函数，确保API key等参数不被截断
 [X] 恢复稳定的GitHub Actions配置
+[X] **Docker构建修复**：修复Go模块路径问题，添加明确的Go模块环境变量
+[X] **GitHub Actions缓存修复**：禁用缓存确保使用最新的Dockerfile版本
 
 修复内容：
 - 在`processResponse`中，只有当Content-Type包含"application/json"时才解析JSON
@@ -63,6 +65,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 - **Docker构建修复**：简化Dockerfile构建命令，移除可能导致Go模块路径冲突的环境变量
 - **缓存功能完善**：修复Go版本缓存配置，使其与JavaScript版本保持一致，包括缓存目录路径、禁用功能、内容类型特定配置等
 - **Go模块路径修复**：在Docker构建中添加明确的Go模块环境变量（GO111MODULE=on, GOPATH=/go, GOCACHE=/go/cache），解决模块路径解析问题
+- **GitHub Actions缓存问题**：当Dockerfile更新后，GitHub Actions可能使用缓存的旧版本，需要禁用缓存（no-cache: true）确保使用最新版本
 
 ## 之前任务：创建多架构支持Release
 
