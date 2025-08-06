@@ -33,6 +33,15 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Debug - List files
+      run: |
+        echo "=== Repository structure ==="
+        find . -type f -name "*.go" | head -20
+        echo "=== Go server directory ==="
+        ls -la go-server/
+        echo "=== Go mod files ==="
+        cat go-server/go.mod
+
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
@@ -41,4 +50,6 @@ jobs:
         push: true
         tags: |
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-        no-cache: true 
+        no-cache: true
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1 
