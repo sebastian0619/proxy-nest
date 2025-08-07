@@ -48,9 +48,7 @@ RUN echo "=== 构建结果 ===" && \
 FROM alpine:latest
 
 # 安装运行时依赖
-RUN apk --no-cache add ca-certificates tzdata && \
-    addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+RUN apk --no-cache add ca-certificates tzdata
 
 # 设置工作目录
 WORKDIR /app
@@ -58,19 +56,11 @@ WORKDIR /app
 # 复制二进制文件
 COPY --from=builder /app/tmdb-go-proxy .
 
-# 创建缓存目录并设置权限
-RUN mkdir -p cache && \
-    chown -R appuser:appgroup /app
-
-# 切换到非root用户
-USER appuser
+# 创建缓存目录
+RUN mkdir -p cache
 
 # 暴露端口
 EXPOSE 6635
-
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:6635/health || exit 1
 
 # 启动应用
 CMD ["./tmdb-go-proxy"] 
