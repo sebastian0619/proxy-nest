@@ -4,8 +4,10 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -428,10 +430,51 @@ func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 }
 
 // GetCacheKey 生成缓存键
-func GetCacheKey(url string) string {
-	// 简化版本，直接使用URL生成MD5哈希
-	// 与JavaScript版本保持兼容
-	hash := md5.Sum([]byte(url))
+func GetCacheKey(urlStr string) string {
+	// 与JavaScript版本保持一致的缓存键生成逻辑
+	// JavaScript版本使用: url.parse(req.originalUrl, true) + URLSearchParams排序 + MD5
+	
+	// 解析URL
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		// 如果解析失败，使用原始URL作为降级处理
+		logger.Error("URL解析失败，使用原始URL: %v", err)
+		hash := md5.Sum([]byte(urlStr))
+		return fmt.Sprintf("%x", hash)
+	}
+	
+	// 获取路径部分
+	pathname := parsedURL.Path
+	if pathname == "" {
+		pathname = "/"
+	}
+	
+	// 处理查询参数
+	var queryString string
+	if len(parsedURL.Query()) > 0 {
+		// 获取所有查询参数
+		params := make([]string, 0, len(parsedURL.Query()))
+		for key, values := range parsedURL.Query() {
+			for _, value := range values {
+				params = append(params, fmt.Sprintf("%s=%s", key, value))
+			}
+		}
+		
+		// 排序参数（与JavaScript的URLSearchParams.sort()保持一致）
+		sort.Strings(params)
+		queryString = strings.Join(params, "&")
+	}
+	
+	// 构建缓存键字符串
+	var cacheKeyStr string
+	if queryString != "" {
+		cacheKeyStr = fmt.Sprintf("%s?%s", pathname, queryString)
+	} else {
+		cacheKeyStr = pathname
+	}
+	
+	// 生成MD5哈希
+	hash := md5.Sum([]byte(cacheKeyStr))
 	return fmt.Sprintf("%x", hash)
 }
 

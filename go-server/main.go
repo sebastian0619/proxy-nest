@@ -142,7 +142,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		fullURL += "?" + c.Request.URL.RawQuery
 	}
 
-	// 生成缓存键
+	// 生成缓存键 - 使用完整的URL（包括查询参数）
 	cacheKey := cache.GetCacheKey(fullURL)
 
 	// 不输出每个请求的详细信息，避免日志过于冗余
@@ -150,28 +150,28 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	// 检查缓存
 	if cacheManager.GetConfig().CacheEnabled {
 		if cachedItem, err := cacheManager.GetDiskCache().Get(cacheKey); err == nil && cachedItem != nil {
-					// 验证缓存内容
-		if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
-			c.Header("Content-Type", cachedItem.ContentType)
-			// 根据内容类型处理数据
-			if strings.HasPrefix(cachedItem.ContentType, "image/") {
-				c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
-			} else if strings.Contains(cachedItem.ContentType, "application/json") {
-				c.JSON(http.StatusOK, cachedItem.Data)
-			} else {
-				// 非JSON响应，根据数据类型处理
-				switch data := cachedItem.Data.(type) {
-				case string:
-					c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
-				case []byte:
-					c.Data(http.StatusOK, cachedItem.ContentType, data)
-				default:
+			// 验证缓存内容
+			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
+				c.Header("Content-Type", cachedItem.ContentType)
+				// 根据内容类型处理数据
+				if strings.HasPrefix(cachedItem.ContentType, "image/") {
+					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
+				} else {
+					// 非JSON响应，根据数据类型处理
+					switch data := cachedItem.Data.(type) {
+					case string:
+						c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
+					case []byte:
+						c.Data(http.StatusOK, cachedItem.ContentType, data)
+					default:
+						c.JSON(http.StatusOK, cachedItem.Data)
+					}
 				}
+				logger.CacheHit("磁盘缓存命中: %s", fullURL)
+				return
 			}
-			logger.CacheHit("磁盘缓存命中: %s", fullURL)
-			return
-		}
 		}
 
 		if cachedItem, exists := cacheManager.GetMemoryCache().Get(cacheKey); exists {
@@ -204,15 +204,10 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 处理新请求
 	logger.Info("处理新请求: %s", fullURL)
-	logger.Info("调用proxyManager.HandleRequest，路径: %s", path)
+	logger.Info("调用proxyManager.HandleRequest，路径: %s", fullURL)
 
-	// 构建完整的请求路径（包括查询参数）
-	requestPath := path
-	if c.Request.URL.RawQuery != "" {
-		requestPath += "?" + c.Request.URL.RawQuery
-	}
-
-	response, err := proxyManager.HandleRequest(requestPath, c.Request.Header)
+	// 传递完整的请求路径（包括查询参数）给HandleRequest
+	response, err := proxyManager.HandleRequest(fullURL, c.Request.Header)
 
 	logger.Info("proxyManager.HandleRequest返回，错误: %v", err)
 	if err != nil {
