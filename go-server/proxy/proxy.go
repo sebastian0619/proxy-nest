@@ -38,8 +38,8 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 	// 配置HTTP客户端，确保能够处理大文件
 	client := &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
+			MaxIdleConns:        1000,
+			MaxIdleConnsPerHost: 100,
 			IdleConnTimeout:     90 * time.Second,
 		},
 	}
