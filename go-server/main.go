@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"main/cache"
-	"main/config"
-	"main/health"
-	"main/logger"
-	"main/proxy"
+	"proxy-nest-go/cache"
+	"proxy-nest-go/config"
+	"proxy-nest-go/health"
+	"proxy-nest-go/logger"
+	"proxy-nest-go/proxy"
 
 	"github.com/gin-gonic/gin"
 )

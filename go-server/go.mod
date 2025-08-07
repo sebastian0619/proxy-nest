@@ -1,4 +1,4 @@
-module main
+module proxy-nest-go
 
 go 1.21
 
