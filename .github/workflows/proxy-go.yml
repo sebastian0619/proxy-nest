@@ -2,14 +2,9 @@ name: Build and Push TMDB Proxy Go (Multi-Arch)
 
 on:
   push:
-    branches: [ main, master ]
-    paths:
-      - 'go-server/**'
-      - '.github/workflows/proxy-go.yml'
+    branches: [ JS ]
   pull_request:
-    branches: [ main, master ]
-    paths:
-      - 'go-server/**'
+    branches: [ JS ]
   release:
     types: [created]
   workflow_dispatch:
@@ -50,7 +45,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS'}}
             type=ref,event=branch
             type=sha,format=short
             type=raw,value={{date 'YYYYMMDD'}}

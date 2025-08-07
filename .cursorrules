@@ -55,7 +55,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 
 修复内容：
 - **Dockerfile优化**：使用多阶段构建，添加Go模块环境变量，优化构建缓存，去掉health check，使用root用户
-- **GitHub Actions**：创建专门的Go版本工作流，支持多架构构建和测试
+- **GitHub Actions**：创建专门的Go版本工作流，支持多架构构建和测试，**修复触发条件让每次push都构建**，**调整主要分支为JS，使用latest标签**
 - **程序引用**：更新User-Agent为tmdb-go-proxy/1.0，保持模块名称为main
 - **构建优化**：添加.dockerignore文件，优化构建上下文
 - **安全性简化**：去掉非root用户限制，简化权限管理
