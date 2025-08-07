@@ -561,7 +561,6 @@ func (hm *HealthManager) UpdateDynamicWeight(serverURL string, responseTime int6
 		logger.Info("动态权重累积 - %s: 请求计数=%d, 动态EWMA=%.0fms (等待第3次请求更新权重)",
 			serverURL, server.RequestCount, server.DynamicEWMA)
 	}
-	}
 }
 
 // updateHealthData 更新健康数据

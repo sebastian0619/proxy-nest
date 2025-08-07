@@ -110,6 +110,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] 修复了缓存键包含查询参数但请求路径不包含查询参数的不匹配问题
 [X] **缓存键生成修复**：实现与JavaScript版本一致的查询参数排序和规范化逻辑
 [X] **健康检查优化**：添加健康服务器快照机制，避免健康检查期间阻断请求处理
+[X] **语法错误修复**：修复`health.go`中`UpdateDynamicWeight`函数的语法错误（多余大括号）
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑
