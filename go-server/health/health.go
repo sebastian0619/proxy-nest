@@ -536,31 +536,26 @@ func (hm *HealthManager) UpdateDynamicWeight(serverURL string, responseTime int6
 		server.DynamicEWMA = beta*float64(responseTime) + (1-beta)*server.DynamicEWMA
 	}
 
-	// 每3次请求更新一次动态权重
-	if server.RequestCount%3 == 0 {
-		server.DynamicWeight = hm.calculateDynamicWeight(server.DynamicEWMA)
+	// 每次请求都更新动态权重
+	server.DynamicWeight = hm.calculateDynamicWeight(server.DynamicEWMA)
 
-		// 重新计算综合权重
-		if server.BaseWeight == 0 || server.DynamicWeight == 0 {
-			server.CombinedWeight = 1
-		} else {
-			const alpha = 0.3 // 降低基础权重比重，提高动态权重比重
-			combined := int(alpha*float64(server.BaseWeight) + (1-alpha)*float64(server.DynamicWeight))
-			if combined < 1 {
-				server.CombinedWeight = 1
-			} else if combined > 100 {
-				server.CombinedWeight = 100
-			} else {
-				server.CombinedWeight = combined
-			}
-		}
-
-		logger.Info("动态权重更新 - %s: 请求计数=%d, 动态EWMA=%.0fms, 动态权重=%d, 综合权重=%d (每3次请求更新)",
-			serverURL, server.RequestCount, server.DynamicEWMA, server.DynamicWeight, server.CombinedWeight)
+	// 重新计算综合权重
+	if server.BaseWeight == 0 || server.DynamicWeight == 0 {
+		server.CombinedWeight = 1
 	} else {
-		logger.Info("动态权重累积 - %s: 请求计数=%d, 动态EWMA=%.0fms (等待第3次请求更新权重)",
-			serverURL, server.RequestCount, server.DynamicEWMA)
+		const alpha = 0.3 // 降低基础权重比重，提高动态权重比重
+		combined := int(alpha*float64(server.BaseWeight) + (1-alpha)*float64(server.DynamicWeight))
+		if combined < 1 {
+			server.CombinedWeight = 1
+		} else if combined > 100 {
+			server.CombinedWeight = 100
+		} else {
+			server.CombinedWeight = combined
+		}
 	}
+
+	logger.Info("动态权重更新 - %s: 请求计数=%d, 动态EWMA=%.0fms, 动态权重=%d, 综合权重=%d",
+		serverURL, server.RequestCount, server.DynamicEWMA, server.DynamicWeight, server.CombinedWeight)
 }
 
 // updateHealthData 更新健康数据

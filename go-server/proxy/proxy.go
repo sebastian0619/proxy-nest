@@ -150,10 +150,20 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 // makeRequest 发送HTTP请求
 func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), pm.config.RequestTimeout)
+	// 为图片请求设置更长的超时时间
+	timeout := pm.config.RequestTimeout
+	if pm.config.UpstreamType == "tmdb-image" {
+		// 图片请求使用更长的超时时间（90秒）
+		timeout = 90 * time.Second
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	// 图片请求使用GET方法获取完整数据
+	method := "GET"
+
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -111,6 +111,8 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **缓存键生成修复**：实现与JavaScript版本一致的查询参数排序和规范化逻辑
 [X] **健康检查优化**：添加健康服务器快照机制，避免健康检查期间阻断请求处理
 [X] **语法错误修复**：修复`health.go`中`UpdateDynamicWeight`函数的语法错误（多余大括号）
+[X] **动态权重修复**：修复动态权重更新逻辑，每次请求都更新动态权重（之前错误地每3次更新一次）
+[X] **图片处理优化**：为图片请求设置更长的超时时间（90秒），避免context canceled错误
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑
