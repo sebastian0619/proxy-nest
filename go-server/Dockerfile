@@ -25,8 +25,14 @@ RUN go mod download && \
 # 复制源代码
 COPY . .
 
+# 调试：显示文件结构
+RUN echo "=== 文件结构 ===" && ls -la && echo "=== Go文件列表 ===" && find . -name "*.go" -type f
+
 # 初始化Go模块（确保模块正确初始化）
 RUN go mod tidy
+
+# 调试：显示模块信息
+RUN echo "=== Go模块信息 ===" && go mod graph
 
 # 构建应用（使用详细输出）
 RUN go build -v -ldflags="-s -w" -o tmdb-go-proxy .

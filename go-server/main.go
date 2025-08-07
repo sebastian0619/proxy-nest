@@ -155,7 +155,17 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 				c.Header("Content-Type", cachedItem.ContentType)
 				// 根据内容类型处理数据
 				if strings.HasPrefix(cachedItem.ContentType, "image/") {
-					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+					// 图片数据需要确保是[]byte类型
+					switch data := cachedItem.Data.(type) {
+					case []byte:
+						c.Data(http.StatusOK, cachedItem.ContentType, data)
+					case string:
+						c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
+					default:
+						logger.Error("图片缓存数据类型错误: %T", cachedItem.Data)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
+						return
+					}
 				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
 				} else {
@@ -180,7 +190,17 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 				c.Header("Content-Type", cachedItem.ContentType)
 				// 根据内容类型处理数据
 				if strings.HasPrefix(cachedItem.ContentType, "image/") {
-					c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data.([]byte))
+					// 图片数据需要确保是[]byte类型
+					switch data := cachedItem.Data.(type) {
+					case []byte:
+						c.Data(http.StatusOK, cachedItem.ContentType, data)
+					case string:
+						c.Data(http.StatusOK, cachedItem.ContentType, []byte(data))
+					default:
+						logger.Error("图片缓存数据类型错误: %T", cachedItem.Data)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
+						return
+					}
 				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
 				} else {
@@ -225,8 +245,20 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 发送响应
 	if response.IsImage {
-		c.Data(http.StatusOK, response.ContentType, response.Data.([]byte))
-		logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(response.Data.([]byte)), response.ResponseTime)
+		// 图片数据需要确保是[]byte类型
+		switch data := response.Data.(type) {
+		case []byte:
+			c.Data(http.StatusOK, response.ContentType, data)
+			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(data), response.ResponseTime)
+		case string:
+			imageData := []byte(data)
+			c.Data(http.StatusOK, response.ContentType, imageData)
+			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(imageData), response.ResponseTime)
+		default:
+			logger.Error("图片响应数据类型错误: %T", response.Data)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
+			return
+		}
 	} else if strings.Contains(response.ContentType, "application/json") {
 		c.JSON(http.StatusOK, response.Data)
 		logger.Success("响应已发送: %s (JSON, %dms)", fullURL, response.ResponseTime)
