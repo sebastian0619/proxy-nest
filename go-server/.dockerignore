@@ -15,8 +15,7 @@ proxy-nest-go
 *.test
 *.out
 
-# 缓存目录
-cache/
+# 临时目录
 tmp/
 
 # 日志文件
