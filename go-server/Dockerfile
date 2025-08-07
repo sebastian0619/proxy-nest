@@ -3,7 +3,6 @@ FROM golang:1.22-alpine AS builder
 
 # 设置Go模块环境变量
 ENV GO111MODULE=on \
-    GOPATH=/go \
     GOCACHE=/go/cache \
     GOMODCACHE=/go/pkg/mod \
     GOWORK=off \

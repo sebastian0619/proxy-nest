@@ -4,6 +4,7 @@
 
 # 构建产物
 tmdb-go-proxy
+proxy-nest-go
 *.exe
 *.exe~
 *.dll

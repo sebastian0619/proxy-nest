@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"main/cache"
-	"main/config"
-	"main/health"
-	"main/logger"
+	"proxy-nest-go/cache"
+	"proxy-nest-go/config"
+	"proxy-nest-go/health"
+	"proxy-nest-go/logger"
 )
 
 // ProxyResponse 代理响应
