@@ -113,6 +113,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **语法错误修复**：修复`health.go`中`UpdateDynamicWeight`函数的语法错误（多余大括号）
 [X] **动态权重修复**：修复动态权重更新逻辑，每次请求都更新动态权重（之前错误地每3次更新一次）
 [X] **图片处理优化**：为图片请求设置更长的超时时间（90秒），避免context canceled错误
+[X] **图片读取优化**：为tmdb-image类型添加特殊的图片读取逻辑，使用goroutine和超时控制，确保不影响tmdb-api的正常运行
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑

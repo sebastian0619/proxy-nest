@@ -200,20 +200,21 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64) (*ProxyResponse, error) {
 	defer resp.Body.Close()
 
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体失败: %w", err)
-	}
-
 	contentType := resp.Header.Get("Content-Type")
 
 	// 根据上游类型处理响应
 	var responseData interface{}
 	var isImage bool
+	var err error
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
+		// API请求处理 - 保持原有逻辑不变
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("读取响应体失败: %w", err)
+		}
+
 		// 检查Content-Type是否为JSON
 		if strings.Contains(contentType, "application/json") {
 			// API响应解析为JSON
@@ -235,12 +236,21 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		}
 
 	case "tmdb-image":
-		// 图片数据直接返回
+		// 图片请求特殊处理 - 使用带超时的读取
+		body, err := pm.readImageBody(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("读取图片响应体失败: %w", err)
+		}
 		responseData = body
 		isImage = true
 
 	case "custom":
-		// 自定义类型根据Content-Type判断
+		// 自定义类型处理 - 保持原有逻辑
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("读取响应体失败: %w", err)
+		}
+
 		if pm.config.CustomContentType != "" {
 			contentType = pm.config.CustomContentType
 		}
@@ -273,6 +283,35 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		ResponseTime: responseTime,
 		IsImage:      isImage,
 	}, nil
+}
+
+// readImageBody 读取图片响应体，使用带超时的读取
+func (pm *ProxyManager) readImageBody(body io.ReadCloser) ([]byte, error) {
+	// 为图片读取设置更长的超时时间
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// 创建一个带超时的读取器
+	done := make(chan []byte, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		data, err := io.ReadAll(body)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		done <- data
+	}()
+
+	select {
+	case data := <-done:
+		return data, nil
+	case err := <-errChan:
+		return nil, err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("读取图片超时: %w", ctx.Err())
+	}
 }
 
 // ValidateResponse 验证响应
