@@ -34,6 +34,17 @@ RUN echo "=== 构建环境信息 ===" && \
     echo "=== Go文件列表 ===" && \
     find . -name "*.go" -type f
 
+# 调试Go模块信息
+RUN echo "=== Go模块信息 ===" && \
+    go env && \
+    echo "=== go.mod内容 ===" && \
+    cat go.mod && \
+    echo "=== go list -m ===" && \
+    go list -m
+
+# 初始化Go模块（确保模块正确初始化）
+RUN go mod tidy
+
 # 构建应用（使用详细输出）
 RUN go build -v -ldflags="-s -w" -o tmdb-go-proxy .
 
