@@ -118,7 +118,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **图片请求头修复**：为tmdb-image类型设置正确的Accept头部，使用通用的图片接受类型而不是application/json
 [X] **图片处理简化**：简化图片处理逻辑，去掉复杂的超时控制，使用与JavaScript版本一致的统一超时时间和简单读取方式
 [X] **超时冲突修复**：去掉HTTP客户端的超时设置，避免与context超时冲突，确保图片请求能够正常完成
-[X] **超时冲突修复**：去掉HTTP客户端的超时设置，避免与context超时冲突，确保图片请求能够正常完成
+[X] **HTTP客户端优化**：配置HTTP Transport参数，增加连接池和空闲连接超时，确保能够处理大文件传输
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑
