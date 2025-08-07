@@ -184,8 +184,8 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	// 设置默认请求头（如果没有的话）
 	if req.Header.Get("Accept") == "" {
 		if pm.config.UpstreamType == "tmdb-image" {
-			// 图片请求使用通用的图片接受类型
-			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+			// 图片请求使用更通用的接受类型，与JavaScript版本保持一致
+			req.Header.Set("Accept", "*/*")
 		} else {
 			// API请求使用JSON接受类型
 			req.Header.Set("Accept", "application/json")
@@ -205,7 +205,7 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 		logger.Error("请求发送失败: %v", err)
 		return nil, err
 	}
-	logger.Info("请求发送成功，状态码: %d", resp.StatusCode)
+	logger.Info("请求发送成功，状态码: %d, Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 
 	return resp, nil
 }
@@ -252,18 +252,16 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		// 图片请求处理 - 与JavaScript版本保持一致
 		logger.Info("开始读取图片响应体，Content-Type: %s", contentType)
 		
-		// 使用带缓冲的读取，避免context取消问题
-		var body []byte
-		var err error
-		
-		// 尝试快速读取
-		body, err = io.ReadAll(resp.Body)
+		// 直接读取为二进制数据，与JavaScript版本的arraybuffer处理一致
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			logger.Error("读取图片响应体失败: %v", err)
 			return nil, fmt.Errorf("读取图片响应体失败: %w", err)
 		}
 		
 		logger.Info("图片响应体读取成功，大小: %d字节", len(body))
+		
+		// 确保返回的是[]byte类型，与JavaScript版本的Buffer处理一致
 		responseData = body
 		isImage = true
 
@@ -350,16 +348,20 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 		}
 
 	case "tmdb-image":
-		// 图片响应验证
+		// 图片响应验证 - 与JavaScript版本保持一致
 		if !strings.HasPrefix(mimeCategory, "image/") {
 			logger.Error("图片响应类型错误: %s", contentType)
 			return false
 		}
 
-		// 验证图片数据
-		switch data.(type) {
-		case []byte, string:
-			return true
+		// 验证图片数据 - 支持多种数据类型，与JavaScript版本一致
+		switch v := data.(type) {
+		case []byte:
+			// []byte类型直接通过
+			return len(v) > 0
+		case string:
+			// string类型也支持，会被转换为[]byte
+			return len(v) > 0
 		default:
 			logger.Error("图片数据格式错误: %T", data)
 			return false

@@ -25,6 +25,7 @@ type CacheItem struct {
 	CreatedAt    time.Time   `json:"createdAt"`
 	ExpireAt     time.Time   `json:"expireAt"`
 	LastAccessed time.Time   `json:"lastAccessed"`
+	IsImage      bool        `json:"isImage"` // 新增字段标识是否为图片
 }
 
 // CacheMeta 缓存元数据
@@ -113,7 +114,7 @@ func (dc *DiskCache) Get(key string) (*CacheItem, error) {
 		return nil, nil
 	}
 
-	// 读取文件
+	// 读取元数据文件
 	filePath := filepath.Join(dc.cacheDir, key+dc.config.CacheFileExt)
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -128,6 +129,18 @@ func (dc *DiskCache) Get(key string) (*CacheItem, error) {
 		logger.Error("解析缓存数据失败: %v", err)
 		dc.Delete(key)
 		return nil, nil
+	}
+
+	// 如果是图片类型，需要读取图片数据
+	if item.IsImage {
+		imageFilePath := filepath.Join(dc.cacheDir, key+".img")
+		imageData, err := os.ReadFile(imageFilePath)
+		if err != nil {
+			logger.Error("读取图片文件失败: %v", err)
+			dc.Delete(key)
+			return nil, nil
+		}
+		item.Data = imageData
 	}
 
 	// 更新最后访问时间
@@ -172,6 +185,9 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 		}
 	}
 
+	// 检查是否为图片类型
+	isImage := strings.HasPrefix(contentType, "image/")
+	
 	// 创建缓存项
 	item := &CacheItem{
 		Data:         value.Data,
@@ -179,25 +195,73 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 		CreatedAt:    time.Now(),
 		ExpireAt:     time.Now().Add(expireTime),
 		LastAccessed: time.Now(),
+		IsImage:      isImage,
 	}
 
-	// 序列化数据
-	data, err := json.Marshal(item)
-	if err != nil {
-		return fmt.Errorf("序列化缓存数据失败: %w", err)
-	}
+	var filePath string
+	var dataSize int
 
-	// 写入文件
-	filePath := filepath.Join(dc.cacheDir, key+dc.config.CacheFileExt)
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return fmt.Errorf("写入缓存文件失败: %w", err)
+	if isImage {
+		// 图片数据直接存储为二进制文件
+		var imageData []byte
+		switch data := value.Data.(type) {
+		case []byte:
+			imageData = data
+		case string:
+			imageData = []byte(data)
+		default:
+			return fmt.Errorf("图片数据类型错误: %T", value.Data)
+		}
+
+		// 存储图片数据
+		imageFilePath := filepath.Join(dc.cacheDir, key+".img")
+		if err := os.WriteFile(imageFilePath, imageData, 0644); err != nil {
+			return fmt.Errorf("写入图片文件失败: %w", err)
+		}
+
+		// 存储元数据（不包含图片数据）
+		metaItem := &CacheItem{
+			Data:         nil, // 图片数据单独存储
+			ContentType:  value.ContentType,
+			CreatedAt:    item.CreatedAt,
+			ExpireAt:     item.ExpireAt,
+			LastAccessed: item.LastAccessed,
+			IsImage:      true,
+		}
+
+		metaData, err := json.Marshal(metaItem)
+		if err != nil {
+			os.Remove(imageFilePath) // 清理已创建的图片文件
+			return fmt.Errorf("序列化图片元数据失败: %w", err)
+		}
+
+		filePath = filepath.Join(dc.cacheDir, key+dc.config.CacheFileExt)
+		if err := os.WriteFile(filePath, metaData, 0644); err != nil {
+			os.Remove(imageFilePath) // 清理已创建的图片文件
+			return fmt.Errorf("写入图片元数据文件失败: %w", err)
+		}
+
+		dataSize = len(imageData)
+	} else {
+		// 非图片数据使用JSON序列化
+		data, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("序列化缓存数据失败: %w", err)
+		}
+
+		filePath = filepath.Join(dc.cacheDir, key+dc.config.CacheFileExt)
+		if err := os.WriteFile(filePath, data, 0644); err != nil {
+			return fmt.Errorf("写入缓存文件失败: %w", err)
+		}
+
+		dataSize = len(data)
 	}
 
 	// 更新索引
 	meta := &CacheMeta{
 		Key:          key,
 		FilePath:     filePath,
-		Size:         len(data),
+		Size:         dataSize,
 		CreatedAt:    item.CreatedAt,
 		ExpireAt:     item.ExpireAt,
 		LastAccessed: item.LastAccessed,
@@ -229,9 +293,15 @@ func (dc *DiskCache) Delete(key string) error {
 		return nil
 	}
 
-	// 删除文件
+	// 删除元数据文件
 	if err := os.Remove(meta.FilePath); err != nil && !os.IsNotExist(err) {
 		logger.Error("删除缓存文件失败: %v", err)
+	}
+
+	// 如果是图片类型，还需要删除图片文件
+	imageFilePath := filepath.Join(dc.cacheDir, key+".img")
+	if err := os.Remove(imageFilePath); err != nil && !os.IsNotExist(err) {
+		logger.Error("删除图片文件失败: %v", err)
 	}
 
 	// 保存索引
@@ -381,7 +451,33 @@ func (mc *MemoryCache) Set(key string, value *CacheItem, contentType string) {
 		}
 	}
 
-	mc.cache.Add(key, value)
+	// 确保图片数据在内存中也是[]byte类型
+	if strings.HasPrefix(contentType, "image/") {
+		// 创建新的缓存项，确保图片数据是[]byte类型
+		imageItem := &CacheItem{
+			Data:         value.Data,
+			ContentType:  value.ContentType,
+			CreatedAt:    value.CreatedAt,
+			ExpireAt:     value.ExpireAt,
+			LastAccessed: value.LastAccessed,
+			IsImage:      true,
+		}
+
+		// 确保图片数据是[]byte类型
+		switch data := value.Data.(type) {
+		case []byte:
+			imageItem.Data = data
+		case string:
+			imageItem.Data = []byte(data)
+		default:
+			logger.Error("图片数据类型错误，跳过内存缓存: %T", value.Data)
+			return
+		}
+
+		mc.cache.Add(key, imageItem)
+	} else {
+		mc.cache.Add(key, value)
+	}
 }
 
 // Delete 删除内存缓存
