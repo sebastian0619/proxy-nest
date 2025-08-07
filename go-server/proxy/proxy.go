@@ -177,7 +177,7 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 		req.Header.Set("Accept", "application/json")
 	}
 	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "main/1.0")
+		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0")
 	}
 
 	// 调试：显示请求头

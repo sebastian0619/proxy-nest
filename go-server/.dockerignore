@@ -3,19 +3,23 @@
 .gitignore
 
 # 构建产物
-proxy-nest-go
+tmdb-go-proxy
 *.exe
+*.exe~
 *.dll
 *.so
 *.dylib
 
 # 测试文件
-*_test.go
-testdata/
+*.test
+*.out
 
-# 文档
-*.md
-docs/
+# 缓存目录
+cache/
+tmp/
+
+# 日志文件
+*.log
 
 # IDE相关
 .vscode/
@@ -24,26 +28,20 @@ docs/
 *.swo
 *~
 
-# 日志文件
-*.log
+# 操作系统相关
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# 临时文件
-tmp/
-temp/
-
-# 缓存目录
-cache/
-.cache/
-
-# 环境文件
-.env
-.env.local
-
-# Docker相关
-Dockerfile*
-docker-compose*
-.dockerignore
+# 文档
+README.md
+*.md
 
 # 其他
-.DS_Store
-Thumbs.db 
+.env
+.env.local
+.env.*.local 

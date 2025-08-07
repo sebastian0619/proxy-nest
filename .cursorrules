@@ -30,10 +30,57 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 - Go程序处理HTTP响应时，应该根据Content-Type而不是假设所有API响应都是JSON格式
 - 当上游服务器返回HTML错误页面时，应该正确处理并返回原始内容，而不是强制解析为JSON
 - 在代理服务器中，响应处理逻辑应该与JavaScript版本保持一致，支持多种内容类型
+- **Docker构建问题诊断**：当Go程序构建失败时，应该添加详细的调试步骤（如文件结构验证、Go文件列表等）来定位问题
+- **Go模块构建**：在Dockerfile中使用`go build -v`可以显示详细的构建信息，帮助诊断构建问题
+- **多阶段构建优化**：在构建阶段添加文件结构验证步骤，确保所有必要的文件都被正确复制
+- **Go模块路径问题**：在Docker构建中，必须正确设置Go模块环境变量（GO111MODULE=on, GOPATH=/go, GOCACHE=/go/cache, GOMODCACHE=/go/pkg/mod），否则Go无法正确解析模块路径，导致"package not in std"错误
 
 # Scratchpad
 
-## 当前任务：修复Go程序JSON解析错误
+## 当前任务：重写Go的Dockerfile和GitHub Actions
+
+任务说明：用户要求重写Go的Dockerfile和GitHub Actions工作流，并检查是否需要修改程序中的文件夹名称引用。
+
+问题分析：
+- 当前Dockerfile使用多阶段构建，但可能存在优化空间
+- GitHub Actions工作流目前只针对JavaScript版本，需要为Go版本创建专门的工作流
+- 文件夹名称是`go-server`，但程序中的模块名称是`main`，需要确认是否需要调整
+
+计划步骤：
+[ ] 分析当前Dockerfile的优缺点
+[ ] 重写优化的Dockerfile
+[ ] 创建专门的Go版本GitHub Actions工作流
+[ ] 检查程序中的模块名称和引用是否需要调整
+[ ] 测试构建和部署流程
+
+## 之前任务：修复GitHub Actions Go构建失败
+
+任务说明：GitHub Actions构建失败，错误信息显示Go构建过程没有成功完成，退出代码为1。
+
+问题分析：
+- 错误信息：`process "/bin/sh -c CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o proxy-nest-go ." did not complete successfully: exit code: 1`
+- **根本原因**：Go模块路径解析错误 - `package proxy-nest-go/cache is not in std (/usr/local/go/src/proxy-nest-go/cache)`
+- 在Docker构建环境中，Go无法找到`proxy-nest-go/cache`包，因为模块路径设置不正确
+
+修复步骤：
+[X] 分析当前Dockerfile配置
+[X] 检查Go模块配置（go.mod, go.sum）
+[X] 验证源代码文件结构
+[X] 简化Dockerfile，使用单阶段构建
+[X] 添加详细的调试步骤到GitHub Actions工作流
+[X] 优化Dockerfile，使用多阶段构建并添加验证步骤
+[X] **关键修复**：添加正确的Go模块环境变量设置（GO111MODULE=on, GOPATH=/go, GOCACHE=/go/cache, GOMODCACHE=/go/pkg/mod）
+[ ] 推送更改并验证GitHub Actions构建
+
+修复内容：
+- **Dockerfile优化**：使用多阶段构建，添加文件结构验证步骤
+- **构建调试**：在Dockerfile中添加`ls -la`和`find . -name "*.go"`命令来验证文件结构
+- **详细构建**：使用`go build -v`显示详细的构建信息
+- **GitHub Actions调试**：添加调试步骤来显示文件结构和Go模块信息
+- **构建验证**：在每个关键步骤后添加验证命令
+- **Go模块路径修复**：添加正确的Go模块环境变量设置，解决模块路径解析问题
+
+## 之前任务：修复Go程序JSON解析错误
 
 任务说明：用户报告Go程序在处理TMDB API请求时出现JSON解析错误，错误信息显示遇到了无效字符 '<'，这通常意味着服务器返回了HTML错误页面而不是JSON。
 
