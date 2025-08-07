@@ -35,9 +35,8 @@ type ProxyManager struct {
 
 // NewProxyManager 创建代理管理器
 func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healthManager *health.HealthManager) *ProxyManager {
-	client := &http.Client{
-		Timeout: cfg.RequestTimeout,
-	}
+	// 不设置HTTP客户端超时，使用context超时控制
+	client := &http.Client{}
 
 	return &ProxyManager{
 		config:        cfg,
@@ -193,7 +192,16 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	// 调试：显示请求头
 	logger.Info("发送请求头 - Accept: %s, User-Agent: %s", req.Header.Get("Accept"), req.Header.Get("User-Agent"))
 
-	return pm.client.Do(req)
+	// 添加调试信息
+	logger.Info("开始发送请求: %s", url)
+	resp, err := pm.client.Do(req)
+	if err != nil {
+		logger.Error("请求发送失败: %v", err)
+		return nil, err
+	}
+	logger.Info("请求发送成功，状态码: %d", resp.StatusCode)
+
+	return resp, nil
 }
 
 // processResponse 处理响应
@@ -236,10 +244,13 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 
 	case "tmdb-image":
 		// 图片请求处理 - 与JavaScript版本保持一致
+		logger.Info("开始读取图片响应体，Content-Type: %s", contentType)
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
+			logger.Error("读取图片响应体失败: %v", err)
 			return nil, fmt.Errorf("读取图片响应体失败: %w", err)
 		}
+		logger.Info("图片响应体读取成功，大小: %d字节", len(body))
 		responseData = body
 		isImage = true
 
