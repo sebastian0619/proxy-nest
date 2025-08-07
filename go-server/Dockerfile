@@ -12,35 +12,28 @@ ENV GO111MODULE=on \
 # 设置工作目录
 WORKDIR /app
 
-# 安装构建依赖
+# 安装构建依赖（合并RUN命令减少层数）
 RUN apk add --no-cache git ca-certificates tzdata
 
-# 复制go mod文件
+# 复制go mod文件（优先复制，利用Docker层缓存）
 COPY go.mod go.sum ./
 
-# 下载依赖并缓存
-RUN go mod download && \
+# 下载依赖并缓存（使用go mod download -x显示详细信息）
+RUN go mod download -x && \
     go mod verify
 
 # 复制源代码
 COPY . .
 
-# 调试：显示文件结构
-RUN echo "=== 文件结构 ===" && ls -la && echo "=== Go文件列表 ===" && find . -name "*.go" -type f
+# 构建应用（优化构建参数，启用Go构建缓存）
+RUN --mount=type=cache,target=/go/cache \
+    --mount=type=cache,target=/go/pkg/mod \
+    go build -v -ldflags="-s -w -trimpath" -o tmdb-go-proxy .
 
-# 初始化Go模块（确保模块正确初始化）
-RUN go mod tidy
-
-# 调试：显示模块信息
-RUN echo "=== Go模块信息 ===" && go mod graph
-
-# 构建应用（使用详细输出）
-RUN go build -v -ldflags="-s -w" -o tmdb-go-proxy .
-
-# 运行阶段
+# 运行阶段 - 使用更小的基础镜像
 FROM alpine:latest
 
-# 安装运行时依赖
+# 安装运行时依赖（合并RUN命令）
 RUN apk --no-cache add ca-certificates tzdata
 
 # 设置工作目录

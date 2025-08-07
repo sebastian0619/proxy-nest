@@ -12,6 +12,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/proxy-go
+  DOCKER_BUILDKIT: 1
 
 jobs:
   build-and-push:
@@ -23,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史用于缓存
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -34,6 +37,7 @@ jobs:
         with:
           driver-opts: |
             image=moby/buildkit:v0.13.0
+          buildkitd-flags: --debug
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -64,11 +68,13 @@ jobs:
           cache-from: |
             type=gha
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-to: |
             type=gha,mode=max
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+            BUILDKIT_PROGRESS=plain
 
       - name: Show image info
         if: github.event_name != 'pull_request'
@@ -98,10 +104,9 @@ jobs:
           go test -v -race -coverprofile=coverage.out ./...
           echo "=== 测试完成 ==="
 
-      - name: Build Go binary locally
+      - name: Build local binary
         working-directory: ./go-server
         run: |
-          echo "=== 本地构建测试 ==="
-          go build -v -ldflags="-s -w" -trimpath -o tmdb-go-proxy .
-          echo "=== 构建成功 ==="
-          ls -la tmdb-go-proxy 
+          echo "=== 构建本地二进制文件 ==="
+          go build -v -ldflags="-s -w -trimpath" -o tmdb-go-proxy-local .
+          echo "=== 构建完成 ===" 
