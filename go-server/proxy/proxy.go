@@ -184,7 +184,13 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	// 设置默认请求头（如果没有的话）
 	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
+		if pm.config.UpstreamType == "tmdb-image" {
+			// 图片请求使用通用的图片接受类型
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+		} else {
+			// API请求使用JSON接受类型
+			req.Header.Set("Accept", "application/json")
+		}
 	}
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0")
