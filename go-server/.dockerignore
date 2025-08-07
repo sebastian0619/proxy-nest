@@ -6,42 +6,41 @@
 tmdb-go-proxy
 proxy-nest-go
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
 
 # 测试文件
+*_test.go
 *.test
-*.out
+coverage.out
 
-# 临时目录
-tmp/
+# 缓存目录
+cache/
+.cache/
 
 # 日志文件
 *.log
 
-# IDE相关
+# IDE文件
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# 操作系统相关
+# 系统文件
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
 
 # 文档
 README.md
 *.md
 
-# 其他
-.env
-.env.local
-.env.*.local 
+# Docker相关
+Dockerfile*
+docker-compose*
+.dockerignore 
