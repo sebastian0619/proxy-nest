@@ -25,34 +25,11 @@ RUN go mod download && \
 # 复制源代码
 COPY . .
 
-# 验证文件结构（调试用）
-RUN echo "=== 构建环境信息 ===" && \
-    echo "Go版本: $(go version)" && \
-    echo "工作目录: $(pwd)" && \
-    echo "=== 文件结构 ===" && \
-    ls -la && \
-    echo "=== Go文件列表 ===" && \
-    find . -name "*.go" -type f
-
-# 调试Go模块信息
-RUN echo "=== Go模块信息 ===" && \
-    go env && \
-    echo "=== go.mod内容 ===" && \
-    cat go.mod && \
-    echo "=== go list -m ===" && \
-    go list -m
-
 # 初始化Go模块（确保模块正确初始化）
 RUN go mod tidy
 
 # 构建应用（使用详细输出）
 RUN go build -v -ldflags="-s -w" -o tmdb-go-proxy .
-
-# 验证构建结果
-RUN echo "=== 构建结果 ===" && \
-    ls -la tmdb-go-proxy && \
-    echo "=== 二进制文件信息 ===" && \
-    file tmdb-go-proxy
 
 # 运行阶段
 FROM alpine:latest
