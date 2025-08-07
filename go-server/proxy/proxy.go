@@ -205,7 +205,6 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 	// 根据上游类型处理响应
 	var responseData interface{}
 	var isImage bool
-	var err error
 
 	switch pm.config.UpstreamType {
 	case "tmdb-api":
