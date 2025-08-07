@@ -15,8 +15,10 @@ proxy-nest-go
 *.test
 coverage.out
 
-# 缓存目录
-cache/
+# 缓存数据文件（保留源代码）
+cache/*.json
+cache/*.dat
+cache/*.tmp
 .cache/
 
 # 日志文件

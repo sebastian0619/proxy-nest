@@ -123,6 +123,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **BuildKit版本修复**：升级BuildKit到v0.13.0以支持多输出功能，移除不必要的输出配置
 [X] **多架构构建修复**：移除Dockerfile中硬编码的GOARCH设置，确保多架构构建正常工作
 [X] **图片数据类型修复**：修复图片缓存和响应处理中的类型断言错误，支持string和[]byte两种数据类型
+[X] **Docker构建修复**：修复.dockerignore文件，保留cache目录中的源代码文件，排除缓存数据文件
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑
