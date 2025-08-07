@@ -150,17 +150,11 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 // makeRequest 发送HTTP请求
 func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Response, error) {
-	// 为图片请求设置更长的超时时间
-	timeout := pm.config.RequestTimeout
-	if pm.config.UpstreamType == "tmdb-image" {
-		// 图片请求使用更长的超时时间（90秒）
-		timeout = 90 * time.Second
-	}
-	
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// 使用统一的超时时间，与JavaScript版本保持一致
+	ctx, cancel := context.WithTimeout(context.Background(), pm.config.RequestTimeout)
 	defer cancel()
 
-	// 图片请求使用GET方法获取完整数据
+	// 所有请求都使用GET方法
 	method := "GET"
 
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
@@ -241,8 +235,8 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		}
 
 	case "tmdb-image":
-		// 图片请求特殊处理 - 使用带超时的读取
-		body, err := pm.readImageBody(resp.Body)
+		// 图片请求处理 - 与JavaScript版本保持一致
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("读取图片响应体失败: %w", err)
 		}
@@ -290,34 +284,7 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 	}, nil
 }
 
-// readImageBody 读取图片响应体，使用带超时的读取
-func (pm *ProxyManager) readImageBody(body io.ReadCloser) ([]byte, error) {
-	// 为图片读取设置更长的超时时间
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 
-	// 创建一个带超时的读取器
-	done := make(chan []byte, 1)
-	errChan := make(chan error, 1)
-
-	go func() {
-		data, err := io.ReadAll(body)
-		if err != nil {
-			errChan <- err
-			return
-		}
-		done <- data
-	}()
-
-	select {
-	case data := <-done:
-		return data, nil
-	case err := <-errChan:
-		return nil, err
-	case <-ctx.Done():
-		return nil, fmt.Errorf("读取图片超时: %w", ctx.Err())
-	}
-}
 
 // ValidateResponse 验证响应
 func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) bool {
