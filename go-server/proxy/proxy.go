@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -155,8 +157,14 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 // makeRequest 发送HTTP请求
 func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Response, error) {
-	// 使用统一的超时时间，与JavaScript版本保持一致
-	ctx, cancel := context.WithTimeout(context.Background(), pm.config.RequestTimeout)
+	// 根据上游类型设置不同的超时时间
+	timeout := pm.config.RequestTimeout
+	if pm.config.UpstreamType == "tmdb-image" {
+		// 图片请求需要更长的超时时间（90秒）
+		timeout = time.Duration(getEnvAsInt("IMAGE_REQUEST_TIMEOUT", 90)) * time.Second
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// 所有请求都使用GET方法
@@ -196,7 +204,7 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	}
 
 	// 调试：显示请求头
-	logger.Info("发送请求头 - Accept: %s, User-Agent: %s", req.Header.Get("Accept"), req.Header.Get("User-Agent"))
+	logger.Info("发送请求头 - Accept: %s, User-Agent: %s, 超时时间: %v", req.Header.Get("Accept"), req.Header.Get("User-Agent"), timeout)
 
 	// 添加调试信息
 	logger.Info("开始发送请求: %s", url)
@@ -208,6 +216,16 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	logger.Info("请求发送成功，状态码: %d, Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 
 	return resp, nil
+}
+
+// getEnvAsInt 获取环境变量作为整数
+func getEnvAsInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
 }
 
 // processResponse 处理响应

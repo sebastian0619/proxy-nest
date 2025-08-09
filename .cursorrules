@@ -124,6 +124,7 @@ The goal is to help you maintain a big picture as well as the progress of the ta
 [X] **多架构构建修复**：移除Dockerfile中硬编码的GOARCH设置，确保多架构构建正常工作
 [X] **图片数据类型修复**：修复图片缓存和响应处理中的类型断言错误，支持string和[]byte两种数据类型
 [X] **Docker构建修复**：修复.dockerignore文件，保留cache目录中的源代码文件，排除缓存数据文件
+[X] **图片超时时间优化**：为tmdb-image类型的请求设置90秒超时时间，解决大图片文件下载时的超时问题
 
 ### 下一步计划
 [ ] 测试修复后的缓存键生成逻辑
