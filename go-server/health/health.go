@@ -71,6 +71,9 @@ type HealthManager struct {
 	healthyServersSnapshot []*Server
 	snapshotMutex          sync.RWMutex
 	lastSnapshotTime       time.Time
+	// 添加健康检查锁，确保同一时间只进行一个健康检查
+	healthCheckMutex sync.Mutex
+	isChecking       bool
 }
 
 // NewHealthManager 创建健康管理器
@@ -177,7 +180,15 @@ func (hm *HealthManager) healthCheckLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			hm.performHealthCheck()
+			// 在goroutine中执行健康检查，避免阻塞主线程
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("健康检查发生panic: %v", r)
+					}
+				}()
+				hm.performHealthCheck()
+			}()
 		case <-hm.stopChan:
 			return
 		}
@@ -186,6 +197,23 @@ func (hm *HealthManager) healthCheckLoop() {
 
 // performHealthCheck 执行健康检查
 func (hm *HealthManager) performHealthCheck() {
+	// 检查是否已经在进行健康检查
+	hm.healthCheckMutex.Lock()
+	if hm.isChecking {
+		logger.Info("健康检查正在进行中，跳过本次检查")
+		hm.healthCheckMutex.Unlock()
+		return
+	}
+	hm.isChecking = true
+	hm.healthCheckMutex.Unlock()
+
+	// 确保函数结束时重置状态
+	defer func() {
+		hm.healthCheckMutex.Lock()
+		hm.isChecking = false
+		hm.healthCheckMutex.Unlock()
+	}()
+
 	logger.Info("开始执行健康检查...")
 
 	var wg sync.WaitGroup
@@ -250,7 +278,7 @@ func (hm *HealthManager) performHealthCheck() {
 	// 输出不健康服务器
 	for _, server := range hm.servers {
 		if server.Status == HealthStatusUnhealthy {
-			logger.Error("  ✗ %s: 不健康 (错误次数=%d, 恢复时间=%v)",
+			logger.Error("  ✗ %s: 服务器不健康 (错误次数=%d, 恢复时间=%v)",
 				server.URL, server.ErrorCount, server.RecoveryTime)
 		}
 	}
@@ -267,7 +295,9 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 	var method string
 
 	if hm.config.UpstreamType == "tmdb-api" {
-		healthCheckURL = fmt.Sprintf("%s/3/configuration?api_key=%s", server.URL, hm.config.TMDBAPIKey)
+		// 为健康检查添加特殊参数，避免与正常请求混淆
+		healthCheckURL = fmt.Sprintf("%s/3/configuration?api_key=%s&_health_check=1&_timestamp=%d", 
+			server.URL, hm.config.TMDBAPIKey, time.Now().Unix())
 		method = "GET"
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
@@ -276,13 +306,16 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
+		// 为健康检查添加特殊参数
+		healthCheckURL = fmt.Sprintf("%s%s?_health_check=1&_timestamp=%d", 
+			server.URL, testURL, time.Now().Unix())
 		method = "HEAD"
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "custom" {
 		// 自定义类型：对根路径进行简单的HEAD请求检查
-		healthCheckURL = fmt.Sprintf("%s/", server.URL)
+		healthCheckURL = fmt.Sprintf("%s/?_health_check=1&_timestamp=%d", 
+			server.URL, time.Now().Unix())
 		method = "HEAD"
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
@@ -319,7 +352,13 @@ type CheckResult struct {
 
 // makeRequest 发送HTTP请求
 func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), hm.config.RequestTimeout)
+	// 健康检查使用较短的超时时间，避免阻塞其他请求
+	timeout := 10 * time.Second
+	if hm.config.RequestTimeout < timeout {
+		timeout = hm.config.RequestTimeout
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
@@ -327,7 +366,12 @@ func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.
 		return nil, err
 	}
 
-	client := &http.Client{}
+	// 为健康检查请求设置特殊的User-Agent
+	req.Header.Set("User-Agent", "tmdb-go-proxy-health-check/1.0")
+
+	client := &http.Client{
+		Timeout: timeout,
+	}
 	return client.Do(req)
 }
 

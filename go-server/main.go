@@ -107,6 +107,26 @@ func shouldSkipRequest(path string) bool {
 		}
 	}
 
+	// 特别处理健康检查相关的请求
+	if strings.Contains(path, "/3/configuration") && strings.Contains(path, "api_key=") {
+		return true
+	}
+
+	return false
+}
+
+// shouldSkipRequestWithQuery 判断是否应该跳过某些请求（包含查询参数）
+func shouldSkipRequestWithQuery(path string, query string) bool {
+	// 首先检查路径
+	if shouldSkipRequest(path) {
+		return true
+	}
+
+	// 检查查询参数中是否包含健康检查标识
+	if strings.Contains(query, "_health_check=1") {
+		return true
+	}
+
 	return false
 }
 
@@ -126,8 +146,11 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		path = "/"
 	}
 
-	// 过滤掉常见的非API请求
-	if shouldSkipRequest(path) {
+	// 获取查询参数
+	query := c.Request.URL.RawQuery
+
+	// 过滤掉常见的非API请求和健康检查请求
+	if shouldSkipRequestWithQuery(path, query) {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":   "Not Found",
 			"message": "This endpoint is not supported",
