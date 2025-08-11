@@ -132,7 +132,15 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 
 // setupRoutes 设置路由
 func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
-	// 所有路径都走代理处理，包括根路径"/"
+	// 健康检查端点
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "healthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
+
+	// 代理请求处理 - 使用NoRoute捕获所有其他请求
 	router.NoRoute(func(c *gin.Context) {
 		handleProxyRequest(c, proxyManager, cacheManager)
 	})
@@ -316,7 +324,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	if cacheManager.GetConfig().CacheEnabled {
 		// 确定是否为图片类型
 		isImage := strings.HasPrefix(response.ContentType, "image/")
-		
+
 		cacheItem := &cache.CacheItem{
 			Data:         response.Data,
 			ContentType:  response.ContentType,
