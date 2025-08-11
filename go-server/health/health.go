@@ -306,10 +306,9 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		// 为健康检查添加特殊参数，使用HEAD请求避免下载大量图片数据
-		healthCheckURL = fmt.Sprintf("%s%s?_health_check=1&_timestamp=%d", 
-			server.URL, testURL, time.Now().Unix())
-		method = "HEAD"  // 使用HEAD请求，与proxy_app.go保持一致
+		// 使用简洁的URL进行健康检查，避免参数影响请求
+		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
+		method = "HEAD"  // 使用HEAD请求，与JavaScript版本保持一致
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "custom" {
