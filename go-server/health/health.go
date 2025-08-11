@@ -306,11 +306,71 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		// 使用简洁的URL进行健康检查，避免参数影响请求
+		// 使用GET请求进行健康检查，验证返回的确实是图片数据
 		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
-		method = "HEAD"  // 使用HEAD请求，与JavaScript版本保持一致
+		method = "GET"  // 使用GET请求，验证返回的确实是图片数据
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
-		_, err = hm.makeRequest(method, healthCheckURL, nil)
+		
+		// 发送请求并验证响应
+		resp, err := hm.makeRequest(method, healthCheckURL, nil)
+		if err != nil {
+			return &CheckResult{
+				Success: false,
+				Error:   err.Error(),
+			}
+		}
+		
+		// 验证响应状态码
+		if resp.StatusCode != http.StatusOK {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("HTTP状态码错误: %d", resp.StatusCode),
+			}
+		}
+		
+		// 验证Content-Type
+		contentType := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(contentType, "image/") {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
+			}
+		}
+		
+		// 读取响应体并验证确实是图片数据
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("读取响应体失败: %v", err),
+			}
+		}
+		
+		// 使用http.DetectContentType验证数据确实是图片
+		detectedType := http.DetectContentType(body)
+		if !strings.HasPrefix(detectedType, "image/") {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("检测到的内容类型不是图片: %s (声明类型: %s)", detectedType, contentType),
+			}
+		}
+		
+		// 验证图片数据大小（至少应该有几百字节）
+		if len(body) < 100 {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("图片数据太小: %d字节", len(body)),
+			}
+		}
+		
+		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s", 
+			len(body), detectedType, contentType)
+		
+		return &CheckResult{
+			Success:      true,
+			ResponseTime: time.Since(startTime).Milliseconds(),
+		}
 	} else if hm.config.UpstreamType == "custom" {
 		// 自定义类型：对根路径进行简单的HEAD请求检查
 		healthCheckURL = fmt.Sprintf("%s/?_health_check=1&_timestamp=%d", 
