@@ -187,15 +187,15 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 
 	// 检查是否为图片类型
 	isImage := strings.HasPrefix(contentType, "image/")
-	
-	// 创建缓存项
+
+	// 创建缓存项，确保IsImage字段正确设置
 	item := &CacheItem{
 		Data:         value.Data,
 		ContentType:  value.ContentType,
 		CreatedAt:    time.Now(),
 		ExpireAt:     time.Now().Add(expireTime),
 		LastAccessed: time.Now(),
-		IsImage:      isImage,
+		IsImage:      isImage, // 根据contentType正确设置IsImage字段
 	}
 
 	var filePath string
@@ -226,7 +226,7 @@ func (dc *DiskCache) Set(key string, value *CacheItem, contentType string) error
 			CreatedAt:    item.CreatedAt,
 			ExpireAt:     item.ExpireAt,
 			LastAccessed: item.LastAccessed,
-			IsImage:      true,
+			IsImage:      true, // 确保元数据中IsImage为true
 		}
 
 		metaData, err := json.Marshal(metaItem)
@@ -451,7 +451,7 @@ func (mc *MemoryCache) Set(key string, value *CacheItem, contentType string) {
 		}
 	}
 
-	// 确保图片数据在内存中也是[]byte类型
+	// 确保图片数据在内存中也是[]byte类型，并正确设置IsImage字段
 	if strings.HasPrefix(contentType, "image/") {
 		// 创建新的缓存项，确保图片数据是[]byte类型
 		imageItem := &CacheItem{
@@ -460,7 +460,7 @@ func (mc *MemoryCache) Set(key string, value *CacheItem, contentType string) {
 			CreatedAt:    value.CreatedAt,
 			ExpireAt:     value.ExpireAt,
 			LastAccessed: value.LastAccessed,
-			IsImage:      true,
+			IsImage:      true, // 确保图片类型正确设置
 		}
 
 		// 确保图片数据是[]byte类型
@@ -475,8 +475,18 @@ func (mc *MemoryCache) Set(key string, value *CacheItem, contentType string) {
 		}
 
 		mc.cache.Add(key, imageItem)
+		logger.Info("内存缓存写入图片: %s (大小: %d字节, IsImage: %t)", key, len(imageItem.Data.([]byte)), imageItem.IsImage)
 	} else {
-		mc.cache.Add(key, value)
+		// 非图片数据，确保IsImage字段正确
+		nonImageItem := &CacheItem{
+			Data:         value.Data,
+			ContentType:  value.ContentType,
+			CreatedAt:    value.CreatedAt,
+			ExpireAt:     value.ExpireAt,
+			LastAccessed: value.LastAccessed,
+			IsImage:      false, // 确保非图片类型正确设置
+		}
+		mc.cache.Add(key, nonImageItem)
 	}
 }
 
@@ -529,7 +539,7 @@ func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 func GetCacheKey(urlStr string) string {
 	// 与JavaScript版本保持一致的缓存键生成逻辑
 	// JavaScript版本使用: url.parse(req.originalUrl, true) + URLSearchParams排序 + MD5
-	
+
 	// 解析URL
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
@@ -538,13 +548,13 @@ func GetCacheKey(urlStr string) string {
 		hash := md5.Sum([]byte(urlStr))
 		return fmt.Sprintf("%x", hash)
 	}
-	
+
 	// 获取路径部分
 	pathname := parsedURL.Path
 	if pathname == "" {
 		pathname = "/"
 	}
-	
+
 	// 处理查询参数
 	var queryString string
 	if len(parsedURL.Query()) > 0 {
@@ -555,12 +565,12 @@ func GetCacheKey(urlStr string) string {
 				params = append(params, fmt.Sprintf("%s=%s", key, value))
 			}
 		}
-		
+
 		// 排序参数（与JavaScript的URLSearchParams.sort()保持一致）
 		sort.Strings(params)
 		queryString = strings.Join(params, "&")
 	}
-	
+
 	// 构建缓存键字符串
 	var cacheKeyStr string
 	if queryString != "" {
@@ -568,7 +578,7 @@ func GetCacheKey(urlStr string) string {
 	} else {
 		cacheKeyStr = pathname
 	}
-	
+
 	// 生成MD5哈希
 	hash := md5.Sum([]byte(cacheKeyStr))
 	return fmt.Sprintf("%x", hash)

@@ -171,7 +171,7 @@ func (hm *HealthManager) StopHealthCheck() {
 
 // healthCheckLoop 健康检查循环
 func (hm *HealthManager) healthCheckLoop() {
-	ticker := time.NewTicker(30 * time.Second) // 每30秒检查一次
+	ticker := time.NewTicker(2 * time.Minute) // 每2分钟检查一次，减少频率
 	defer ticker.Stop()
 
 	// 立即执行第一次检查
@@ -216,6 +216,10 @@ func (hm *HealthManager) performHealthCheck() {
 
 	logger.Info("开始执行健康检查...")
 
+	// 添加超时控制，避免健康检查无限期阻塞
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	var wg sync.WaitGroup
 	hm.mutex.RLock()
 	servers := make([]*Server, 0, len(hm.servers))
@@ -224,6 +228,7 @@ func (hm *HealthManager) performHealthCheck() {
 	}
 	hm.mutex.RUnlock()
 
+	// 为每个服务器检查添加超时控制
 	for _, server := range servers {
 		wg.Add(1)
 		go func(s *Server) {
@@ -235,14 +240,43 @@ func (hm *HealthManager) performHealthCheck() {
 				return
 			}
 
-			logger.Info("开始检查服务器: %s", s.URL)
-			checkResult := hm.checkServerHealth(s)
-			logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
-			hm.updateServerState(s, checkResult)
+			// 为单个服务器检查添加超时控制
+			serverCtx, serverCancel := context.WithTimeout(ctx, 10*time.Second)
+			defer serverCancel()
+
+			// 使用channel和select实现超时控制
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				logger.Info("开始检查服务器: %s", s.URL)
+				checkResult := hm.checkServerHealth(s)
+				logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
+				hm.updateServerState(s, checkResult)
+			}()
+
+			select {
+			case <-done:
+				// 检查完成
+			case <-serverCtx.Done():
+				logger.Error("服务器 %s 健康检查超时", s.URL)
+			}
 		}(server)
 	}
 
-	wg.Wait()
+	// 等待所有检查完成或超时
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+		logger.Info("所有服务器健康检查完成")
+	case <-ctx.Done():
+		logger.Error("健康检查整体超时")
+		return
+	}
 
 	// 健康检查完成后，更新健康服务器快照
 	hm.updateHealthyServersSnapshot()
@@ -258,32 +292,9 @@ func (hm *HealthManager) performHealthCheck() {
 			healthyServers = append(healthyServers, server)
 		}
 	}
-
-	// 计算总权重和选择概率
-	var totalWeight int
-	for _, server := range healthyServers {
-		totalWeight += server.CombinedWeight
-	}
-
-	// 输出健康服务器状态和选择概率
-	for _, server := range healthyServers {
-		selectionProbability := 0.0
-		if totalWeight > 0 {
-			selectionProbability = float64(server.CombinedWeight) / float64(totalWeight) * 100
-		}
-		logger.Success("  ✓ %s: 健康 (基础权重=%d, 动态权重=%d, 综合权重=%d, EWMA=%.0fms, 选择概率=%.1f%%)",
-			server.URL, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.LastEWMA, selectionProbability)
-	}
-
-	// 输出不健康服务器
-	for _, server := range hm.servers {
-		if server.Status == HealthStatusUnhealthy {
-			logger.Error("  ✗ %s: 服务器不健康 (错误次数=%d, 恢复时间=%v)",
-				server.URL, server.ErrorCount, server.RecoveryTime)
-		}
-	}
 	hm.mutex.RUnlock()
-	logger.Info("健康检查统计: %d/%d 服务器健康", healthyCount, len(hm.servers))
+
+	logger.Info("健康检查完成: %d/%d 个服务器健康", healthyCount, len(hm.servers))
 }
 
 // checkServerHealth 检查单个服务器健康状态
@@ -792,18 +803,18 @@ func (hm *HealthManager) ReportUnhealthyServer(url, workerID, errorInfo string) 
 	return nil
 }
 
-// GetHealthyServers 获取健康服务器列表
+// GetHealthyServers 获取健康服务器
 func (hm *HealthManager) GetHealthyServers() []*Server {
 	// 使用快照机制，避免健康检查期间影响请求处理
 	hm.snapshotMutex.RLock()
 	defer hm.snapshotMutex.RUnlock()
 
-	// 如果快照为空或太旧，需要更新快照
+	// 如果快照为空或太旧，记录日志但不阻塞请求处理
 	if len(hm.healthyServersSnapshot) == 0 || time.Since(hm.lastSnapshotTime) > 5*time.Second {
-		// 释放读锁，获取写锁来更新快照
-		hm.snapshotMutex.RUnlock()
-		hm.updateHealthyServersSnapshot()
-		hm.snapshotMutex.RLock()
+		logger.Info("健康服务器快照过期，将在后台更新，当前返回空列表")
+		// 在后台异步更新快照，不阻塞当前请求
+		go hm.updateHealthyServersSnapshot()
+		return []*Server{}
 	}
 
 	// 返回快照的副本，避免外部修改

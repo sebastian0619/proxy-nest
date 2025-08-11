@@ -177,7 +177,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
 				// 根据内容类型处理数据
-				if strings.HasPrefix(cachedItem.ContentType, "image/") {
+				if cachedItem.IsImage {
 					// 图片数据需要确保是[]byte类型
 					switch data := cachedItem.Data.(type) {
 					case []byte:
@@ -189,8 +189,10 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 						c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
 						return
 					}
+					logger.CacheHit("磁盘缓存命中: %s (图片, IsImage: %t)", fullURL, cachedItem.IsImage)
 				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
+					logger.CacheHit("磁盘缓存命中: %s (JSON)", fullURL)
 				} else {
 					// 非JSON响应，根据数据类型处理
 					switch data := cachedItem.Data.(type) {
@@ -201,9 +203,11 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 					default:
 						c.JSON(http.StatusOK, cachedItem.Data)
 					}
+					logger.CacheHit("磁盘缓存命中: %s (其他)", fullURL)
 				}
-				logger.CacheHit("磁盘缓存命中: %s", fullURL)
 				return
+			} else {
+				logger.Error("磁盘缓存验证失败: %s", fullURL)
 			}
 		}
 
@@ -212,7 +216,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
 				// 根据内容类型处理数据
-				if strings.HasPrefix(cachedItem.ContentType, "image/") {
+				if cachedItem.IsImage {
 					// 图片数据需要确保是[]byte类型
 					switch data := cachedItem.Data.(type) {
 					case []byte:
@@ -224,8 +228,10 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 						c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
 						return
 					}
+					logger.CacheHit("内存缓存命中: %s (图片, IsImage: %t)", fullURL, cachedItem.IsImage)
 				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
+					logger.CacheHit("内存缓存命中: %s (JSON)", fullURL)
 				} else {
 					// 非JSON响应，根据数据类型处理
 					switch data := cachedItem.Data.(type) {
@@ -236,9 +242,11 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 					default:
 						c.JSON(http.StatusOK, cachedItem.Data)
 					}
+					logger.CacheHit("内存缓存命中: %s (其他)", fullURL)
 				}
-				logger.CacheHit("内存缓存命中: %s", fullURL)
 				return
+			} else {
+				logger.Error("内存缓存验证失败: %s", fullURL)
 			}
 		}
 
@@ -306,23 +314,27 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 保存缓存
 	if cacheManager.GetConfig().CacheEnabled {
+		// 确定是否为图片类型
+		isImage := strings.HasPrefix(response.ContentType, "image/")
+		
 		cacheItem := &cache.CacheItem{
 			Data:         response.Data,
 			ContentType:  response.ContentType,
 			CreatedAt:    time.Now(),
 			ExpireAt:     time.Now().Add(cacheManager.GetConfig().DiskCacheTTL),
 			LastAccessed: time.Now(),
+			IsImage:      isImage, // 根据ContentType正确设置IsImage字段
 		}
 
 		// 保存到内存缓存
 		cacheManager.GetMemoryCache().Set(cacheKey, cacheItem, response.ContentType)
-		logger.CacheInfo("内存缓存写入: %s", fullURL)
+		logger.CacheInfo("内存缓存写入: %s (IsImage: %t)", fullURL, isImage)
 
 		// 保存到磁盘缓存
 		if err := cacheManager.GetDiskCache().Set(cacheKey, cacheItem, response.ContentType); err != nil {
 			logger.Error("保存磁盘缓存失败: %v", err)
 		} else {
-			logger.CacheInfo("磁盘缓存写入: %s", fullURL)
+			logger.CacheInfo("磁盘缓存写入: %s (IsImage: %t)", fullURL, isImage)
 		}
 	}
 }
