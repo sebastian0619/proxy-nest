@@ -92,10 +92,41 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 	requestURL := fmt.Sprintf("%s%s", server.URL, path)
 	logger.Info("发送上游请求: %s (服务器: %s)", requestURL, server.URL)
 
-	// 发送请求
+	// 发送请求（带重试机制，与JavaScript版本保持一致）
 	startTime := time.Now()
 	logger.Info("开始调用makeRequest...")
-	response, err := pm.makeRequest(requestURL, headers)
+	
+	// 实现3次重试机制，与JavaScript版本保持一致
+	var response *http.Response
+	var err error
+	maxRetries := 3
+	
+	for retryCount := 0; retryCount < maxRetries; retryCount++ {
+		if retryCount > 0 {
+			logger.Info("重试请求 (%d/%d): %s", retryCount+1, maxRetries, requestURL)
+			// 重试前等待1秒，与JavaScript版本保持一致
+			time.Sleep(1 * time.Second)
+		}
+		
+		response, err = pm.makeRequest(requestURL, headers)
+		
+		if err == nil {
+			break // 请求成功，跳出重试循环
+		}
+		
+		// 检查是否是可重试的错误
+		if !isRetryableError(err) {
+			logger.Error("遇到不可重试的错误，停止重试: %v", err)
+			break
+		}
+		
+		if retryCount == maxRetries-1 {
+			logger.Error("达到最大重试次数 (%d)，请求最终失败: %s -> %v", maxRetries, requestURL, err)
+		} else {
+			logger.Warn("请求失败 (%d/%d): %s -> %v", retryCount+1, maxRetries, requestURL, err)
+		}
+	}
+	
 	responseTime := time.Since(startTime).Milliseconds()
 	
 	logger.Info("makeRequest调用完成，错误: %v, 响应: %v", err, response != nil)
