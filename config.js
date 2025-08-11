@@ -50,6 +50,9 @@ module.exports = {
   PARALLEL_TIMEOUT: 20000,             // 外部程序最大等待时间（20秒）
   REQUEST_TIMEOUT: parseInt(process.env.REQUEST_TIMEOUT || '30000'), // 单个请求的默认超时时间
   
+  // 图片请求特殊超时配置
+  IMAGE_REQUEST_TIMEOUT: parseInt(process.env.IMAGE_REQUEST_TIMEOUT || '90000'), // 图片请求超时时间（90秒）
+  
   // TMDB 相关配置
   UPSTREAM_TYPE: process.env.UPSTREAM_TYPE || 'tmdb-api',
   TMDB_API_KEY: process.env.TMDB_API_KEY,

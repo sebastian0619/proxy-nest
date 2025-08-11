@@ -307,21 +307,59 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
 		// 使用GET请求进行健康检查，验证返回的确实是图片数据
-		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
-		method = "GET"  // 使用GET请求，验证返回的确实是图片数据
-		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
+		healthCheckURL := fmt.Sprintf("%s%s", server.URL, testURL)
+		method := "GET"  // 使用GET请求，验证返回的确实是图片数据
+		logger.Info("图片健康检查开始 - %s: %s %s", server.URL, method, healthCheckURL)
 		
-		// 发送请求并验证响应
-		resp, err := hm.makeRequest(method, healthCheckURL, nil)
+		// 创建请求并模拟浏览器请求头
+		req, err := http.NewRequest(method, healthCheckURL, nil)
 		if err != nil {
+			logger.Error("创建健康检查请求失败: %v", err)
 			return &CheckResult{
 				Success: false,
-				Error:   err.Error(),
+				Error:   fmt.Sprintf("创建请求失败: %v", err),
 			}
 		}
 		
+		// 模拟浏览器请求头，避免被服务器拒绝
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Accept-Encoding", "gzip, deflate")
+		req.Header.Set("Connection", "keep-alive")
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
+		
+		// 设置超时
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req = req.WithContext(ctx)
+		
+		// 创建HTTP客户端
+		client := &http.Client{
+			Timeout: 30 * time.Second,
+		}
+		
+		logger.Info("发送健康检查请求，请求头: %v", req.Header)
+		
+		// 发送请求
+		startTime := time.Now()
+		resp, err := client.Do(req)
+		responseTime := time.Since(startTime)
+		
+		if err != nil {
+			logger.Error("图片健康检查请求失败: %v (耗时: %v)", err, responseTime)
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("请求失败: %v", err),
+			}
+		}
+		
+		logger.Info("收到健康检查响应 - 状态码: %d, Content-Type: %s, 耗时: %v", 
+			resp.StatusCode, resp.Header.Get("Content-Type"), responseTime)
+		
 		// 验证响应状态码
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return &CheckResult{
 				Success: false,
 				Error:   fmt.Sprintf("HTTP状态码错误: %d", resp.StatusCode),
@@ -331,6 +369,7 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		// 验证Content-Type
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.HasPrefix(contentType, "image/") {
+			resp.Body.Close()
 			return &CheckResult{
 				Success: false,
 				Error:   fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
@@ -347,8 +386,12 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			}
 		}
 		
+		logger.Info("响应体读取成功，大小: %d字节", len(body))
+		
 		// 使用http.DetectContentType验证数据确实是图片
 		detectedType := http.DetectContentType(body)
+		logger.Info("检测到的内容类型: %s", detectedType)
+		
 		if !strings.HasPrefix(detectedType, "image/") {
 			return &CheckResult{
 				Success: false,
@@ -364,12 +407,12 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			}
 		}
 		
-		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s", 
-			len(body), detectedType, contentType)
+		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s, 耗时: %v", 
+			len(body), detectedType, contentType, responseTime)
 		
 		return &CheckResult{
 			Success:      true,
-			ResponseTime: time.Since(startTime).Milliseconds(),
+			ResponseTime: responseTime.Milliseconds(),
 		}
 	} else if hm.config.UpstreamType == "custom" {
 		// 自定义类型：对根路径进行简单的HEAD请求检查

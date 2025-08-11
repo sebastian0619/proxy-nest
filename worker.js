@@ -383,7 +383,7 @@ async function handleRequest(url, headers = {}) {
   try {
     selectedServer = selectUpstreamServer();
     const result = await tryRequestWithRetries(selectedServer, url, {
-      REQUEST_TIMEOUT,
+      REQUEST_TIMEOUT: UPSTREAM_TYPE === 'tmdb-image' ? (process.env.IMAGE_REQUEST_TIMEOUT || 90000) : REQUEST_TIMEOUT,
       UPSTREAM_TYPE
     }, global.LOG_PREFIX, headers, workerId);
     
@@ -416,7 +416,37 @@ async function handleRequest(url, headers = {}) {
     // 确保图片数据以 Buffer 形式返回
     const finalResult = result.contentType.startsWith('image/') 
       ? {
-          data: Buffer.isBuffer(result.data) ? result.data : Buffer.from(result.data),
+          data: (() => {
+            try {
+              if (Buffer.isBuffer(result.data)) {
+                return result.data;
+              } else if (typeof result.data === 'string') {
+                return Buffer.from(result.data);
+              } else if (result.data && typeof result.data === 'object') {
+                // 检查常见的图片数据属性
+                if (result.data.data && Buffer.isBuffer(result.data.data)) {
+                  return result.data.data;
+                } else if (result.data.buffer && Buffer.isBuffer(result.data.buffer)) {
+                  return result.data.buffer;
+                } else if (result.data.toString && typeof result.data.toString === 'function') {
+                  const str = result.data.toString();
+                  if (str && str.length > 0) {
+                    return Buffer.from(str);
+                  }
+                }
+                // 尝试直接转换
+                return Buffer.from(result.data);
+              } else if (Array.isArray(result.data)) {
+                return Buffer.from(result.data);
+              } else {
+                console.error(global.LOG_PREFIX.ERROR, `无法转换图片数据: ${typeof result.data}, 构造函数: ${result.data?.constructor?.name}`);
+                throw new Error(`不支持的图片数据类型: ${typeof result.data}`);
+              }
+            } catch (error) {
+              console.error(global.LOG_PREFIX.ERROR, `图片数据转换失败: ${error.message}`);
+              throw error;
+            }
+          })(),
           contentType: result.contentType,
           responseTime: result.responseTime
         }

@@ -432,10 +432,14 @@ async function handleRequestWithWorker(req, cacheKey) {
     throw new Error('没有可用的工作线程');
   }
 
+  // 根据请求类型确定超时时间
+  const isImageRequest = req.originalUrl && req.originalUrl.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i);
+  const timeout = isImageRequest ? (process.env.IMAGE_REQUEST_TIMEOUT || 90000) : REQUEST_TIMEOUT;
+
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      reject(new Error('工作线程响应超时'));
-    }, REQUEST_TIMEOUT);
+      reject(new Error(`工作线程响应超时 (${timeout}ms)`));
+    }, timeout);
 
     const messageHandler = (message) => {
       if (message.requestId === cacheKey) {

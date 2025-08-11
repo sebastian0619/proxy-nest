@@ -58,6 +58,11 @@ class LRUCache {
     }
     this.cache.set(key, cacheItem);
   }
+
+  // 添加delete方法
+  delete(key) {
+    return this.cache.delete(key);
+  }
   
   // 添加获取内容类型配置的方法
   getContentTypeConfig(mimeType) {
@@ -704,11 +709,38 @@ function validateResponse(data, contentType, upstreamType) {
             Array.isArray(data) ||
             (data && typeof data === 'object' && data.buffer)) {
           try {
-            Buffer.from(data);
-            return true;
+            // 尝试转换为Buffer
+            const buffer = Buffer.from(data);
+            // 验证Buffer是否有效（非空且有内容）
+            if (buffer && buffer.length > 0) {
+              return true;
+            } else {
+              console.error(global.LOG_PREFIX.ERROR, `图片数据转换后为空: ${typeof data}, 构造函数: ${data?.constructor?.name}`);
+              return false;
+            }
           } catch (error) {
-            console.error(global.LOG_PREFIX.ERROR, `图片数据转换失败: ${error.message}`);
+            console.error(global.LOG_PREFIX.ERROR, `图片数据转换失败: ${error.message}, 数据类型: ${typeof data}, 构造函数: ${data?.constructor?.name}`);
             return false;
+          }
+        }
+        // 如果是其他对象类型，尝试检查是否有可用的数据
+        if (data && typeof data === 'object') {
+          // 检查常见的图片数据属性
+          if (data.data && (Buffer.isBuffer(data.data) || typeof data.data === 'string')) {
+            return true;
+          }
+          if (data.buffer && Buffer.isBuffer(data.buffer)) {
+            return true;
+          }
+          if (data.toString && typeof data.toString === 'function') {
+            try {
+              const str = data.toString();
+              if (str && str.length > 0) {
+                return true;
+              }
+            } catch (error) {
+              // 忽略toString错误
+            }
           }
         }
         console.error(global.LOG_PREFIX.ERROR, `图片数据格式错误: ${typeof data}, 构造函数: ${data?.constructor?.name}`);
@@ -759,10 +791,15 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = 
       
       // 构建请求配置
       const requestConfig = {
-        timeout: config.REQUEST_TIMEOUT,
-        responseType: 'arraybuffer',  // 默认使用二进制数据
+        timeout: config.UPSTREAM_TYPE === 'tmdb-image' ? config.IMAGE_REQUEST_TIMEOUT || 90000 : config.REQUEST_TIMEOUT,
+        responseType: config.UPSTREAM_TYPE === 'tmdb-image' ? 'arraybuffer' : 'arraybuffer',  // 图片请求使用二进制数据
         headers: {}
       };
+      
+      // 为图片请求设置特殊的Accept头部
+      if (config.UPSTREAM_TYPE === 'tmdb-image') {
+        requestConfig.headers.Accept = 'image/*, */*';
+      }
       
       // 转发重要的请求头
       if (headers.authorization) {
@@ -771,7 +808,7 @@ async function tryRequestWithRetries(server, url, config, LOG_PREFIX, headers = 
       if (headers['content-type']) {
         requestConfig.headers['Content-Type'] = headers['content-type'];
       }
-      if (headers.accept) {
+      if (headers.accept && config.UPSTREAM_TYPE !== 'tmdb-image') {
         requestConfig.headers.Accept = headers.accept;
       }
       if (headers['user-agent']) {
