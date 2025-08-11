@@ -306,10 +306,10 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		// 为健康检查添加特殊参数
+		// 为健康检查添加特殊参数，使用HEAD请求避免下载大量图片数据
 		healthCheckURL = fmt.Sprintf("%s%s?_health_check=1&_timestamp=%d", 
 			server.URL, testURL, time.Now().Unix())
-		method = "HEAD"
+		method = "HEAD"  // 使用HEAD请求，与proxy_app.go保持一致
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "custom" {
@@ -363,16 +363,39 @@ func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
+		logger.Error("健康检查创建HTTP请求失败: %v", err)
 		return nil, err
 	}
 
 	// 为健康检查请求设置特殊的User-Agent
 	req.Header.Set("User-Agent", "tmdb-go-proxy-health-check/1.0")
 
+	// 添加调试信息
+	logger.Info("健康检查发送请求: %s %s (超时: %v)", method, url, timeout)
+	
+	startTime := time.Now()
 	client := &http.Client{
 		Timeout: timeout,
 	}
-	return client.Do(req)
+	
+	resp, err := client.Do(req)
+	requestDuration := time.Since(startTime)
+	
+	if err != nil {
+		logger.Error("健康检查请求失败: %v (耗时: %v)", err, requestDuration)
+		
+		// 检查是否是超时错误
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error("健康检查请求超时: %s (超时设置: %v)", url, timeout)
+		} else if ctx.Err() == context.Canceled {
+			logger.Error("健康检查请求被取消: %s", url)
+		}
+		
+		return nil, err
+	}
+	
+	logger.Info("健康检查请求成功: %s %s (状态码: %d, 耗时: %v)", method, url, resp.StatusCode, requestDuration)
+	return resp, nil
 }
 
 // updateServerState 更新服务器状态

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -38,13 +39,33 @@ type ProxyManager struct {
 // NewProxyManager 创建代理管理器
 func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healthManager *health.HealthManager) *ProxyManager {
 	// 配置HTTP客户端，确保能够处理大文件
-	client := &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        1000,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     90 * time.Second,
-		},
+	transport := &http.Transport{
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+		// 添加更多配置以确保稳定性
+		DisableCompression:  true,  // 禁用压缩，避免处理问题
+		ForceAttemptHTTP2:   false, // 强制使用HTTP/1.1，避免HTTP/2的复杂性
+		// 添加连接超时设置
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second, // 连接超时
+			KeepAlive: 30 * time.Second, // Keep-Alive时间
+		}).DialContext,
+		// 添加TLS握手超时
+		TLSHandshakeTimeout: 10 * time.Second,
+		// 添加响应头超时
+		ResponseHeaderTimeout: 30 * time.Second,
+		// 添加期望继续超时
+		ExpectContinueTimeout: 1 * time.Second,
 	}
+	
+	client := &http.Client{
+		Transport: transport,
+		// 不设置Timeout，使用context控制超时
+	}
+	
+	logger.Info("HTTP客户端配置完成 - MaxIdleConns: %d, MaxIdleConnsPerHost: %d, IdleConnTimeout: %v, DialTimeout: %v", 
+		transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout, transport.DialContext)
 
 	return &ProxyManager{
 		config:        cfg,
@@ -73,8 +94,11 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 
 	// 发送请求
 	startTime := time.Now()
+	logger.Info("开始调用makeRequest...")
 	response, err := pm.makeRequest(requestURL, headers)
 	responseTime := time.Since(startTime).Milliseconds()
+	
+	logger.Info("makeRequest调用完成，错误: %v, 响应: %v", err, response != nil)
 
 	if err != nil {
 		// 报告服务器不健康
@@ -89,13 +113,17 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 	pm.healthManager.UpdateDynamicWeight(server.URL, responseTime)
 
 	// 处理响应
+	logger.Info("开始调用processResponse...")
 	proxyResponse, err := pm.processResponse(response, responseTime)
+	logger.Info("processResponse调用完成，错误: %v, 响应: %v", err, proxyResponse != nil)
+	
 	if err != nil {
 		// 不立即标记为不健康，先记录错误信息
 		logger.Error("响应处理失败: %s -> %v", requestURL, err)
 		return nil, fmt.Errorf("响应处理失败: %w", err)
 	}
 
+	logger.Info("HandleRequest成功完成，返回响应")
 	return proxyResponse, nil
 }
 
@@ -172,6 +200,7 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
+		logger.Error("创建HTTP请求失败: %v", err)
 		return nil, err
 	}
 
@@ -208,14 +237,86 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	// 添加调试信息
 	logger.Info("开始发送请求: %s", url)
+	logger.Info("HTTP客户端配置 - Transport: %T, 超时: %v", pm.client.Transport, timeout)
+	
+	// 添加请求开始时间记录
+	startTime := time.Now()
+	
+	// 添加更多调试信息
+	logger.Info("HTTP客户端配置: %+v", pm.client)
+	logger.Info("请求上下文状态: %v", ctx.Err())
+	
+	// 发送请求并添加详细的错误处理
+	logger.Info("即将调用pm.client.Do...")
 	resp, err := pm.client.Do(req)
+	requestDuration := time.Since(startTime)
+	
+	logger.Info("pm.client.Do调用完成，耗时: %v", requestDuration)
+	
 	if err != nil {
-		logger.Error("请求发送失败: %v", err)
+		logger.Error("请求发送失败: %v (耗时: %v)", err, requestDuration)
+		
+		// 检查是否是超时错误
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error("请求超时: %s (超时设置: %v)", url, timeout)
+		} else if ctx.Err() == context.Canceled {
+			logger.Error("请求被取消: %s", url)
+		}
+		
+		// 使用错误检测函数提供更详细的错误分类
+		if isConnectionError(err) {
+			logger.Error("连接错误: %s - %v", url, err)
+		} else if isRetryableError(err) {
+			logger.Warn("可重试错误: %s - %v", url, err)
+		} else {
+			logger.Error("不可重试错误: %s - %v", url, err)
+		}
+		
 		return nil, err
 	}
-	logger.Info("请求发送成功，状态码: %d, Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	
+	logger.Info("请求发送成功，状态码: %d, Content-Type: %s, 耗时: %v", resp.StatusCode, resp.Header.Get("Content-Type"), requestDuration)
+	
+	// 检查响应状态码
+	if resp.StatusCode >= 400 {
+		logger.Warn("上游服务器返回错误状态码: %d, URL: %s", resp.StatusCode, url)
+	}
 
 	return resp, nil
+}
+
+// isConnectionError 检测是否是连接错误，基于proxy_app.go的经验
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	
+	// 检查网络错误
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	
+	// 检查具体的错误字符串
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection refused") ||
+		   strings.Contains(errStr, "no such host") ||
+		   strings.Contains(errStr, "network is unreachable") ||
+		   strings.Contains(errStr, "connection reset by peer") ||
+		   strings.Contains(errStr, "broken pipe")
+}
+
+// isRetryableError 检测是否是可重试的错误，基于proxy_app.go的经验
+func isRetryableError(err error) bool {
+	if isConnectionError(err) {
+		return true
+	}
+	
+	// 检查其他可重试的错误
+	errStr := err.Error()
+	return strings.Contains(errStr, "timeout") ||
+		   strings.Contains(errStr, "temporary") ||
+		   strings.Contains(errStr, "rate limit") ||
+		   strings.Contains(errStr, "too many requests")
 }
 
 // getEnvAsInt 获取环境变量作为整数
@@ -279,9 +380,20 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		
 		logger.Info("图片响应体读取成功，大小: %d字节", len(body))
 		
+		// 使用http.DetectContentType验证图片数据，与proxy_app.go保持一致
+		detectedType := http.DetectContentType(body)
+		logger.Info("检测到的内容类型: %s", detectedType)
+		
+		if !strings.HasPrefix(detectedType, "image/") {
+			logger.Warn("响应内容不是图片类型 - 检测类型: %s, 声明类型: %s", detectedType, contentType)
+			// 不立即失败，尝试使用声明的Content-Type
+		}
+		
 		// 确保返回的是[]byte类型，与JavaScript版本的Buffer处理一致
 		responseData = body
 		isImage = true
+		
+		logger.Info("tmdb-image处理完成，数据类型: %T, 大小: %d字节", responseData, len(body))
 
 	case "custom":
 		// 自定义类型处理 - 保持原有逻辑
@@ -375,11 +487,33 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 		// 验证图片数据 - 支持多种数据类型，与JavaScript版本一致
 		switch v := data.(type) {
 		case []byte:
-			// []byte类型直接通过
-			return len(v) > 0
+			// []byte类型直接通过，使用http.DetectContentType进行额外验证
+			if len(v) > 0 {
+				detectedType := http.DetectContentType(v)
+				if strings.HasPrefix(detectedType, "image/") {
+					logger.Info("图片数据验证通过 - 大小: %d字节, 检测类型: %s", len(v), detectedType)
+					return true
+				} else {
+					logger.Warn("图片数据验证警告 - 检测类型: %s, 但声明类型: %s", detectedType, contentType)
+					// 不立即失败，返回true让程序继续处理
+					return true
+				}
+			}
+			return false
 		case string:
 			// string类型也支持，会被转换为[]byte
-			return len(v) > 0
+			if len(v) > 0 {
+				detectedType := http.DetectContentType([]byte(v))
+				if strings.HasPrefix(detectedType, "image/") {
+					logger.Info("图片数据验证通过 - 大小: %d字节, 检测类型: %s", len(v), detectedType)
+					return true
+				} else {
+					logger.Warn("图片数据验证警告 - 检测类型: %s, 但声明类型: %s", detectedType, contentType)
+					// 不立即失败，返回true让程序继续处理
+					return true
+				}
+			}
+			return false
 		default:
 			logger.Error("图片数据格式错误: %T", data)
 			return false

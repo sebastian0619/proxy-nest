@@ -252,7 +252,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	// 传递完整的请求路径（包括查询参数）给HandleRequest
 	response, err := proxyManager.HandleRequest(fullURL, c.Request.Header)
 
-	logger.Info("proxyManager.HandleRequest返回，错误: %v", err)
+	logger.Info("proxyManager.HandleRequest返回，错误: %v, 响应: %v", err, response != nil)
 	if err != nil {
 		logger.Error("请求处理失败: %s -> %v", fullURL, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -263,17 +263,22 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		return
 	}
 
+	logger.Info("响应处理成功，开始设置响应头...")
 	// 设置响应头
 	c.Header("Content-Type", response.ContentType)
+	logger.Info("响应头设置完成，Content-Type: %s", response.ContentType)
 
 	// 发送响应
 	if response.IsImage {
+		logger.Info("开始发送图片响应，数据类型: %T", response.Data)
 		// 图片数据需要确保是[]byte类型
 		switch data := response.Data.(type) {
 		case []byte:
+			logger.Info("发送[]byte类型图片数据，大小: %d字节", len(data))
 			c.Data(http.StatusOK, response.ContentType, data)
 			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(data), response.ResponseTime)
 		case string:
+			logger.Info("发送string类型图片数据，大小: %d字节", len(data))
 			imageData := []byte(data)
 			c.Data(http.StatusOK, response.ContentType, imageData)
 			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(imageData), response.ResponseTime)

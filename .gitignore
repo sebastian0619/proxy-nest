@@ -15,6 +15,10 @@
 *.out
 cache/
 cache_index.json
+
+# 参考文件，不编译到程序中
+proxy_app.go
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
