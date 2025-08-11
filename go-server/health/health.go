@@ -811,10 +811,18 @@ func (hm *HealthManager) GetHealthyServers() []*Server {
 
 	// 如果快照为空或太旧，记录日志但不阻塞请求处理
 	if len(hm.healthyServersSnapshot) == 0 || time.Since(hm.lastSnapshotTime) > 5*time.Second {
-		logger.Info("健康服务器快照过期，将在后台更新，当前返回空列表")
+		if len(hm.healthyServersSnapshot) == 0 {
+			logger.Info("健康服务器快照为空，将在后台更新，当前返回空列表")
+		} else {
+			logger.Info("健康服务器快照过期，将在后台更新，当前返回旧快照")
+		}
 		// 在后台异步更新快照，不阻塞当前请求
 		go hm.updateHealthyServersSnapshot()
-		return []*Server{}
+		
+		// 如果快照为空，返回空列表；如果快照过期但有数据，返回旧快照
+		if len(hm.healthyServersSnapshot) == 0 {
+			return []*Server{}
+		}
 	}
 
 	// 返回快照的副本，避免外部修改
