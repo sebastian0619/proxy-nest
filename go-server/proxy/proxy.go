@@ -78,6 +78,10 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 // HandleRequest 处理请求
 func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyResponse, error) {
 	logger.Info("进入HandleRequest，路径: %s", path)
+	
+	// 添加配置信息调试输出
+	logger.Info("当前配置 - UPSTREAM_TYPE: %s, REQUEST_TIMEOUT: %v", 
+		pm.config.UpstreamType, pm.config.RequestTimeout)
 
 	// 选择上游服务器
 	logger.Info("开始选择上游服务器...")
@@ -402,7 +406,7 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		// 图片请求处理 - 与JavaScript版本保持一致
 		logger.Info("开始读取图片响应体，Content-Type: %s", contentType)
 		
-		// 直接读取为二进制数据，与JavaScript版本的arraybuffer处理一致
+		// 直接读取响应体，不使用context避免超时问题
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			logger.Error("读取图片响应体失败: %v", err)
