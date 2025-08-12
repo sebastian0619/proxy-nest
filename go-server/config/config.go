@@ -80,7 +80,7 @@ func LoadConfig() *Config {
 		// 请求超时配置
 		InitialTimeout:  time.Duration(getEnvAsInt("INITIAL_TIMEOUT", 8)) * time.Second,
 		ParallelTimeout: time.Duration(getEnvAsInt("PARALLEL_TIMEOUT", 20)) * time.Second,
-		RequestTimeout:  time.Duration(getEnvAsInt("REQUEST_TIMEOUT", 30)) * time.Second,
+		RequestTimeout:  time.Duration(getEnvAsInt("REQUEST_TIMEOUT", 300)) * time.Second, // 5分钟默认超时，与proxy_app.go保持一致
 
 		// TMDB 相关配置
 		UpstreamType:     getEnv("UPSTREAM_TYPE", "tmdb-api"),

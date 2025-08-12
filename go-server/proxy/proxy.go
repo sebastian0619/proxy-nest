@@ -224,13 +224,9 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 // makeRequest 发送HTTP请求
 func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Response, error) {
-	// 根据上游类型设置不同的超时时间
+	// 使用配置的超时时间，与proxy_app.go保持一致
 	timeout := pm.config.RequestTimeout
-	if pm.config.UpstreamType == "tmdb-image" {
-		// 图片请求需要更长的超时时间（120秒）
-		timeout = time.Duration(getEnvAsInt("IMAGE_REQUEST_TIMEOUT", 120)) * time.Second
-		logger.Info("图片请求使用延长超时时间: %v", timeout)
-	}
+	logger.Info("使用配置的超时时间: %v", timeout)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -369,6 +365,12 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// isValidImage 验证图片数据，与proxy_app.go保持一致
+func isValidImage(data []byte) bool {
+	contentType := http.DetectContentType(data)
+	return strings.HasPrefix(contentType, "image/")
+}
+
 // processResponse 处理响应
 func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64) (*ProxyResponse, error) {
 	defer resp.Body.Close()
@@ -408,47 +410,21 @@ func (pm *ProxyManager) processResponse(resp *http.Response, responseTime int64)
 		}
 
 	case "tmdb-image":
-		// 图片请求处理 - 修复context canceled问题
+		// 图片请求处理 - 使用与proxy_app.go一致的简单方式
 		logger.Info("开始读取图片响应体，Content-Type: %s", contentType)
 
-		// 为图片读取创建独立的context，避免与请求context冲突
-		// 图片读取需要更长的超时时间，特别是大文件
-		imageReadTimeout := time.Duration(getEnvAsInt("IMAGE_READ_TIMEOUT", 120)) * time.Second
-		imageCtx, imageCancel := context.WithTimeout(context.Background(), imageReadTimeout)
-		defer imageCancel()
-
-		// 使用goroutine和channel来读取响应体，避免阻塞
-		readDone := make(chan struct{})
-		var body []byte
-		var readErr error
-
-		go func() {
-			defer close(readDone)
-			body, readErr = io.ReadAll(resp.Body)
-		}()
-
-		// 等待读取完成或超时
-		select {
-		case <-readDone:
-			// 读取完成
-			if readErr != nil {
-				logger.Error("读取图片响应体失败: %v", readErr)
-				return nil, fmt.Errorf("读取图片响应体失败: %w", readErr)
-			}
-		case <-imageCtx.Done():
-			// 读取超时
-			logger.Error("图片响应体读取超时: %v", imageCtx.Err())
-			return nil, fmt.Errorf("图片响应体读取超时: %w", imageCtx.Err())
+		// 直接读取响应体，与proxy_app.go保持一致
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logger.Error("读取图片响应体失败: %v", err)
+			return nil, fmt.Errorf("读取图片响应体失败: %w", err)
 		}
 
 		logger.Info("图片响应体读取成功，大小: %d字节", len(body))
 
-		// 使用http.DetectContentType验证图片数据，与proxy_app.go保持一致
-		detectedType := http.DetectContentType(body)
-		logger.Info("检测到的内容类型: %s", detectedType)
-
-		if !strings.HasPrefix(detectedType, "image/") {
-			logger.Warn("响应内容不是图片类型 - 检测类型: %s, 声明类型: %s", detectedType, contentType)
+		// 验证图片数据，与proxy_app.go保持一致
+		if !isValidImage(body) {
+			logger.Warn("响应内容不是有效的图片数据")
 			// 不立即失败，尝试使用声明的Content-Type
 		}
 
