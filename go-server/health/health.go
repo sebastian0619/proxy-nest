@@ -216,11 +216,7 @@ func (hm *HealthManager) performHealthCheck() {
 
 	logger.Info("开始执行健康检查...")
 
-	// 添加超时控制，避免健康检查无限期阻塞
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var wg sync.WaitGroup
+	// 使用与proxy_app.go一致的简单方式，避免复杂的goroutine和超时控制
 	hm.mutex.RLock()
 	servers := make([]*Server, 0, len(hm.servers))
 	for _, server := range hm.servers {
@@ -228,54 +224,18 @@ func (hm *HealthManager) performHealthCheck() {
 	}
 	hm.mutex.RUnlock()
 
-	// 为每个服务器检查添加超时控制
+	// 逐个检查服务器，使用简单的方式
 	for _, server := range servers {
-		wg.Add(1)
-		go func(s *Server) {
-			defer wg.Done()
+		// 检查是否需要进行恢复检查
+		if server.Status == HealthStatusUnhealthy && time.Now().Before(server.RecoveryTime) {
+			logger.Info("跳过服务器 %s 的检查，仍在恢复期 (恢复时间: %v)", server.URL, server.RecoveryTime)
+			continue
+		}
 
-			// 检查是否需要进行恢复检查
-			if s.Status == HealthStatusUnhealthy && time.Now().Before(s.RecoveryTime) {
-				logger.Info("跳过服务器 %s 的检查，仍在恢复期 (恢复时间: %v)", s.URL, s.RecoveryTime)
-				return
-			}
-
-			// 为单个服务器检查添加超时控制
-			serverCtx, serverCancel := context.WithTimeout(ctx, 10*time.Second)
-			defer serverCancel()
-
-			// 使用channel和select实现超时控制
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				logger.Info("开始检查服务器: %s", s.URL)
-				checkResult := hm.checkServerHealth(s)
-				logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
-				hm.updateServerState(s, checkResult)
-			}()
-
-			select {
-			case <-done:
-				// 检查完成
-			case <-serverCtx.Done():
-				logger.Error("服务器 %s 健康检查超时", s.URL)
-			}
-		}(server)
-	}
-
-	// 等待所有检查完成或超时
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		wg.Wait()
-	}()
-
-	select {
-	case <-done:
-		logger.Info("所有服务器健康检查完成")
-	case <-ctx.Done():
-		logger.Error("健康检查整体超时")
-		return
+		logger.Info("开始检查服务器: %s", server.URL)
+		checkResult := hm.checkServerHealth(server)
+		logger.Info("服务器 %s 检查完成，结果: %t", server.URL, checkResult.Success)
+		hm.updateServerState(server, checkResult)
 	}
 
 	// 健康检查完成后，更新健康服务器快照
@@ -295,6 +255,10 @@ func (hm *HealthManager) performHealthCheck() {
 	hm.mutex.RUnlock()
 
 	logger.Info("健康检查完成: %d/%d 个服务器健康", healthyCount, len(hm.servers))
+	
+	// 强制更新快照，确保请求处理能够获得健康服务器
+	logger.Info("强制更新健康服务器快照...")
+	hm.updateHealthyServersSnapshot()
 }
 
 // checkServerHealth 检查单个服务器健康状态
@@ -313,60 +277,23 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "tmdb-image" {
+		// 图片健康检查：使用与tmdb-api一致的简单请求方式，但验证图片数据
 		testURL := hm.config.TMDBImageTestURL
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		// 使用GET请求进行健康检查，验证返回的确实是图片数据
 		healthCheckURL := fmt.Sprintf("%s%s", server.URL, testURL)
-		method := "GET"  // 使用GET请求，验证返回的确实是图片数据
-		logger.Info("图片健康检查开始 - %s: %s %s", server.URL, method, healthCheckURL)
+		method = "GET"
+		logger.Info("图片健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		
-		// 创建请求并模拟浏览器请求头
-		req, err := http.NewRequest(method, healthCheckURL, nil)
+		// 使用makeRequest进行健康检查，与tmdb-api保持一致
+		resp, err := hm.makeRequest(method, healthCheckURL, nil)
 		if err != nil {
-			logger.Error("创建健康检查请求失败: %v", err)
-			return &CheckResult{
-				Success: false,
-				Error:   fmt.Sprintf("创建请求失败: %v", err),
-			}
-		}
-		
-		// 模拟浏览器请求头，避免被服务器拒绝
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
-		req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		req.Header.Set("Accept-Encoding", "gzip, deflate")
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Upgrade-Insecure-Requests", "1")
-		
-		// 设置超时
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		req = req.WithContext(ctx)
-		
-		// 创建HTTP客户端
-		client := &http.Client{
-			Timeout: 30 * time.Second,
-		}
-		
-		logger.Info("发送健康检查请求，请求头: %v", req.Header)
-		
-		// 发送请求
-		startTime := time.Now()
-		resp, err := client.Do(req)
-		responseTime := time.Since(startTime)
-		
-		if err != nil {
-			logger.Error("图片健康检查请求失败: %v (耗时: %v)", err, responseTime)
 			return &CheckResult{
 				Success: false,
 				Error:   fmt.Sprintf("请求失败: %v", err),
 			}
 		}
-		
-		logger.Info("收到健康检查响应 - 状态码: %d, Content-Type: %s, 耗时: %v", 
-			resp.StatusCode, resp.Header.Get("Content-Type"), responseTime)
 		
 		// 验证响应状态码
 		if resp.StatusCode != http.StatusOK {
@@ -399,17 +326,6 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		
 		logger.Info("响应体读取成功，大小: %d字节", len(body))
 		
-		// 使用http.DetectContentType验证数据确实是图片
-		detectedType := http.DetectContentType(body)
-		logger.Info("检测到的内容类型: %s", detectedType)
-		
-		if !strings.HasPrefix(detectedType, "image/") {
-			return &CheckResult{
-				Success: false,
-				Error:   fmt.Sprintf("检测到的内容类型不是图片: %s (声明类型: %s)", detectedType, contentType),
-			}
-		}
-		
 		// 验证图片数据大小（至少应该有几百字节）
 		if len(body) < 100 {
 			return &CheckResult{
@@ -418,12 +334,12 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			}
 		}
 		
-		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s, 耗时: %v", 
-			len(body), detectedType, contentType, responseTime)
+		logger.Info("图片健康检查成功 - 大小: %d字节, Content-Type: %s, 耗时: %v", 
+			len(body), contentType, time.Since(startTime))
 		
 		return &CheckResult{
 			Success:      true,
-			ResponseTime: responseTime.Milliseconds(),
+			ResponseTime: time.Since(startTime).Milliseconds(),
 		}
 	} else if hm.config.UpstreamType == "custom" {
 		// 自定义类型：对根路径进行简单的HEAD请求检查
@@ -465,11 +381,8 @@ type CheckResult struct {
 
 // makeRequest 发送HTTP请求
 func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.Response, error) {
-	// 健康检查使用较短的超时时间，避免阻塞其他请求
-	timeout := 10 * time.Second
-	if hm.config.RequestTimeout < timeout {
-		timeout = hm.config.RequestTimeout
-	}
+	// 使用配置的超时时间，与proxy_app.go保持一致
+	timeout := hm.config.RequestTimeout
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -818,6 +731,24 @@ func (hm *HealthManager) GetHealthyServers() []*Server {
 		}
 		// 立即同步更新快照，确保请求处理能够获得健康服务器
 		hm.updateHealthyServersSnapshot()
+	}
+
+	// 如果快照仍然为空，尝试从服务器状态直接获取
+	if len(hm.healthyServersSnapshot) == 0 {
+		logger.Warn("健康服务器快照仍然为空，尝试从服务器状态直接获取")
+		hm.mutex.RLock()
+		var healthyServers []*Server
+		for _, server := range hm.servers {
+			if server.Status == HealthStatusHealthy {
+				healthyServers = append(healthyServers, server)
+			}
+		}
+		hm.mutex.RUnlock()
+		
+		if len(healthyServers) > 0 {
+			logger.Info("从服务器状态直接获取到 %d 个健康服务器", len(healthyServers))
+			return healthyServers
+		}
 	}
 
 	// 返回快照的副本，避免外部修改

@@ -25,3 +25,4 @@ proxy_app.go
 # Go workspace file
 go.work
 .cursorrules
+.cursorrules
