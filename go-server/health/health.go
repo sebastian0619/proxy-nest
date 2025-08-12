@@ -334,8 +334,19 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 			}
 		}
 		
-		logger.Info("图片健康检查成功 - 大小: %d字节, Content-Type: %s, 耗时: %v", 
-			len(body), contentType, time.Since(startTime))
+		// 验证图片数据格式，确保浏览器能够直接显示
+		detectedType := http.DetectContentType(body)
+		logger.Info("检测到的内容类型: %s", detectedType)
+		
+		if !strings.HasPrefix(detectedType, "image/") {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("检测到的内容类型不是图片: %s (声明类型: %s)", detectedType, contentType),
+			}
+		}
+		
+		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s, 耗时: %v", 
+			len(body), detectedType, contentType, time.Since(startTime))
 		
 		return &CheckResult{
 			Success:      true,
