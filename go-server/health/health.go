@@ -494,17 +494,12 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 			server.URL, checkResult.ResponseTime, avgResponseTime, newEWMA,
 			newBaseWeight, newCombinedWeight)
 	} else {
-		newStatus = server.Status
+		// 健康检查失败时，立即标记为不健康，不需要等待错误次数达到阈值
+		newStatus = HealthStatusUnhealthy
 		newErrorCount = server.ErrorCount + 1
-		newRecoveryTime = server.RecoveryTime
+		newRecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
 
-		if newErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
-			newStatus = HealthStatusUnhealthy
-			newRecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
-			logMessage = fmt.Sprintf("服务器 %s 标记为不健康 (错误次数达到阈值: %d)", server.URL, hm.config.MaxErrorsBeforeUnhealthy)
-		} else {
-			logMessage = fmt.Sprintf("服务器 %s 健康检查失败，错误次数: %d/%d", server.URL, newErrorCount, hm.config.MaxErrorsBeforeUnhealthy)
-		}
+		logMessage = fmt.Sprintf("服务器 %s 健康检查失败，立即标记为不健康，错误次数: %d", server.URL, newErrorCount)
 	}
 
 	// 现在才获取锁，快速更新服务器状态
