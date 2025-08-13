@@ -392,7 +392,7 @@ func (hm *HealthManager) healthCheckLoop() {
 	// 使用配置的健康检查间隔
 	interval := hm.config.HealthCheckInterval
 	if interval == 0 {
-		interval = 5 * time.Minute // 默认5分钟
+		interval = 30 * time.Minute // 默认30分钟
 	}
 
 	ticker := time.NewTicker(interval)

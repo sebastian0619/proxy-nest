@@ -192,24 +192,39 @@ func (pm *ProxyManager) selectServerByPriority(servers []*health.Server) *health
 		priorityGroups[priority] = append(priorityGroups[priority], server)
 	}
 
+	logger.Info("优先级分组完成:")
+	for priority := 3; priority >= 0; priority-- {
+		if group, exists := priorityGroups[priority]; exists && len(group) > 0 {
+			logger.Info("  优先级 %d: %d 个服务器", priority, len(group))
+			for _, server := range group {
+				logger.Info("    - %s [连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
+					server.URL, server.ConnectionRate*100, server.BaseWeight, server.DynamicWeight, server.CombinedWeight)
+			}
+		}
+	}
+
 	// 从高优先级到低优先级选择
 	for priority := 3; priority >= 0; priority-- {
 		if group, exists := priorityGroups[priority]; exists && len(group) > 0 {
-			logger.Info("优先级 %d 组有 %d 个服务器", priority, len(group))
+			logger.Info("尝试优先级 %d 组，包含 %d 个服务器", priority, len(group))
 
 			// 在相同优先级组内，按动态权重选择
 			if len(group) == 1 {
+				logger.Info("优先级 %d 组只有一个服务器，直接选择: %s", priority, group[0].URL)
 				return group[0]
 			}
 
 			// 多个服务器时，考虑样本数量
+			logger.Info("优先级 %d 组有多个服务器，进入样本数量选择阶段", priority)
 			selectedServer := pm.selectServerBySampleSize(group)
 			if selectedServer != nil {
+				logger.Success("优先级 %d 组选择成功: %s", priority, selectedServer.URL)
 				return selectedServer
 			}
 		}
 	}
 
+	logger.Warn("所有优先级组都没有找到合适的服务器")
 	return nil
 }
 
@@ -245,6 +260,9 @@ func (pm *ProxyManager) selectServerBySampleSize(servers []*health.Server) *heal
 // selectServerByWeight 基于权重选择服务器
 func (pm *ProxyManager) selectServerByWeight(servers []*health.Server) *health.Server {
 	if len(servers) == 1 {
+		logger.Info("只有一个服务器可选: %s [优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
+			servers[0].URL, servers[0].Priority, servers[0].ConnectionRate*100,
+			servers[0].BaseWeight, servers[0].DynamicWeight, servers[0].CombinedWeight)
 		return servers[0]
 	}
 
@@ -254,19 +272,25 @@ func (pm *ProxyManager) selectServerByWeight(servers []*health.Server) *health.S
 		totalWeight += server.DynamicWeight
 	}
 
+	logger.Info("权重选择开始 - 总动态权重: %d, 服务器数量: %d", totalWeight, len(servers))
+
 	random := float64(time.Now().UnixNano()) / float64(time.Second)
 	weightSum := 0
 
 	for _, server := range servers {
 		weightSum += server.DynamicWeight
 		if float64(weightSum) > random*float64(totalWeight) {
-			logger.Info("选择服务器 %s (动态权重=%d, 样本数=%d)",
-				server.URL, server.DynamicWeight, server.TotalRequests)
+			logger.Success("权重选择成功: %s [优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d 样本数=%d]",
+				server.URL, server.Priority, server.ConnectionRate*100,
+				server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.TotalRequests)
 			return server
 		}
 	}
 
 	// 如果概率选择失败，返回第一个服务器
+	logger.Warn("权重选择失败，使用第一个服务器: %s [优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
+		servers[0].URL, servers[0].Priority, servers[0].ConnectionRate*100,
+		servers[0].BaseWeight, servers[0].DynamicWeight, servers[0].CombinedWeight)
 	return servers[0]
 }
 
