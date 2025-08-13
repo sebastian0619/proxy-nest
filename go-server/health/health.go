@@ -74,6 +74,10 @@ type ConnectionRateData struct {
 	LastUpdate      time.Time `json:"lastUpdate"`
 	// 历史记录（保留最近1000次请求的结果）
 	RequestHistory []bool `json:"requestHistory"`
+	// 响应时间历史记录（保留最近1000次请求的响应时间）
+	ResponseTimeHistory []time.Duration `json:"responseTimeHistory"`
+	// 1000次样本平均速度（毫秒）
+	Sample1000AvgSpeed float64 `json:"sample1000AvgSpeed"`
 	// 统计信息
 	DailyStats map[string]DailyStats `json:"dailyStats"` // 按日期统计
 }
@@ -239,7 +243,7 @@ func (hm *HealthManager) CloseIdleConnections() {
 }
 
 // UpdateConnectionRate 更新服务器的连接率（持久化版本）
-func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool) {
+func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool, responseTime time.Duration) {
 	// 获取或创建连接率数据
 	rateData := hm.getOrCreateConnectionRateData(server.URL)
 
@@ -251,6 +255,25 @@ func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool) {
 
 	// 更新请求历史记录
 	rateData.RequestHistory = append(rateData.RequestHistory, success)
+
+	// 更新响应时间历史记录（只记录成功的请求）
+	if success && responseTime > 0 {
+		rateData.ResponseTimeHistory = append(rateData.ResponseTimeHistory, responseTime)
+
+		// 限制响应时间历史记录数量为1000
+		if len(rateData.ResponseTimeHistory) > 1000 {
+			rateData.ResponseTimeHistory = rateData.ResponseTimeHistory[len(rateData.ResponseTimeHistory)-1000:]
+		}
+
+		// 计算1000次样本的平均速度
+		if len(rateData.ResponseTimeHistory) > 0 {
+			var totalDuration time.Duration
+			for _, rt := range rateData.ResponseTimeHistory {
+				totalDuration += rt
+			}
+			rateData.Sample1000AvgSpeed = float64(totalDuration.Milliseconds()) / float64(len(rateData.ResponseTimeHistory))
+		}
+	}
 
 	// 更新每日统计
 	hm.updateDailyStats(rateData, success)
@@ -497,7 +520,7 @@ func (hm *HealthManager) performHealthCheck() {
 			hm.mutex.Unlock()
 
 			// 更新连接率（失败）
-			hm.UpdateConnectionRate(server, false)
+			hm.UpdateConnectionRate(server, false, 0)
 			continue
 		}
 
@@ -508,7 +531,7 @@ func (hm *HealthManager) performHealthCheck() {
 		hm.mutex.Unlock()
 
 		// 更新连接率（成功）
-		hm.UpdateConnectionRate(server, true)
+		hm.UpdateConnectionRate(server, true, 0)
 
 		hm.updateServerState(server, checkResults[i])
 	}
@@ -1316,16 +1339,18 @@ func (hm *HealthManager) getOrCreateConnectionRateData(serverURL string) *Connec
 
 	// 创建新的连接率数据
 	data := &ConnectionRateData{
-		URL:             serverURL,
-		TotalRequests:   0,
-		SuccessRequests: 0,
-		ConnectionRate:  0.8, // 默认80%成功率（保守但可用）
-		Confidence:      0.0,
-		Priority:        2,  // 默认中优先级（提高，确保可用性）
-		BaseWeight:      75, // 默认基础权重（提高，确保可用性）
-		LastUpdate:      time.Now(),
-		RequestHistory:  make([]bool, 0, 1000),
-		DailyStats:      make(map[string]DailyStats),
+		URL:                 serverURL,
+		TotalRequests:       0,
+		SuccessRequests:     0,
+		ConnectionRate:      0.8, // 默认80%成功率（保守但可用）
+		Confidence:          0.0,
+		Priority:            2,  // 默认中优先级（提高，确保可用性）
+		BaseWeight:          75, // 默认基础权重（提高，确保可用性）
+		LastUpdate:          time.Now(),
+		RequestHistory:      make([]bool, 0, 1000),
+		ResponseTimeHistory: make([]time.Duration, 0, 1000),
+		Sample1000AvgSpeed:  0.0,
+		DailyStats:          make(map[string]DailyStats),
 	}
 
 	hm.connectionRateData[serverURL] = data
@@ -1398,6 +1423,11 @@ func (hm *HealthManager) cleanupOldData() {
 		if len(data.RequestHistory) > 1000 {
 			data.RequestHistory = data.RequestHistory[len(data.RequestHistory)-1000:]
 		}
+
+		// 限制响应时间历史记录数量
+		if len(data.ResponseTimeHistory) > 1000 {
+			data.ResponseTimeHistory = data.ResponseTimeHistory[len(data.ResponseTimeHistory)-1000:]
+		}
 	}
 
 	logger.Info("已清理30天前的连接率统计数据")
@@ -1464,8 +1494,8 @@ func (hm *HealthManager) PrintServerStatistics() {
 						rateData.TotalRequests, rateData.SuccessRequests, rateData.ConnectionRate*100)
 					logger.Info("    置信度: %.1f%%, 优先级: %d, 基础权重: %d",
 						rateData.Confidence*100, rateData.Priority, rateData.BaseWeight)
-					logger.Info("    动态权重: %d, 综合权重: %d",
-						server.DynamicWeight, server.CombinedWeight)
+					logger.Info("    动态权重: %d, 综合权重: %d, 1000样本平均速度: %.1fms",
+						server.DynamicWeight, server.CombinedWeight, rateData.Sample1000AvgSpeed)
 				} else {
 					logger.Info("  - %s: 状态=%s, 样本进度=%d/1000 (%.1f%%)",
 						server.URL, server.Status, server.TotalRequests, float64(server.TotalRequests)/10.0)
@@ -1507,6 +1537,7 @@ func (hm *HealthManager) GetServerStatistics(serverURL string) map[string]interf
 		stats["combined_weight"] = server.CombinedWeight
 		stats["sample_progress"] = fmt.Sprintf("%d/1000 (%.1f%%)",
 			rateData.TotalRequests, float64(rateData.TotalRequests)/10.0)
+		stats["sample_1000_avg_speed"] = rateData.Sample1000AvgSpeed
 		stats["is_ready"] = rateData.TotalRequests >= 100
 	} else {
 		stats["url"] = serverURL
@@ -1520,4 +1551,65 @@ func (hm *HealthManager) GetServerStatistics(serverURL string) map[string]interf
 	}
 
 	return stats
+}
+
+// GetAllServersStatistics 获取所有服务器的统计信息
+func (hm *HealthManager) GetAllServersStatistics() map[string]map[string]interface{} {
+	hm.mutex.RLock()
+	defer hm.mutex.RUnlock()
+
+	allStats := make(map[string]map[string]interface{})
+
+	// 按优先级分组
+	priorityGroups := make(map[int][]*Server)
+	for _, server := range hm.servers {
+		priority := server.Priority
+		priorityGroups[priority] = append(priorityGroups[priority], server)
+	}
+
+	// 从高优先级到低优先级处理
+	for priority := 3; priority >= 0; priority-- {
+		if group, exists := priorityGroups[priority]; exists && len(group) > 0 {
+			for _, server := range group {
+				stats := make(map[string]interface{})
+
+				// 获取连接率数据
+				rateData, exists := hm.connectionRateData[server.URL]
+				if exists {
+					stats["url"] = server.URL
+					stats["status"] = server.Status
+					stats["priority"] = priority
+					stats["total_requests"] = rateData.TotalRequests
+					stats["success_requests"] = rateData.SuccessRequests
+					stats["connection_rate"] = rateData.ConnectionRate
+					stats["confidence"] = rateData.Confidence
+					stats["base_weight"] = rateData.BaseWeight
+					stats["dynamic_weight"] = server.DynamicWeight
+					stats["combined_weight"] = server.CombinedWeight
+					stats["sample_progress"] = fmt.Sprintf("%d/1000 (%.1f%%)",
+						rateData.TotalRequests, float64(rateData.TotalRequests)/10.0)
+					stats["sample_1000_avg_speed"] = rateData.Sample1000AvgSpeed
+					stats["is_ready"] = rateData.TotalRequests >= 100
+					stats["last_check_time"] = server.LastCheckTime
+					stats["last_ewma"] = server.LastEWMA
+				} else {
+					stats["url"] = server.URL
+					stats["status"] = server.Status
+					stats["priority"] = priority
+					stats["total_requests"] = server.TotalRequests
+					stats["success_requests"] = server.SuccessRequests
+					stats["connection_rate"] = server.ConnectionRate
+					stats["sample_progress"] = fmt.Sprintf("%d/1000 (%.1f%%)",
+						server.TotalRequests, float64(server.TotalRequests)/10.0)
+					stats["is_ready"] = server.TotalRequests >= 100
+					stats["last_check_time"] = server.LastCheckTime
+					stats["last_ewma"] = server.LastEWMA
+				}
+
+				allStats[server.URL] = stats
+			}
+		}
+	}
+
+	return allStats
 }

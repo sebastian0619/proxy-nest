@@ -154,9 +154,14 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			c.JSON(http.StatusOK, stats)
 		} else {
 			// 查看所有服务器的统计信息
+			// 同时输出到控制台和返回HTTP响应
 			healthManager.PrintServerStatistics()
+			
+			// 获取所有服务器的统计信息并返回
+			allStats := healthManager.GetAllServersStatistics()
 			c.JSON(http.StatusOK, gin.H{
-				"message": "统计信息已输出到日志，请查看控制台输出",
+				"message": "统计信息已输出到控制台",
+				"servers": allStats,
 				"endpoints": gin.H{
 					"all_stats":    "/stats",
 					"server_stats": "/stats?server=<server_url>",

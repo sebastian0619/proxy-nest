@@ -807,7 +807,7 @@ func (pm *ProxyManager) updateServerPerformance(serverURL string, responseTime t
 	// 更新连接率（成功）
 	// 获取服务器对象并更新连接率
 	if server := pm.healthManager.GetServerByURL(serverURL); server != nil {
-		pm.healthManager.UpdateConnectionRate(server, true) // 成功
+		pm.healthManager.UpdateConnectionRate(server, true, responseTime) // 成功，包含响应时间
 		logger.Debug("更新服务器 %s 性能指标: 响应时间=%v, 连接率更新", serverURL, responseTime)
 	}
 }
