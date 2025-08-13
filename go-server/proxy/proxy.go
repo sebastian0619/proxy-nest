@@ -68,8 +68,8 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 		Timeout: cfg.RequestTimeout,
 	}
 
-	logger.Info("HTTP客户端配置完成 - MaxIdleConns: %d, MaxIdleConnsPerHost: %d, IdleConnTimeout: %v, DialTimeout: %v",
-		transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout, transport.DialContext)
+	logger.Info("HTTP客户端配置完成 - MaxIdleConns: %d, MaxIdleConnsPerHost: %d, IdleConnTimeout: %v",
+		transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
 
 	return &ProxyManager{
 		config:        cfg,
