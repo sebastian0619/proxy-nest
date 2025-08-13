@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,41 @@ type DiskCache struct {
 // MemoryCache 内存缓存
 type MemoryCache struct {
 	cache *lru.Cache[string, *CacheItem]
+}
+
+// GetStats 获取内存缓存统计信息
+func (mc *MemoryCache) GetStats() *CacheStats {
+	if mc.cache == nil {
+		return &CacheStats{}
+	}
+
+	// 获取LRU缓存的统计信息
+	stats := &CacheStats{}
+	stats.CurrentSize = mc.cache.Len()
+
+	// 注意：LRU缓存库可能不提供hits/misses统计，这里返回默认值
+	stats.Hits = 0
+	stats.Misses = 0
+	stats.HitRate = 0.0
+
+	return stats
+}
+
+// Clear 清空内存缓存
+func (mc *MemoryCache) Clear() {
+	if mc.cache != nil {
+		mc.cache.Purge()
+	}
+}
+
+// CacheStats 缓存统计信息
+type CacheStats struct {
+	CurrentSize int     `json:"current_size"`
+	TotalFiles  int     `json:"total_files"`
+	TotalSize   int64   `json:"total_size"`
+	Hits        int64   `json:"hits"`
+	Misses      int64   `json:"misses"`
+	HitRate     float64 `json:"hit_rate"`
 }
 
 // CacheManager 缓存管理器
@@ -597,4 +633,103 @@ func (cm *CacheManager) GetDiskCache() *DiskCache {
 // GetMemoryCache 获取内存缓存
 func (cm *CacheManager) GetMemoryCache() *MemoryCache {
 	return cm.memoryCache
+}
+
+// GetStats 获取磁盘缓存统计信息
+func (dc *DiskCache) GetStats() *CacheStats {
+	dc.indexMutex.RLock()
+	defer dc.indexMutex.RUnlock()
+
+	stats := &CacheStats{}
+	stats.CurrentSize = len(dc.index)
+
+	// 计算总文件数和总大小
+	totalSize := int64(0)
+	for _, meta := range dc.index {
+		stats.TotalFiles++
+		totalSize += int64(meta.Size)
+	}
+	stats.TotalSize = totalSize
+
+	return stats
+}
+
+// Clear 清空磁盘缓存
+func (dc *DiskCache) Clear() error {
+	dc.indexMutex.Lock()
+	defer dc.indexMutex.Unlock()
+
+	// 删除所有缓存文件
+	for key := range dc.index {
+		if err := dc.Delete(key); err != nil {
+			logger.Error("删除缓存文件失败: %s -> %v", key, err)
+		}
+	}
+
+	// 清空索引
+	dc.index = make(map[string]*CacheMeta)
+
+	logger.Info("磁盘缓存已清空")
+	return nil
+}
+
+// GetKeys 获取缓存键列表
+func (dc *DiskCache) GetKeys(limitStr, offsetStr string) ([]string, error) {
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 100
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+
+	dc.indexMutex.RLock()
+	defer dc.indexMutex.RUnlock()
+
+	// 获取所有键
+	keys := make([]string, 0, len(dc.index))
+	for key := range dc.index {
+		keys = append(keys, key)
+	}
+
+	// 排序键（按创建时间排序）
+	sort.Slice(keys, func(i, j int) bool {
+		return dc.index[keys[i]].CreatedAt.Before(dc.index[keys[j]].CreatedAt)
+	})
+
+	// 应用分页
+	if offset >= len(keys) {
+		return []string{}, nil
+	}
+
+	end := offset + limit
+	if end > len(keys) {
+		end = len(keys)
+	}
+
+	return keys[offset:end], nil
+}
+
+// Search 搜索缓存
+func (dc *DiskCache) Search(query string) ([]*CacheMeta, error) {
+	dc.indexMutex.RLock()
+	defer dc.indexMutex.RUnlock()
+
+	var results []*CacheMeta
+
+	for key, meta := range dc.index {
+		// 搜索键名
+		if strings.Contains(strings.ToLower(key), strings.ToLower(query)) {
+			results = append(results, meta)
+		}
+	}
+
+	// 按创建时间排序
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreatedAt.Before(results[j].CreatedAt)
+	})
+
+	return results, nil
 }

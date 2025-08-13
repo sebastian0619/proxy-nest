@@ -20,6 +20,9 @@ import (
 )
 
 func main() {
+	// 记录启动时间
+	startTime := time.Now()
+
 	// 加载配置
 	cfg := config.LoadConfig()
 
@@ -51,7 +54,7 @@ func main() {
 	router.Use(gin.Recovery())
 
 	// 设置路由
-	setupRoutes(router, proxyManager, cacheManager, healthManager)
+	setupRoutes(router, proxyManager, cacheManager, healthManager, cfg, startTime)
 
 	// 创建HTTP服务器
 	server := &http.Server{
@@ -134,7 +137,7 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 }
 
 // setupRoutes 设置路由
-func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager, healthManager *health.HealthManager) {
+func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager, healthManager *health.HealthManager, cfg *config.Config, startTime time.Time) {
 	// 健康检查端点
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -168,6 +171,216 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				},
 			})
 		}
+	})
+
+	// 缓存管理端点
+	router.GET("/cache/info", func(c *gin.Context) {
+		// 获取缓存信息
+		memoryStats := cacheManager.GetMemoryCache().GetStats()
+		diskStats := cacheManager.GetDiskCache().GetStats()
+
+		c.JSON(http.StatusOK, gin.H{
+			"cache_enabled": cacheManager.GetConfig().CacheEnabled,
+			"memory_cache": gin.H{
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"max_size":     cacheManager.GetConfig().MemoryCacheSize,
+				"ttl":          cacheManager.GetConfig().MemoryCacheTTL.String(),
+				"current_size": memoryStats.CurrentSize,
+				"hits":         memoryStats.Hits,
+				"misses":       memoryStats.Misses,
+				"hit_rate":     memoryStats.HitRate,
+			},
+			"disk_cache": gin.H{
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"cache_dir":    cacheManager.GetConfig().CacheDir,
+				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
+				"max_size":     cacheManager.GetConfig().CacheMaxSize,
+				"current_size": diskStats.CurrentSize,
+				"total_files":  diskStats.TotalFiles,
+				"total_size":   diskStats.TotalSize,
+			},
+			"endpoints": gin.H{
+				"cache_info":   "/cache/info",
+				"clear_cache":  "/cache/clear",
+				"clear_memory": "/cache/clear?type=memory",
+				"clear_disk":   "/cache/clear?type=disk",
+				"cache_keys":   "/cache/keys",
+				"cache_search": "/cache/search?q=<query>",
+			},
+		})
+	})
+
+	// 清除缓存端点
+	router.POST("/cache/clear", func(c *gin.Context) {
+		// 获取查询参数，决定清除哪种类型的缓存
+		cacheType := c.Query("type")
+
+		var result gin.H
+		var status int
+
+		switch cacheType {
+		case "memory":
+			// 只清除内存缓存
+			cacheManager.GetMemoryCache().Clear()
+			result = gin.H{
+				"message":   "内存缓存已清除",
+				"type":      "memory",
+				"timestamp": time.Now().Format(time.RFC3339),
+			}
+			status = http.StatusOK
+			logger.Info("内存缓存已通过API清除")
+
+		case "disk":
+			// 只清除磁盘缓存
+			if err := cacheManager.GetDiskCache().Clear(); err != nil {
+				result = gin.H{
+					"error":     "清除磁盘缓存失败",
+					"message":   err.Error(),
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusInternalServerError
+				logger.Error("API清除磁盘缓存失败: %v", err)
+			} else {
+				result = gin.H{
+					"message":   "磁盘缓存已清除",
+					"type":      "disk",
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusOK
+				logger.Info("磁盘缓存已通过API清除")
+			}
+
+		default:
+			// 清除所有缓存
+			cacheManager.GetMemoryCache().Clear()
+			if err := cacheManager.GetDiskCache().Clear(); err != nil {
+				result = gin.H{
+					"error":     "清除缓存失败",
+					"message":   err.Error(),
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusInternalServerError
+				logger.Error("API清除所有缓存失败: %v", err)
+			} else {
+				result = gin.H{
+					"message":   "所有缓存已清除",
+					"type":      "all",
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusOK
+				logger.Info("所有缓存已通过API清除")
+			}
+		}
+
+		c.JSON(status, result)
+	})
+
+	// 获取缓存键列表端点
+	router.GET("/cache/keys", func(c *gin.Context) {
+		// 获取查询参数
+		limit := c.DefaultQuery("limit", "100")
+		offset := c.DefaultQuery("offset", "0")
+
+		// 获取磁盘缓存的键列表
+		keys, err := cacheManager.GetDiskCache().GetKeys(limit, offset)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":     "获取缓存键列表失败",
+				"message":   err.Error(),
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"keys":   keys,
+			"total":  len(keys),
+			"limit":  limit,
+			"offset": offset,
+			"endpoints": gin.H{
+				"cache_keys":   "/cache/keys",
+				"cache_search": "/cache/search?q=<query>",
+			},
+		})
+	})
+
+	// 搜索缓存端点
+	router.GET("/cache/search", func(c *gin.Context) {
+		query := c.Query("q")
+		if query == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":     "缺少搜索查询参数",
+				"message":   "请提供查询参数 'q'",
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 搜索缓存
+		results, err := cacheManager.GetDiskCache().Search(query)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":     "搜索缓存失败",
+				"message":   err.Error(),
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"query":     query,
+			"results":   results,
+			"total":     len(results),
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
+
+	// 服务器状态端点
+	router.GET("/status", func(c *gin.Context) {
+		// 获取系统状态信息
+		uptime := time.Since(startTime)
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":     "running",
+			"uptime":     uptime.String(),
+			"start_time": startTime.Format(time.RFC3339),
+			"timestamp":  time.Now().Format(time.RFC3339),
+			"version":    "tmdb-go-proxy/1.0",
+			"endpoints": gin.H{
+				"health":      "/health",
+				"status":      "/status",
+				"stats":       "/stats",
+				"cache_info":  "/cache/info",
+				"cache_clear": "/cache/clear",
+			},
+		})
+	})
+
+	// 配置信息端点
+	router.GET("/config", func(c *gin.Context) {
+		// 返回当前配置信息（不包含敏感信息）
+		c.JSON(http.StatusOK, gin.H{
+			"port": cfg.Port,
+			"cache": gin.H{
+				"enabled":         cfg.Cache.CacheEnabled,
+				"cache_dir":       cfg.Cache.CacheDir,
+				"memory_ttl":      cfg.Cache.MemoryCacheTTL.String(),
+				"disk_ttl":        cfg.Cache.DiskCacheTTL.String(),
+				"memory_max_size": cfg.Cache.MemoryCacheSize,
+				"disk_max_size":   cfg.Cache.CacheMaxSize,
+			},
+			"health_check": gin.H{
+				"interval":      cfg.HealthCheckInterval.String(),
+				"initial_delay": cfg.HealthCheckInitialDelay.String(),
+			},
+			"endpoints": gin.H{
+				"config":     "/config",
+				"health":     "/health",
+				"status":     "/status",
+				"stats":      "/stats",
+				"cache_info": "/cache/info",
+			},
+		})
 	})
 
 	// 代理请求处理 - 使用NoRoute捕获所有其他请求
