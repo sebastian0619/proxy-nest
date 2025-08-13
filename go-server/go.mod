@@ -5,7 +5,6 @@ go 1.21
 require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/sirupsen/logrus v1.9.3
 )
 
 require (

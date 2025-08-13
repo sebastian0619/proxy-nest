@@ -127,7 +127,7 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 		if isReady {
 			status = "已准备好"
 		}
-		
+
 		logger.Info("  - %s: 状态=%s, %s, 优先级=%d, 连接率=%.1f%% (置信度=%.1f%%), 基础权重=%d, 动态权重=%d, 综合权重=%d",
 			server.URL, server.Status, status, server.Priority, server.ConnectionRate*100, confidence*100,
 			server.BaseWeight, server.DynamicWeight, server.CombinedWeight)
@@ -138,18 +138,18 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	if len(healthyServers) == 0 {
 		logger.Warn("没有健康的上游服务器，使用所有服务器进行请求（降低权重）:")
 		availableServers = allServers
-			// 为不健康的服务器降低权重，但允许它们参与请求
-	for _, server := range availableServers {
-		if server.Status == health.HealthStatusUnhealthy {
-			// 不健康服务器的权重降低到原来的1/4，但仍然可以参与
-			if server.CombinedWeight > 4 {
-				server.CombinedWeight = server.CombinedWeight / 4
-			} else {
-				server.CombinedWeight = 1
+		// 为不健康的服务器降低权重，但允许它们参与请求
+		for _, server := range availableServers {
+			if server.Status == health.HealthStatusUnhealthy {
+				// 不健康服务器的权重降低到原来的1/4，但仍然可以参与
+				if server.CombinedWeight > 4 {
+					server.CombinedWeight = server.CombinedWeight / 4
+				} else {
+					server.CombinedWeight = 1
+				}
+				logger.Info("  - %s: 状态=%s, 降低权重=%d", server.URL, server.Status, server.CombinedWeight)
 			}
-			logger.Info("  - %s: 状态=%s, 降低权重=%d", server.URL, server.Status, server.CombinedWeight)
 		}
-	}
 	} else {
 		availableServers = healthyServers
 		logger.Info("健康服务器列表:")
@@ -166,14 +166,14 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 
 	// 按优先级分组选择服务器
 	selectedServer := pm.selectServerByPriority(availableServers)
-	
+
 	if selectedServer != nil {
 		logger.Success("选择服务器 %s [状态=%s 优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
 			selectedServer.URL, selectedServer.Status, selectedServer.Priority, selectedServer.ConnectionRate*100,
 			selectedServer.BaseWeight, selectedServer.DynamicWeight, selectedServer.CombinedWeight)
 		return selectedServer
 	}
-	
+
 	// 保底返回第一个服务器
 	server := availableServers[0]
 	logger.Warn("保底选择服务器 %s [状态=%s 优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
@@ -186,22 +186,22 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 func (pm *ProxyManager) selectServerByPriority(servers []*health.Server) *health.Server {
 	// 按优先级分组
 	priorityGroups := make(map[int][]*health.Server)
-	
+
 	for _, server := range servers {
 		priority := server.Priority
 		priorityGroups[priority] = append(priorityGroups[priority], server)
 	}
-	
+
 	// 从高优先级到低优先级选择
 	for priority := 3; priority >= 0; priority-- {
 		if group, exists := priorityGroups[priority]; exists && len(group) > 0 {
 			logger.Info("优先级 %d 组有 %d 个服务器", priority, len(group))
-			
+
 			// 在相同优先级组内，按动态权重选择
 			if len(group) == 1 {
 				return group[0]
 			}
-			
+
 			// 多个服务器时，考虑样本数量
 			selectedServer := pm.selectServerBySampleSize(group)
 			if selectedServer != nil {
@@ -209,7 +209,7 @@ func (pm *ProxyManager) selectServerByPriority(servers []*health.Server) *health
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -217,7 +217,7 @@ func (pm *ProxyManager) selectServerByPriority(servers []*health.Server) *health
 func (pm *ProxyManager) selectServerBySampleSize(servers []*health.Server) *health.Server {
 	// 分离已准备好和未准备好的服务器
 	var readyServers, unreadyServers []*health.Server
-	
+
 	for _, server := range servers {
 		if pm.healthManager.IsServerReady(server.URL) {
 			readyServers = append(readyServers, server)
@@ -225,20 +225,20 @@ func (pm *ProxyManager) selectServerBySampleSize(servers []*health.Server) *heal
 			unreadyServers = append(unreadyServers, server)
 		}
 	}
-	
+
 	// 优先选择已准备好的服务器
 	if len(readyServers) > 0 {
 		logger.Info("在 %d 个已准备好的服务器中选择", len(readyServers))
 		return pm.selectServerByWeight(readyServers)
 	}
-	
+
 	// 如果没有准备好的服务器，使用未准备好的服务器
 	// 这是关键：确保服务启动后立即可用，即使样本不足
 	if len(unreadyServers) > 0 {
 		logger.Info("使用 %d 个未准备好的服务器（样本不足，但服务立即可用）", len(unreadyServers))
 		return pm.selectServerByWeight(unreadyServers)
 	}
-	
+
 	return nil
 }
 
@@ -247,25 +247,25 @@ func (pm *ProxyManager) selectServerByWeight(servers []*health.Server) *health.S
 	if len(servers) == 1 {
 		return servers[0]
 	}
-	
+
 	// 按动态权重概率选择
 	var totalWeight int
 	for _, server := range servers {
 		totalWeight += server.DynamicWeight
 	}
-	
+
 	random := float64(time.Now().UnixNano()) / float64(time.Second)
 	weightSum := 0
-	
+
 	for _, server := range servers {
 		weightSum += server.DynamicWeight
 		if float64(weightSum) > random*float64(totalWeight) {
-			logger.Info("选择服务器 %s (动态权重=%d, 样本数=%d)", 
+			logger.Info("选择服务器 %s (动态权重=%d, 样本数=%d)",
 				server.URL, server.DynamicWeight, server.TotalRequests)
 			return server
 		}
 	}
-	
+
 	// 如果概率选择失败，返回第一个服务器
 	return servers[0]
 }
@@ -276,14 +276,10 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	timeout := pm.config.RequestTimeout
 	logger.Info("使用配置的超时时间: %v", timeout)
 
-	// 不使用context超时，避免context canceled错误
-	// 直接使用HTTP客户端的超时设置
-	ctx := context.Background()
-
 	// 所有请求都使用GET方法
 	method := "GET"
 
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		logger.Error("创建HTTP请求失败: %v", err)
 		return nil, err
@@ -329,7 +325,6 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	// 添加更多调试信息
 	logger.Info("HTTP客户端配置: %+v", pm.client)
-	logger.Info("请求上下文状态: %v", ctx.Err())
 
 	// 发送请求并添加详细的错误处理
 	logger.Info("即将调用pm.client.Do...")
@@ -340,13 +335,6 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	if err != nil {
 		logger.Error("请求发送失败: %v (耗时: %v)", err, requestDuration)
-
-		// 检查是否是超时错误
-		if ctx.Err() == context.DeadlineExceeded {
-			logger.Error("请求超时: %s (超时设置: %v)", url, timeout)
-		} else if ctx.Err() == context.Canceled {
-			logger.Error("请求被取消: %s", url)
-		}
 
 		// 使用错误检测函数提供更详细的错误分类
 		if isConnectionError(err) {
@@ -674,12 +662,8 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 
 // makeRequestWithTimeoutRetry 带超时重试的请求
 func (pm *ProxyManager) makeRequestWithTimeoutRetry(url string, headers http.Header, primaryServer *health.Server) (*http.Response, error) {
-	// 创建带超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}
@@ -704,17 +688,14 @@ func (pm *ProxyManager) makeRequestWithTimeoutRetry(url string, headers http.Hea
 	responseTime := time.Since(startTime)
 
 	if err != nil {
-		// 检查是否是超时错误
-		if ctx.Err() == context.DeadlineExceeded {
-			logger.Warn("请求超时（10秒），尝试切换到其他健康上游: %s", url)
-			return pm.retryWithOtherHealthyServer(url, headers, primaryServer)
-		}
-		return nil, fmt.Errorf("请求失败: %v", err)
+		// 请求失败，尝试切换到其他健康上游
+		logger.Warn("请求失败，尝试切换到其他健康上游: %s", url)
+		return pm.retryWithOtherHealthyServer(url, headers, primaryServer)
 	}
 
 	// 请求成功，更新服务器性能指标
 	pm.updateServerPerformance(primaryServer.URL, responseTime)
-	
+
 	logger.Info("请求成功: %s (响应时间: %v)", url, responseTime)
 	return resp, nil
 }
@@ -724,42 +705,39 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 	// 获取其他健康的服务器
 	healthyServers := pm.healthManager.GetHealthyServers()
 	var availableServers []*health.Server
-	
+
 	for _, server := range healthyServers {
 		if server.URL != excludeServer.URL {
 			availableServers = append(availableServers, server)
 		}
 	}
-	
+
 	if len(availableServers) == 0 {
 		logger.Error("没有其他健康的服务器可用")
 		return nil, fmt.Errorf("没有其他健康的服务器可用")
 	}
-	
+
 	logger.Info("找到 %d 个其他健康的服务器，开始重试", len(availableServers))
-	
+
 	// 按优先级选择重试服务器
 	selectedServer := pm.selectServerByPriority(availableServers)
 	if selectedServer == nil {
 		// 如果优先级选择失败，使用第一个可用服务器
 		selectedServer = availableServers[0]
 	}
-	
+
 	// 构建新的请求URL
 	path := strings.TrimPrefix(originalURL, excludeServer.URL)
 	retryURL := fmt.Sprintf("%s%s", selectedServer.URL, path)
-	
+
 	logger.Info("重试请求: %s (服务器: %s)", retryURL, selectedServer.URL)
-	
-	// 发送重试请求（使用较短的超时时间）
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	req, err := http.NewRequestWithContext(ctx, "GET", retryURL, nil)
+
+	// 发送重试请求
+	req, err := http.NewRequest("GET", retryURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建重试请求失败: %v", err)
 	}
-	
+
 	// 转发请求头
 	if auth := headers.Get("Authorization"); auth != "" {
 		req.Header.Set("Authorization", auth)
@@ -773,22 +751,19 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 	if userAgent := headers.Get("User-Agent"); userAgent != "" {
 		req.Header.Set("User-Agent", userAgent)
 	}
-	
+
 	// 发送重试请求
 	startTime := time.Now()
 	resp, err := pm.client.Do(req)
 	responseTime := time.Since(startTime)
-	
+
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			logger.Error("重试请求也超时: %s", retryURL)
-		}
 		return nil, fmt.Errorf("重试请求失败: %v", err)
 	}
-	
+
 	// 重试成功，更新服务器性能指标
 	pm.updateServerPerformance(selectedServer.URL, responseTime)
-	
+
 	logger.Success("重试请求成功: %s (响应时间: %v)", retryURL, responseTime)
 	return resp, nil
 }
@@ -797,7 +772,7 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 func (pm *ProxyManager) updateServerPerformance(serverURL string, responseTime time.Duration) {
 	// 更新动态权重
 	pm.healthManager.UpdateDynamicWeight(serverURL, int64(responseTime))
-	
+
 	// 更新连接率（成功）
 	// 获取服务器对象并更新连接率
 	if server := pm.healthManager.GetServerByURL(serverURL); server != nil {
