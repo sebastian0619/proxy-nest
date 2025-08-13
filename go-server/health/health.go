@@ -28,20 +28,20 @@ const (
 type Server struct {
 	URL            string
 	Status         HealthStatus
-	BaseWeight     int           // 基础权重（基于连接率）
-	DynamicWeight  int           // 动态权重（基于响应时间）
-	CombinedWeight int           // 综合权重
-	Priority       int           // 优先级（基于连接率）
-	ErrorCount     int           // 错误次数
-	LastCheckTime  time.Time     // 最后检查时间
-	LastEWMA       float64       // 最后指数加权移动平均响应时间
+	BaseWeight     int             // 基础权重（基于连接率）
+	DynamicWeight  int             // 动态权重（基于响应时间）
+	CombinedWeight int             // 综合权重
+	Priority       int             // 优先级（基于连接率）
+	ErrorCount     int             // 错误次数
+	LastCheckTime  time.Time       // 最后检查时间
+	LastEWMA       float64         // 最后指数加权移动平均响应时间
 	ResponseTimes  []time.Duration // 响应时间记录
 	// 连接率相关字段
-	TotalRequests    int64         // 总请求数
-	SuccessRequests  int64         // 成功请求数
-	ConnectionRate   float64       // 连接率（成功率）
-	LastRateUpdate   time.Time     // 最后连接率更新时间
-	RateWindowSize   int           // 连接率计算窗口大小（默认1000）
+	TotalRequests   int64     // 总请求数
+	SuccessRequests int64     // 成功请求数
+	ConnectionRate  float64   // 连接率（成功率）
+	LastRateUpdate  time.Time // 最后连接率更新时间
+	RateWindowSize  int       // 连接率计算窗口大小（默认1000）
 }
 
 // HealthData 健康数据
@@ -64,18 +64,18 @@ type ErrorInfo struct {
 
 // ConnectionRateData 连接率数据
 type ConnectionRateData struct {
-	URL              string    `json:"url"`
-	TotalRequests    int64     `json:"totalRequests"`
-	SuccessRequests  int64     `json:"successRequests"`
-	ConnectionRate   float64   `json:"connectionRate"`
-	Confidence       float64   `json:"confidence"`
-	Priority         int       `json:"priority"`
-	BaseWeight       int       `json:"baseWeight"`
-	LastUpdate       time.Time `json:"lastUpdate"`
+	URL             string    `json:"url"`
+	TotalRequests   int64     `json:"totalRequests"`
+	SuccessRequests int64     `json:"successRequests"`
+	ConnectionRate  float64   `json:"connectionRate"`
+	Confidence      float64   `json:"confidence"`
+	Priority        int       `json:"priority"`
+	BaseWeight      int       `json:"baseWeight"`
+	LastUpdate      time.Time `json:"lastUpdate"`
 	// 历史记录（保留最近1000次请求的结果）
-	RequestHistory   []bool    `json:"requestHistory"`
+	RequestHistory []bool `json:"requestHistory"`
 	// 统计信息
-	DailyStats       map[string]DailyStats `json:"dailyStats"` // 按日期统计
+	DailyStats map[string]DailyStats `json:"dailyStats"` // 按日期统计
 }
 
 // DailyStats 每日统计
@@ -88,12 +88,12 @@ type DailyStats struct {
 
 // HealthManager 健康管理器
 type HealthManager struct {
-	servers    map[string]*Server
-	healthData map[string]*HealthData
-	config     *config.Config
-	mutex      sync.RWMutex
-	healthFile string
-	stopChan   chan struct{}
+	servers          map[string]*Server
+	healthData       map[string]*HealthData
+	config           *config.Config
+	mutex            sync.RWMutex
+	healthFile       string
+	stopChan         chan struct{}
 	healthCheckMutex sync.Mutex
 	isChecking       bool
 	// 添加HTTP客户端池
@@ -115,28 +115,28 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 		DisableCompression:  true,             // 禁用压缩，健康检查不需要
 		ForceAttemptHTTP2:   true,             // 强制尝试HTTP/2
 		// 连接池配置
-		MaxConnsPerHost:     20,               // 每个主机的最大连接数
+		MaxConnsPerHost: 20, // 每个主机的最大连接数
 		// 超时配置
 		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,      // 连接超时
-			KeepAlive: 30 * time.Second,      // Keep-Alive间隔
+			Timeout:   30 * time.Second, // 连接超时
+			KeepAlive: 30 * time.Second, // Keep-Alive间隔
 		}).DialContext,
 	}
 
 	// 创建HTTP客户端
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second,          // 整体超时
+		Timeout:   30 * time.Second, // 整体超时
 	}
 
 	hm := &HealthManager{
-		servers:    make(map[string]*Server),
-		healthData: make(map[string]*HealthData),
-		config:     cfg,
-		healthFile: "health_data.json",
-		stopChan:   make(chan struct{}),
-		httpClient: client,
-		transport:  transport,
+		servers:            make(map[string]*Server),
+		healthData:         make(map[string]*HealthData),
+		config:             cfg,
+		healthFile:         "health_data.json",
+		stopChan:           make(chan struct{}),
+		httpClient:         client,
+		transport:          transport,
 		connectionRateFile: "connection_rate_data.json",
 		connectionRateData: make(map[string]*ConnectionRateData),
 	}
@@ -146,7 +146,7 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 
 	// 加载健康数据
 	hm.loadHealthData()
-	
+
 	// 加载连接率数据
 	hm.loadConnectionRateData()
 
@@ -176,22 +176,22 @@ func (hm *HealthManager) initializeServers() {
 		}
 
 		hm.servers[serverURL] = &Server{
-			URL:              serverURL,
-			Status:           HealthStatusHealthy, // 初始状态假设健康，等待第一次检查确认
-			BaseWeight:       75,                    // 默认基础权重（提高，确保可用性）
-			DynamicWeight:    50,                    // 默认动态权重
-			CombinedWeight:   75,                    // 默认综合权重（与基础权重一致）
-			Priority:         2,                     // 默认中优先级（提高，确保可用性）
-			ErrorCount:       0,
-			LastCheckTime:    time.Time{}, // 初始时间为零值，表示尚未检查
-			LastEWMA:         0,
-			ResponseTimes:    make([]time.Duration, 0, 3),
+			URL:            serverURL,
+			Status:         HealthStatusHealthy, // 初始状态假设健康，等待第一次检查确认
+			BaseWeight:     75,                  // 默认基础权重（提高，确保可用性）
+			DynamicWeight:  50,                  // 默认动态权重
+			CombinedWeight: 75,                  // 默认综合权重（与基础权重一致）
+			Priority:       2,                   // 默认中优先级（提高，确保可用性）
+			ErrorCount:     0,
+			LastCheckTime:  time.Time{}, // 初始时间为零值，表示尚未检查
+			LastEWMA:       0,
+			ResponseTimes:  make([]time.Duration, 0, 3),
 			// 连接率相关字段
-			TotalRequests:    0,                     // 总请求数
-			SuccessRequests:  0,                     // 成功请求数
-			ConnectionRate:   0.8,                   // 默认80%成功率（保守但可用）
-			LastRateUpdate:   time.Now(),
-			RateWindowSize:   1000,                  // 默认1000次请求窗口
+			TotalRequests:   0,   // 总请求数
+			SuccessRequests: 0,   // 成功请求数
+			ConnectionRate:  0.8, // 默认80%成功率（保守但可用）
+			LastRateUpdate:  time.Now(),
+			RateWindowSize:  1000, // 默认1000次请求窗口
 		}
 		logger.Success("成功初始化服务器: %s (状态=健康, 权重=1)", serverURL)
 	}
@@ -223,7 +223,7 @@ func (hm *HealthManager) StartHealthCheck() {
 // StopHealthCheck 停止健康检查
 func (hm *HealthManager) StopHealthCheck() {
 	close(hm.stopChan)
-	
+
 	// 关闭HTTP传输层，清理连接池
 	if hm.transport != nil {
 		hm.transport.CloseIdleConnections()
@@ -242,42 +242,42 @@ func (hm *HealthManager) CloseIdleConnections() {
 func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool) {
 	// 获取或创建连接率数据
 	rateData := hm.getOrCreateConnectionRateData(server.URL)
-	
+
 	// 更新请求计数
 	rateData.TotalRequests++
 	if success {
 		rateData.SuccessRequests++
 	}
-	
+
 	// 更新请求历史记录
 	rateData.RequestHistory = append(rateData.RequestHistory, success)
-	
+
 	// 更新每日统计
 	hm.updateDailyStats(rateData, success)
-	
+
 	// 计算连接率
 	if rateData.TotalRequests > 0 {
 		rateData.ConnectionRate = float64(rateData.SuccessRequests) / float64(rateData.TotalRequests)
 	}
-	
+
 	// 计算置信度（基于样本数量）
 	confidence := hm.calculateConfidence(rateData.TotalRequests)
 	rateData.Confidence = confidence
-	
+
 	// 基于置信度调整连接率
 	adjustedRate := hm.adjustRateByConfidence(rateData.ConnectionRate, confidence)
-	
+
 	// 更新优先级（基于调整后的连接率）
 	priority := hm.calculatePriority(adjustedRate)
 	rateData.Priority = priority
-	
+
 	// 更新基础权重（基于调整后的连接率）
 	baseWeight := hm.calculateBaseWeightFromRate(adjustedRate)
 	rateData.BaseWeight = baseWeight
-	
+
 	// 更新最后更新时间
 	rateData.LastUpdate = time.Now()
-	
+
 	// 同步更新Server结构体（兼容性）
 	server.TotalRequests = rateData.TotalRequests
 	server.SuccessRequests = rateData.SuccessRequests
@@ -285,16 +285,16 @@ func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool) {
 	server.Priority = priority
 	server.BaseWeight = baseWeight
 	server.LastRateUpdate = rateData.LastUpdate
-	
+
 	// 保存到文件
 	go func() {
 		if err := hm.saveConnectionRateData(); err != nil {
 			logger.Error("保存连接率数据失败: %v", err)
 		}
 	}()
-	
+
 	logger.Debug("服务器 %s 连接率更新: 总请求=%d, 成功=%d, 原始连接率=%.2f%%, 置信度=%.1f%%, 调整后连接率=%.2f%%, 优先级=%d, 基础权重=%d",
-		server.URL, rateData.TotalRequests, rateData.SuccessRequests, 
+		server.URL, rateData.TotalRequests, rateData.SuccessRequests,
 		rateData.ConnectionRate*100, confidence*100, adjustedRate*100, priority, baseWeight)
 }
 
@@ -302,11 +302,11 @@ func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool) {
 func (hm *HealthManager) calculateConfidence(sampleCount int64) float64 {
 	// 使用威尔逊得分区间方法计算置信度
 	// 样本数量越多，置信度越高
-	
+
 	if sampleCount == 0 {
 		return 0.0
 	}
-	
+
 	// 基于样本数量的置信度计算
 	switch {
 	case sampleCount >= 1000: // 1000+样本，高置信度
@@ -317,11 +317,11 @@ func (hm *HealthManager) calculateConfidence(sampleCount int64) float64 {
 		return 0.8
 	case sampleCount >= 100: // 100-199样本，较低置信度
 		return 0.7
-	case sampleCount >= 50:  // 50-99样本，低置信度
+	case sampleCount >= 50: // 50-99样本，低置信度
 		return 0.6
-	case sampleCount >= 20:  // 20-49样本，很低置信度
+	case sampleCount >= 20: // 20-49样本，很低置信度
 		return 0.5
-	case sampleCount >= 10:  // 10-19样本，极低置信度
+	case sampleCount >= 10: // 10-19样本，极低置信度
 		return 0.3
 	default: // 1-9样本，最低置信度
 		return 0.1
@@ -334,7 +334,7 @@ func (hm *HealthManager) adjustRateByConfidence(originalRate, confidence float64
 	// 1. 样本数量 < 20：使用保守但可用的默认值（80%）
 	// 2. 样本数量 20-50：使用中性值（75%）
 	// 3. 样本数量 50+：逐渐相信原始连接率
-	
+
 	var defaultRate float64
 	if confidence < 0.5 { // 样本数量 < 20
 		defaultRate = 0.8 // 80% - 保守但可用的默认值
@@ -343,15 +343,15 @@ func (hm *HealthManager) adjustRateByConfidence(originalRate, confidence float64
 	} else {
 		defaultRate = 0.7 // 70% - 标准中性值
 	}
-	
+
 	// 加权平均：置信度 * 原始连接率 + (1-置信度) * 默认值
 	adjustedRate := confidence*originalRate + (1-confidence)*defaultRate
-	
+
 	// 确保调整后的连接率不会过低，最低不低于60%
 	if adjustedRate < 0.6 {
 		adjustedRate = 0.6
 	}
-	
+
 	return adjustedRate
 }
 
@@ -359,7 +359,7 @@ func (hm *HealthManager) adjustRateByConfidence(originalRate, confidence float64
 func (hm *HealthManager) calculatePriority(adjustedRate float64) int {
 	// 连接率越高，优先级越高
 	// 由于adjustRateByConfidence确保最低不低于60%，所以最低优先级很少出现
-	
+
 	if adjustedRate >= 0.95 { // 95%以上成功率
 		return 3 // 高优先级
 	} else if adjustedRate >= 0.80 { // 80-95%成功率
@@ -375,7 +375,7 @@ func (hm *HealthManager) calculatePriority(adjustedRate float64) int {
 func (hm *HealthManager) calculateBaseWeightFromRate(adjustedRate float64) int {
 	// 连接率越高，基础权重越高
 	baseWeight := int(adjustedRate * 100)
-	
+
 	// 设置最小和最大权重
 	// 由于adjustedRate最低不低于60%，所以baseWeight最低不低于60
 	if baseWeight < 60 {
@@ -383,7 +383,7 @@ func (hm *HealthManager) calculateBaseWeightFromRate(adjustedRate float64) int {
 	} else if baseWeight > 100 {
 		baseWeight = 100
 	}
-	
+
 	return baseWeight
 }
 
@@ -394,22 +394,31 @@ func (hm *HealthManager) healthCheckLoop() {
 	if interval == 0 {
 		interval = 5 * time.Minute // 默认5分钟
 	}
-	
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// 使用配置的初始延迟
 	initialDelay := hm.config.HealthCheckInitialDelay
 	if initialDelay == 0 {
-		initialDelay = 10 * time.Second // 默认10秒
+		initialDelay = 30 * time.Second // 默认30秒，给程序更多启动时间
 	}
-	
+
 	logger.Info("健康检查配置 - 间隔: %v, 初始延迟: %v", interval, initialDelay)
-	
+
 	// 延迟执行第一次检查，给服务器一些启动时间
 	time.Sleep(initialDelay)
-	hm.performHealthCheck()
-	
+
+	// 在goroutine中执行第一次健康检查，避免阻塞主线程
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("初始健康检查发生panic: %v", r)
+			}
+		}()
+		hm.performHealthCheck()
+	}()
+
 	// 启动数据清理任务
 	go hm.startDataCleanupTask()
 
@@ -462,45 +471,45 @@ func (hm *HealthManager) performHealthCheck() {
 
 	// 批量健康检查，使用连接池提高效率
 	checkResults := hm.batchHealthCheck(servers)
-	
+
 	// 处理检查结果
 	for i, server := range servers {
 		if checkResults[i] == nil {
 			continue // 跳过不需要检查的服务器
 		}
-		
+
 		logger.Info("服务器 %s 检查完成，结果: %t", server.URL, checkResults[i].Success)
-		
+
 		// 健康检查失败时的处理
 		if !checkResults[i].Success {
 			logger.Warn("服务器 %s 健康检查失败", server.URL)
-			
+
 			// 更新检查时间和错误计数
 			hm.mutex.Lock()
 			server.LastCheckTime = time.Now()
 			server.ErrorCount++
-			
+
 			// 如果连续失败次数过多，标记为不健康
 			if server.ErrorCount >= hm.config.MaxErrorsBeforeUnhealthy {
 				server.Status = HealthStatusUnhealthy
 				logger.Warn("服务器 %s 连续失败 %d 次，标记为不健康", server.URL, server.ErrorCount)
 			}
 			hm.mutex.Unlock()
-			
+
 			// 更新连接率（失败）
 			hm.UpdateConnectionRate(server, false)
 			continue
 		}
-		
+
 		// 健康检查成功，重置错误计数并标记为健康
 		hm.mutex.Lock()
 		server.Status = HealthStatusHealthy
 		server.ErrorCount = 0
 		hm.mutex.Unlock()
-		
+
 		// 更新连接率（成功）
 		hm.UpdateConnectionRate(server, true)
-		
+
 		hm.updateServerState(server, checkResults[i])
 	}
 
@@ -523,18 +532,19 @@ func (hm *HealthManager) performHealthCheck() {
 // batchHealthCheck 批量健康检查，使用连接池提高效率
 func (hm *HealthManager) batchHealthCheck(servers []*Server) []*CheckResult {
 	results := make([]*CheckResult, len(servers))
-	
+
 	// 批量创建请求
 	requests := make([]*http.Request, 0, len(servers))
 	serverIndices := make([]int, 0, len(servers))
-	
+
 	for i, server := range servers {
 		// 如果服务器当前是健康的，跳过健康检查，避免过度检查
-		if server.Status == HealthStatusHealthy && time.Since(server.LastCheckTime) < 2*time.Minute {
+		// 延长跳过时间到5分钟，减少健康检查频率
+		if server.Status == HealthStatusHealthy && time.Since(server.LastCheckTime) < 5*time.Minute {
 			logger.Info("跳过服务器 %s 的检查，最近已检查过 (最后检查: %v)", server.URL, server.LastCheckTime)
 			continue
 		}
-		
+
 		// 创建健康检查请求
 		req, err := hm.createHealthCheckRequest(server)
 		if err != nil {
@@ -545,45 +555,65 @@ func (hm *HealthManager) batchHealthCheck(servers []*Server) []*CheckResult {
 			}
 			continue
 		}
-		
+
 		requests = append(requests, req)
 		serverIndices = append(serverIndices, i)
 	}
-	
+
 	if len(requests) == 0 {
 		logger.Info("没有需要检查的服务器")
 		return results
 	}
-	
+
 	logger.Info("开始批量健康检查 %d 个服务器", len(requests))
-	
-	// 批量发送请求，利用连接池的复用能力
+
+	// 使用goroutine并发检查，提高效率并减少阻塞时间
+	var wg sync.WaitGroup
 	for i, req := range requests {
 		serverIndex := serverIndices[i]
 		server := servers[serverIndex]
-		
-		logger.Info("开始检查服务器: %s", server.URL)
-		startTime := time.Now()
-		
-		// 发送请求
-		resp, err := hm.httpClient.Do(req)
-		responseTime := time.Since(startTime)
-		
-		if err != nil {
-			logger.Error("健康检查请求失败: %v (耗时: %v)", err, responseTime)
-			results[serverIndex] = &CheckResult{
-				Success:      false,
-				Error:        fmt.Sprintf("请求失败: %v", err),
-				ResponseTime: int64(responseTime.Milliseconds()),
+
+		wg.Add(1)
+		go func(req *http.Request, server *Server, serverIndex int) {
+			defer wg.Done()
+
+			logger.Info("开始检查服务器: %s", server.URL)
+			startTime := time.Now()
+
+			// 发送请求
+			resp, err := hm.httpClient.Do(req)
+			responseTime := time.Since(startTime)
+
+			if err != nil {
+				logger.Error("健康检查请求失败: %v (耗时: %v)", err, responseTime)
+				results[serverIndex] = &CheckResult{
+					Success:      false,
+					Error:        fmt.Sprintf("请求失败: %v", err),
+					ResponseTime: int64(responseTime.Milliseconds()),
+				}
+				return
 			}
-			continue
-		}
-		
-		// 处理响应
-		checkResult := hm.processHealthCheckResponse(server, resp, responseTime)
-		results[serverIndex] = checkResult
+
+			// 处理响应
+			checkResult := hm.processHealthCheckResponse(server, resp, responseTime)
+			results[serverIndex] = checkResult
+		}(req, server, serverIndex)
 	}
-	
+
+	// 等待所有健康检查完成，但设置超时避免无限等待
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info("所有健康检查完成")
+	case <-time.After(30 * time.Second): // 30秒超时
+		logger.Warn("健康检查超时，部分结果可能不完整")
+	}
+
 	return results
 }
 
@@ -618,14 +648,14 @@ func (hm *HealthManager) createHealthCheckRequest(server *Server) (*http.Request
 
 	// 为健康检查请求设置特殊的User-Agent
 	req.Header.Set("User-Agent", "tmdb-go-proxy-health-check/1.0")
-	
+
 	return req, nil
 }
 
 // processHealthCheckResponse 处理健康检查响应
 func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.Response, responseTime time.Duration) *CheckResult {
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return &CheckResult{
 			Success:      false,
@@ -648,22 +678,22 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 		// 读取响应体并验证确实是图片数据
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-					return &CheckResult{
-			Success:      false,
-			Error:        fmt.Sprintf("读取响应体失败: %v", err),
-			ResponseTime: int64(responseTime.Milliseconds()),
-		}
+			return &CheckResult{
+				Success:      false,
+				Error:        fmt.Sprintf("读取响应体失败: %v", err),
+				ResponseTime: int64(responseTime.Milliseconds()),
+			}
 		}
 
 		logger.Info("响应体读取成功，大小: %d字节", len(body))
 
 		// 验证图片数据大小（至少应该有几百字节）
 		if len(body) < 100 {
-					return &CheckResult{
-			Success:      false,
-			Error:        fmt.Sprintf("图片数据太小: %d字节", len(body)),
-			ResponseTime: int64(responseTime.Milliseconds()),
-		}
+			return &CheckResult{
+				Success:      false,
+				Error:        fmt.Sprintf("图片数据太小: %d字节", len(body)),
+				ResponseTime: int64(responseTime.Milliseconds()),
+			}
 		}
 
 		// 验证图片数据格式，确保浏览器能够直接显示
@@ -834,7 +864,7 @@ func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.
 	logger.Info("健康检查发送请求: %s %s", method, url)
 
 	startTime := time.Now()
-	
+
 	// 使用预配置的客户端，自动复用连接
 	resp, err := hm.httpClient.Do(req)
 	requestDuration := time.Since(startTime)
@@ -1005,21 +1035,21 @@ func (hm *HealthManager) calculateCombinedWeight(server *Server) int {
 	// 新的权重计算逻辑：
 	// 1. 优先级决定基础权重范围
 	// 2. 在相同优先级下，动态权重决定最终权重
-	
+
 	// 基于优先级的基础权重
 	priorityWeight := server.Priority * 100 // 优先级越高，基础权重越高
-	
+
 	// 在相同优先级下，动态权重调整
 	// 动态权重越高，在相同优先级中的排序越靠前
 	adjustedWeight := priorityWeight + server.DynamicWeight
-	
+
 	// 确保权重在合理范围内
 	if adjustedWeight < 1 {
 		adjustedWeight = 1
 	} else if adjustedWeight > 500 { // 允许更高的权重范围
 		adjustedWeight = 500
 	}
-	
+
 	return adjustedWeight
 }
 
@@ -1152,7 +1182,6 @@ func (hm *HealthManager) updateHealthyServersSnapshot() {
 	logger.Info("快照机制已移除，updateHealthyServersSnapshot不再执行")
 }
 
-
 // GetAllServers 获取所有服务器
 func (hm *HealthManager) GetAllServers() []*Server {
 	hm.mutex.RLock()
@@ -1210,25 +1239,25 @@ func (hm *HealthManager) saveHealthData() error {
 func (hm *HealthManager) GetServerConfidence(serverURL string) float64 {
 	hm.mutex.RLock()
 	defer hm.mutex.RUnlock()
-	
+
 	// 优先使用持久化的连接率数据
 	if data, exists := hm.connectionRateData[serverURL]; exists {
 		return data.Confidence
 	}
-	
+
 	// 兼容性：使用服务器数据
 	server, exists := hm.servers[serverURL]
 	if !exists {
 		return 0.0
 	}
-	
+
 	return hm.calculateConfidence(server.TotalRequests)
 }
 
 // loadConnectionRateData 加载连接率数据
 func (hm *HealthManager) loadConnectionRateData() {
 	filePath := filepath.Join(hm.config.Cache.CacheDir, hm.connectionRateFile)
-	
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1238,13 +1267,13 @@ func (hm *HealthManager) loadConnectionRateData() {
 		logger.Error("读取连接率数据文件失败: %v", err)
 		return
 	}
-	
+
 	var rateData map[string]*ConnectionRateData
 	if err := json.Unmarshal(data, &rateData); err != nil {
 		logger.Error("解析连接率数据失败: %v", err)
 		return
 	}
-	
+
 	hm.connectionRateData = rateData
 	logger.Info("成功加载连接率数据，共 %d 个服务器", len(rateData))
 }
@@ -1253,25 +1282,25 @@ func (hm *HealthManager) loadConnectionRateData() {
 func (hm *HealthManager) saveConnectionRateData() error {
 	hm.mutex.Lock()
 	defer hm.mutex.Unlock()
-	
+
 	// 确保缓存目录存在
 	if err := os.MkdirAll(hm.config.Cache.CacheDir, 0755); err != nil {
 		return fmt.Errorf("创建缓存目录失败: %v", err)
 	}
-	
+
 	filePath := filepath.Join(hm.config.Cache.CacheDir, hm.connectionRateFile)
-	
+
 	// 序列化数据
 	jsonData, err := json.MarshalIndent(hm.connectionRateData, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化连接率数据失败: %v", err)
 	}
-	
+
 	// 写入文件
 	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
 		return fmt.Errorf("写入连接率数据文件失败: %v", err)
 	}
-	
+
 	logger.Debug("连接率数据已保存到: %s", filePath)
 	return nil
 }
@@ -1280,25 +1309,25 @@ func (hm *HealthManager) saveConnectionRateData() error {
 func (hm *HealthManager) getOrCreateConnectionRateData(serverURL string) *ConnectionRateData {
 	hm.mutex.Lock()
 	defer hm.mutex.Unlock()
-	
+
 	if data, exists := hm.connectionRateData[serverURL]; exists {
 		return data
 	}
-	
+
 	// 创建新的连接率数据
 	data := &ConnectionRateData{
-		URL:              serverURL,
-		TotalRequests:    0,
-		SuccessRequests:  0,
-		ConnectionRate:   0.8, // 默认80%成功率（保守但可用）
-		Confidence:       0.0,
-		Priority:         2,   // 默认中优先级（提高，确保可用性）
-		BaseWeight:       75,  // 默认基础权重（提高，确保可用性）
-		LastUpdate:       time.Now(),
-		RequestHistory:   make([]bool, 0, 1000),
-		DailyStats:       make(map[string]DailyStats),
+		URL:             serverURL,
+		TotalRequests:   0,
+		SuccessRequests: 0,
+		ConnectionRate:  0.8, // 默认80%成功率（保守但可用）
+		Confidence:      0.0,
+		Priority:        2,  // 默认中优先级（提高，确保可用性）
+		BaseWeight:      75, // 默认基础权重（提高，确保可用性）
+		LastUpdate:      time.Now(),
+		RequestHistory:  make([]bool, 0, 1000),
+		DailyStats:      make(map[string]DailyStats),
 	}
-	
+
 	hm.connectionRateData[serverURL] = data
 	return data
 }
@@ -1306,7 +1335,7 @@ func (hm *HealthManager) getOrCreateConnectionRateData(serverURL string) *Connec
 // updateDailyStats 更新每日统计
 func (hm *HealthManager) updateDailyStats(data *ConnectionRateData, success bool) {
 	today := time.Now().Format("2006-01-02")
-	
+
 	if stats, exists := data.DailyStats[today]; exists {
 		stats.TotalRequests++
 		if success {
@@ -1334,10 +1363,10 @@ func (hm *HealthManager) startDataCleanupTask() {
 	// 每24小时清理一次旧数据
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
-	
+
 	// 立即执行一次清理
 	hm.cleanupOldData()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -1352,10 +1381,10 @@ func (hm *HealthManager) startDataCleanupTask() {
 func (hm *HealthManager) cleanupOldData() {
 	hm.mutex.Lock()
 	defer hm.mutex.Unlock()
-	
+
 	// 清理30天前的每日统计
 	cutoffDate := time.Now().AddDate(0, 0, -30)
-	
+
 	for _, data := range hm.connectionRateData {
 		for dateStr := range data.DailyStats {
 			if date, err := time.Parse("2006-01-02", dateStr); err == nil {
@@ -1364,13 +1393,13 @@ func (hm *HealthManager) cleanupOldData() {
 				}
 			}
 		}
-		
+
 		// 限制请求历史记录数量
 		if len(data.RequestHistory) > 1000 {
 			data.RequestHistory = data.RequestHistory[len(data.RequestHistory)-1000:]
 		}
 	}
-	
+
 	logger.Info("已清理30天前的连接率统计数据")
 }
 
@@ -1378,12 +1407,12 @@ func (hm *HealthManager) cleanupOldData() {
 func (hm *HealthManager) GetServerByURL(serverURL string) *Server {
 	hm.mutex.RLock()
 	defer hm.mutex.RUnlock()
-	
+
 	server, exists := hm.servers[serverURL]
 	if !exists {
 		return nil
 	}
-	
+
 	return server
 }
 
@@ -1391,17 +1420,17 @@ func (hm *HealthManager) GetServerByURL(serverURL string) *Server {
 func (hm *HealthManager) IsServerReady(serverURL string) bool {
 	hm.mutex.RLock()
 	defer hm.mutex.RUnlock()
-	
+
 	// 检查连接率数据
 	if data, exists := hm.connectionRateData[serverURL]; exists {
 		return data.TotalRequests >= 100
 	}
-	
+
 	// 检查服务器数据（兼容性）
 	server, exists := hm.servers[serverURL]
 	if !exists {
 		return false
 	}
-	
+
 	return server.TotalRequests >= 100
 }
