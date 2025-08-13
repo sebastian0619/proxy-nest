@@ -156,7 +156,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			// 查看所有服务器的统计信息
 			// 同时输出到控制台和返回HTTP响应
 			healthManager.PrintServerStatistics()
-			
+
 			// 获取所有服务器的统计信息并返回
 			allStats := healthManager.GetAllServersStatistics()
 			c.JSON(http.StatusOK, gin.H{
@@ -207,6 +207,40 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	cacheKey := cache.GetCacheKey(fullURL)
 
 	// 不输出每个请求的详细信息，避免日志过于冗余
+
+	// 检查是否为健康检查请求（不缓存）
+	isHealthCheck := strings.Contains(query, "_health_check=1")
+
+	// 健康检查请求不缓存，直接处理
+	if isHealthCheck {
+		logger.Info("健康检查请求，跳过缓存: %s", fullURL)
+		// 直接调用代理管理器处理请求
+		response, err := proxyManager.HandleRequest(fullURL, c.Request.Header)
+		if err != nil {
+			logger.Error("健康检查请求处理失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "健康检查请求处理失败"})
+			return
+		}
+
+		// 返回健康检查响应
+		c.Header("Content-Type", response.ContentType)
+		if response.IsImage {
+			// 图片数据需要类型断言
+			switch data := response.Data.(type) {
+			case []byte:
+				c.Data(http.StatusOK, response.ContentType, data)
+			case string:
+				c.Data(http.StatusOK, response.ContentType, []byte(data))
+			default:
+				logger.Error("健康检查响应数据类型错误: %T", response.Data)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "健康检查响应数据类型错误"})
+				return
+			}
+		} else {
+			c.JSON(http.StatusOK, response.Data)
+		}
+		return
+	}
 
 	// 检查缓存
 	if cacheManager.GetConfig().CacheEnabled {
