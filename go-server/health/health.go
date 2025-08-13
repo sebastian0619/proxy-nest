@@ -705,39 +705,76 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		logger.Info("健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 		_, err = hm.makeRequest(method, healthCheckURL, nil)
 	} else if hm.config.UpstreamType == "tmdb-image" {
-		// 图片健康检查：使用更简单的HEAD请求，只检查连接性
-		// 对于图片服务器，我们主要关心连接性，而不是具体的图片内容
-		healthCheckURL := fmt.Sprintf("%s/", server.URL) // 只检查根路径
-		method = "HEAD"
+		// 图片健康检查：使用与tmdb-api一致的简单请求方式，但验证图片数据
+		testURL := hm.config.TMDBImageTestURL
+		if testURL == "" {
+			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
+		}
+		healthCheckURL := fmt.Sprintf("%s%s", server.URL, testURL)
+		method = "GET"
 		logger.Info("图片健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 
-		// 使用更短的超时时间进行健康检查
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, method, healthCheckURL, nil)
-		if err != nil {
-			return &CheckResult{
-				Success: false,
-				Error:   fmt.Sprintf("创建请求失败: %v", err),
-			}
-		}
-
-		req.Header.Set("User-Agent", "tmdb-go-proxy-health-check/1.0")
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Do(req)
+		// 使用makeRequest进行健康检查，与tmdb-api保持一致
+		resp, err := hm.makeRequest(method, healthCheckURL, nil)
 		if err != nil {
 			return &CheckResult{
 				Success: false,
 				Error:   fmt.Sprintf("请求失败: %v", err),
 			}
 		}
-		defer resp.Body.Close()
 
-		// 对于图片服务器，我们只关心连接性，不关心具体的状态码
-		// 任何响应都表示服务器是可连接的
-		logger.Info("图片健康检查成功 - 状态码: %d, 耗时: %v", resp.StatusCode, time.Since(startTime))
+		// 验证响应状态码
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("HTTP状态码错误: %d", resp.StatusCode),
+			}
+		}
+
+		// 验证Content-Type
+		contentType := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(contentType, "image/") {
+			resp.Body.Close()
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
+			}
+		}
+
+		// 读取响应体并验证确实是图片数据
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("读取响应体失败: %v", err),
+			}
+		}
+
+		logger.Info("响应体读取成功，大小: %d字节", len(body))
+
+		// 验证图片数据大小（至少应该有几百字节）
+		if len(body) < 100 {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("图片数据太小: %d字节", len(body)),
+			}
+		}
+
+		// 验证图片数据格式，确保浏览器能够直接显示
+		detectedType := http.DetectContentType(body)
+		logger.Info("检测到的内容类型: %s", detectedType)
+
+		if !strings.HasPrefix(detectedType, "image/") {
+			return &CheckResult{
+				Success: false,
+				Error:   fmt.Sprintf("检测到的内容类型不是图片: %s (声明类型: %s)", detectedType, contentType),
+			}
+		}
+
+		logger.Info("图片健康检查成功 - 大小: %d字节, 检测类型: %s, 声明类型: %s, 耗时: %v",
+			len(body), detectedType, contentType, time.Since(startTime))
 
 		return &CheckResult{
 			Success:      true,
