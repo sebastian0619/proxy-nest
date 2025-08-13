@@ -168,9 +168,13 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	selectedServer := pm.selectServerByPriority(availableServers)
 
 	if selectedServer != nil {
+		// 输出累计统计信息
 		logger.Success("选择服务器 %s [状态=%s 优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
 			selectedServer.URL, selectedServer.Status, selectedServer.Priority, selectedServer.ConnectionRate*100,
 			selectedServer.BaseWeight, selectedServer.DynamicWeight, selectedServer.CombinedWeight)
+		logger.Info("累计统计: 总请求=%d, 成功请求=%d, 样本进度=%d/1000 (%.1f%%)",
+			selectedServer.TotalRequests, selectedServer.SuccessRequests,
+			selectedServer.TotalRequests, float64(selectedServer.TotalRequests)/10.0)
 		return selectedServer
 	}
 
@@ -179,6 +183,9 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	logger.Warn("保底选择服务器 %s [状态=%s 优先级=%d 连接率=%.1f%% 基础权重=%d 动态权重=%d 综合权重=%d]",
 		server.URL, server.Status, server.Priority, server.ConnectionRate*100,
 		server.BaseWeight, server.DynamicWeight, server.CombinedWeight)
+	logger.Info("累计统计: 总请求=%d, 成功请求=%d, 样本进度=%d/1000 (%.1f%%)",
+		server.TotalRequests, server.SuccessRequests,
+		server.TotalRequests, float64(server.TotalRequests)/10.0)
 	return server
 }
 

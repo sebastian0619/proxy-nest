@@ -1434,3 +1434,90 @@ func (hm *HealthManager) IsServerReady(serverURL string) bool {
 
 	return server.TotalRequests >= 100
 }
+
+// PrintServerStatistics 打印所有服务器的累计统计信息
+func (hm *HealthManager) PrintServerStatistics() {
+	hm.mutex.RLock()
+	defer hm.mutex.RUnlock()
+
+	logger.Info("=== 服务器累计统计信息 ===")
+
+	// 按优先级分组显示
+	priorityGroups := make(map[int][]*Server)
+	for _, server := range hm.servers {
+		priority := server.Priority
+		priorityGroups[priority] = append(priorityGroups[priority], server)
+	}
+
+	// 从高优先级到低优先级显示
+	for priority := 3; priority >= 0; priority-- {
+		if group, exists := priorityGroups[priority]; exists && len(group) > 0 {
+			logger.Info("优先级 %d 组 (%d 个服务器):", priority, len(group))
+			for _, server := range group {
+				// 获取连接率数据
+				rateData, exists := hm.connectionRateData[server.URL]
+				if exists {
+					logger.Info("  - %s:", server.URL)
+					logger.Info("    状态: %s, 样本进度: %d/1000 (%.1f%%)",
+						server.Status, rateData.TotalRequests, float64(rateData.TotalRequests)/10.0)
+					logger.Info("    总请求: %d, 成功请求: %d, 连接率: %.1f%%",
+						rateData.TotalRequests, rateData.SuccessRequests, rateData.ConnectionRate*100)
+					logger.Info("    置信度: %.1f%%, 优先级: %d, 基础权重: %d",
+						rateData.Confidence*100, rateData.Priority, rateData.BaseWeight)
+					logger.Info("    动态权重: %d, 综合权重: %d",
+						server.DynamicWeight, server.CombinedWeight)
+				} else {
+					logger.Info("  - %s: 状态=%s, 样本进度=%d/1000 (%.1f%%)",
+						server.URL, server.Status, server.TotalRequests, float64(server.TotalRequests)/10.0)
+				}
+				logger.Info("") // 空行分隔
+			}
+		}
+	}
+
+	logger.Info("=== 统计信息结束 ===")
+}
+
+// GetServerStatistics 获取指定服务器的统计信息
+func (hm *HealthManager) GetServerStatistics(serverURL string) map[string]interface{} {
+	hm.mutex.RLock()
+	defer hm.mutex.RUnlock()
+
+	stats := make(map[string]interface{})
+
+	// 获取服务器基本信息
+	server, exists := hm.servers[serverURL]
+	if !exists {
+		stats["error"] = "服务器不存在"
+		return stats
+	}
+
+	// 获取连接率数据
+	rateData, exists := hm.connectionRateData[serverURL]
+	if exists {
+		stats["url"] = serverURL
+		stats["status"] = server.Status
+		stats["total_requests"] = rateData.TotalRequests
+		stats["success_requests"] = rateData.SuccessRequests
+		stats["connection_rate"] = rateData.ConnectionRate
+		stats["confidence"] = rateData.Confidence
+		stats["priority"] = rateData.Priority
+		stats["base_weight"] = rateData.BaseWeight
+		stats["dynamic_weight"] = server.DynamicWeight
+		stats["combined_weight"] = server.CombinedWeight
+		stats["sample_progress"] = fmt.Sprintf("%d/1000 (%.1f%%)",
+			rateData.TotalRequests, float64(rateData.TotalRequests)/10.0)
+		stats["is_ready"] = rateData.TotalRequests >= 100
+	} else {
+		stats["url"] = serverURL
+		stats["status"] = server.Status
+		stats["total_requests"] = server.TotalRequests
+		stats["success_requests"] = server.SuccessRequests
+		stats["connection_rate"] = server.ConnectionRate
+		stats["sample_progress"] = fmt.Sprintf("%d/1000 (%.1f%%)",
+			server.TotalRequests, float64(server.TotalRequests)/10.0)
+		stats["is_ready"] = server.TotalRequests >= 100
+	}
+
+	return stats
+}

@@ -51,7 +51,7 @@ func main() {
 	router.Use(gin.Recovery())
 
 	// 设置路由
-	setupRoutes(router, proxyManager, cacheManager)
+	setupRoutes(router, proxyManager, cacheManager, healthManager)
 
 	// 创建HTTP服务器
 	server := &http.Server{
@@ -134,13 +134,35 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 }
 
 // setupRoutes 设置路由
-func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager) {
+func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager, healthManager *health.HealthManager) {
 	// 健康检查端点
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
+	})
+
+	// 统计信息端点
+	router.GET("/stats", func(c *gin.Context) {
+		// 获取查询参数
+		serverURL := c.Query("server")
+
+		if serverURL != "" {
+			// 查看指定服务器的统计信息
+			stats := healthManager.GetServerStatistics(serverURL)
+			c.JSON(http.StatusOK, stats)
+		} else {
+			// 查看所有服务器的统计信息
+			healthManager.PrintServerStatistics()
+			c.JSON(http.StatusOK, gin.H{
+				"message": "统计信息已输出到日志，请查看控制台输出",
+				"endpoints": gin.H{
+					"all_stats":    "/stats",
+					"server_stats": "/stats?server=<server_url>",
+				},
+			})
+		}
 	})
 
 	// 代理请求处理 - 使用NoRoute捕获所有其他请求
