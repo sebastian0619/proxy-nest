@@ -2,95 +2,139 @@ package logger
 
 import (
 	"fmt"
+	"log"
 	"os"
-
-	"github.com/sirupsen/logrus"
+	"strings"
+	"sync"
 )
 
-// LogPrefix 日志前缀结构
-type LogPrefix struct {
-	Info    string
-	Error   string
-	Warn    string
-	Success string
-	Cache   CachePrefix
-}
+// 颜色常量
+const (
+	ColorRed     = "\033[31m"
+	ColorGreen   = "\033[32m"
+	ColorYellow  = "\033[33m"
+	ColorBlue    = "\033[34m"
+	ColorMagenta = "\033[35m"
+	ColorCyan    = "\033[36m"
+	ColorReset   = "\033[0m"
+)
 
-// CachePrefix 缓存相关日志前缀
-type CachePrefix struct {
-	Hit  string
-	Miss string
-	Info string
-}
+// 日志级别常量
+const (
+	LogLevelDebug = iota
+	LogLevelInfo
+	LogLevelWarning
+	LogLevelError
+)
 
-// Logger 全局日志实例
-var Logger *logrus.Logger
+// 全局变量
+var (
+	currentLogLevel = getLogLevelFromEnv()
+	loggerMutex     sync.RWMutex
+)
 
-// InitLogger 初始化日志系统
-func InitLogger() *LogPrefix {
-	Logger = logrus.New()
-
-	// 设置自定义格式器，不显示时间戳和级别
-	Logger.SetFormatter(&logrus.TextFormatter{
-		DisableTimestamp: true,
-		DisableColors:    false,
-		ForceColors:      true,
-	})
-
-	// 设置输出
-	Logger.SetOutput(os.Stdout)
-
-	// 设置日志级别
-	Logger.SetLevel(logrus.InfoLevel)
-
-	// 创建日志前缀
-	prefix := &LogPrefix{
-		Info:    "[ 信息 ]",
-		Error:   "[ 错误 ]",
-		Warn:    "[ 警告 ]",
-		Success: "[ 成功 ]",
-		Cache: CachePrefix{
-			Hit:  "[ 缓存命中 ]",
-			Miss: "[ 缓存未命中 ]",
-			Info: "[ 缓存信息 ]",
-		},
+// 获取日志级别
+func getLogLevelFromEnv() int {
+	logLevel := strings.ToUpper(os.Getenv("LOG_LEVEL"))
+	switch logLevel {
+	case "DEBUG":
+		return LogLevelDebug
+	case "WARNING":
+		return LogLevelWarning
+	case "ERROR":
+		return LogLevelError
+	default:
+		return LogLevelInfo
 	}
+}
 
-	Logger.Info(prefix.Info, "日志系统初始化成功")
-	return prefix
+// 设置日志级别
+func SetLogLevel(level string) {
+	loggerMutex.Lock()
+	defer loggerMutex.Unlock()
+	
+	switch strings.ToUpper(level) {
+	case "DEBUG":
+		currentLogLevel = LogLevelDebug
+	case "INFO":
+		currentLogLevel = LogLevelInfo
+	case "WARNING":
+		currentLogLevel = LogLevelWarning
+	case "ERROR":
+		currentLogLevel = LogLevelError
+	default:
+		currentLogLevel = LogLevelInfo
+	}
+	
+	Info("日志级别设置为: %s", level)
+}
+
+// 通用日志函数
+func logMessage(level, color, message string) {
+	hostname, _ := os.Hostname()
+	log.Printf("%s[%s]%s [%s] %s", color, level, ColorReset, hostname, message)
 }
 
 // Info 信息日志
 func Info(message string, args ...interface{}) {
-	fmt.Printf("[ 信息 ] "+message+"\n", args...)
-}
-
-// Error 错误日志
-func Error(message string, args ...interface{}) {
-	fmt.Printf("[ 错误 ] "+message+"\n", args...)
-}
-
-// Warn 警告日志
-func Warn(message string, args ...interface{}) {
-	fmt.Printf("[ 警告 ] "+message+"\n", args...)
+	if currentLogLevel <= LogLevelInfo {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("信息", ColorBlue, formattedMessage)
+	}
 }
 
 // Success 成功日志
 func Success(message string, args ...interface{}) {
-	fmt.Printf("[ 成功 ] "+message+"\n", args...)
+	if currentLogLevel <= LogLevelInfo {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("成功", ColorGreen, formattedMessage)
+	}
+}
+
+// Warn 警告日志
+func Warn(message string, args ...interface{}) {
+	if currentLogLevel <= LogLevelWarning {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("警告", ColorYellow, formattedMessage)
+	}
+}
+
+// Error 错误日志
+func Error(message string, args ...interface{}) {
+	if currentLogLevel <= LogLevelError {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("错误", ColorRed, formattedMessage)
+	}
+}
+
+// Debug 调试日志
+func Debug(message string, args ...interface{}) {
+	if currentLogLevel <= LogLevelDebug {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("调试", ColorMagenta, formattedMessage)
+	}
 }
 
 // CacheHit 缓存命中日志
 func CacheHit(message string, args ...interface{}) {
-	fmt.Printf("[ 缓存命中 ] "+message+"\n", args...)
+	if currentLogLevel <= LogLevelInfo {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("缓存命中", ColorGreen, formattedMessage)
+	}
 }
 
 // CacheMiss 缓存未命中日志
 func CacheMiss(message string, args ...interface{}) {
-	fmt.Printf("[ 缓存未命中 ] "+message+"\n", args...)
+	if currentLogLevel <= LogLevelInfo {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("缓存未命中", ColorYellow, formattedMessage)
+	}
 }
 
 // CacheInfo 缓存信息日志
 func CacheInfo(message string, args ...interface{}) {
-	fmt.Printf("[ 缓存信息 ] "+message+"\n", args...)
+	if currentLogLevel <= LogLevelInfo {
+		formattedMessage := fmt.Sprintf(message, args...)
+		logMessage("缓存信息", ColorCyan, formattedMessage)
+	}
 }
