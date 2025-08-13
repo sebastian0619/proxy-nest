@@ -37,6 +37,10 @@ type Config struct {
 	UnhealthyTimeout         time.Duration
 	MaxErrorsBeforeUnhealthy int
 
+	// 健康检查配置
+	HealthCheckInterval      time.Duration
+	HealthCheckInitialDelay  time.Duration
+
 	// 请求超时配置
 	InitialTimeout  time.Duration
 	ParallelTimeout time.Duration
@@ -76,6 +80,10 @@ func LoadConfig() *Config {
 		NumWorkers:               getNumWorkers(),
 		UnhealthyTimeout:         time.Duration(getEnvAsInt("UNHEALTHY_TIMEOUT", 900)) * time.Second,
 		MaxErrorsBeforeUnhealthy: getEnvAsInt("MAX_ERRORS_BEFORE_UNHEALTHY", 3),
+
+		// 健康检查配置
+		HealthCheckInterval:      time.Duration(getEnvAsInt("HEALTH_CHECK_INTERVAL", 30)) * time.Second,
+		HealthCheckInitialDelay:  time.Duration(getEnvAsInt("HEALTH_CHECK_INITIAL_DELAY", 10)) * time.Second,
 
 		// 请求超时配置
 		InitialTimeout:  time.Duration(getEnvAsInt("INITIAL_TIMEOUT", 8)) * time.Second,

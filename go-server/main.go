@@ -23,8 +23,8 @@ func main() {
 	// 加载配置
 	cfg := config.LoadConfig()
 
-	// 初始化日志
-	logger.InitLogger()
+	// 初始化日志系统
+	logger.SetLogLevel(os.Getenv("LOG_LEVEL"))
 
 	// 初始化缓存管理器
 	cacheManager, err := cache.NewCacheManager(&cfg.Cache)
@@ -85,6 +85,9 @@ func main() {
 
 	// 停止健康检查
 	healthManager.StopHealthCheck()
+	
+	// 清理连接池
+	healthManager.CloseIdleConnections()
 
 	logger.Info("服务器已关闭")
 }

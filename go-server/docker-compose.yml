@@ -11,6 +11,7 @@ services:
       - PORT=6635
       - NUM_WORKERS=4                # 工作线程数，建议设置为CPU核心数-1
       - TZ=Asia/Shanghai            # 时区
+      - LOG_LEVEL=INFO              # 日志级别：DEBUG, INFO, WARNING, ERROR
       
       # 上游配置
       - UPSTREAM_TYPE=tmdb-api       # 上游服务器类型：tmdb-api, tmdb-image, 或 custom
@@ -22,6 +23,7 @@ services:
       - UPSTREAM_SERVERS=https://api.themoviedb.org,https://api.tmdb.org
       
       # 缓存配置
+      - CACHE_ENABLED=true           # 启用缓存
       - CACHE_DIR=/app/cache
       - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
       
@@ -35,10 +37,11 @@ services:
       - DISK_CACHE_CLEANUP_INTERVAL=3600000  # 磁盘缓存清理间隔（1小时）
       
       # 健康检查配置
-      - REQUEST_TIMEOUT=5000        # 请求超时时间（5秒）
+      - REQUEST_TIMEOUT=300000      # 请求超时时间（5分钟）
       - UNHEALTHY_TIMEOUT=300000    # 不健康状态超时（5分钟）
       - MAX_ERRORS_BEFORE_UNHEALTHY=3
-      - HEALTH_CHECK_INTERVAL=30000 # 健康检查间隔（30秒）
+      - HEALTH_CHECK_INTERVAL=60    # 健康检查间隔（60秒，1分钟）
+      - HEALTH_CHECK_INITIAL_DELAY=30 # 健康检查初始延迟（30秒）
       
       # 负载均衡配置
       - BASE_WEIGHT_MULTIPLIER=20    # 基础权重乘数
