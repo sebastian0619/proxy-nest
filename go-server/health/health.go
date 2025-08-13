@@ -1,7 +1,6 @@
 package health
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -639,11 +638,11 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 		// 验证Content-Type
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.HasPrefix(contentType, "image/") {
-					return &CheckResult{
-			Success:      false,
-			Error:        fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
-			ResponseTime: int64(responseTime.Milliseconds()),
-		}
+			return &CheckResult{
+				Success:      false,
+				Error:        fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
+				ResponseTime: int64(responseTime.Milliseconds()),
+			}
 		}
 
 		// 读取响应体并验证确实是图片数据
@@ -675,7 +674,7 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 			return &CheckResult{
 				Success:      false,
 				Error:        fmt.Sprintf("检测到的内容类型不是图片: %s (声明类型: %s)", detectedType, contentType),
-				ResponseTime: responseTime,
+				ResponseTime: int64(responseTime.Milliseconds()),
 			}
 		}
 
