@@ -105,6 +105,9 @@ func shouldSkipRequest(path string) bool {
 		"/.well-known/",
 		"/health",
 		"/status",
+		"/stats",
+		"/config",
+		"/cache",
 	}
 
 	for _, skipPath := range skipPaths {
