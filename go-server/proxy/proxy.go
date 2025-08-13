@@ -180,23 +180,34 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 			server.URL, server.Status, server.ErrorCount, server.LastCheckTime, server.CombinedWeight)
 	}
 
+	// 如果没有健康服务器，使用所有服务器，但降低权重
+	var availableServers []*health.Server
 	if len(healthyServers) == 0 {
-		logger.Error("没有健康的上游服务器可用:")
-		for _, server := range allServers {
-			logger.Error("  - %s: 状态=%s, 错误次数=%d, 最后检查=%v",
-				server.URL, server.Status, server.ErrorCount, server.LastCheckTime)
+		logger.Warn("没有健康的上游服务器，使用所有服务器进行请求（降低权重）:")
+		availableServers = allServers
+			// 为不健康的服务器降低权重，但允许它们参与请求
+	for _, server := range availableServers {
+		if server.Status == health.HealthStatusUnhealthy {
+			// 不健康服务器的权重降低到原来的1/4，但仍然可以参与
+			if server.CombinedWeight > 4 {
+				server.CombinedWeight = server.CombinedWeight / 4
+			} else {
+				server.CombinedWeight = 1
+			}
+			logger.Info("  - %s: 状态=%s, 降低权重=%d", server.URL, server.Status, server.CombinedWeight)
 		}
-		return nil
 	}
-
-	logger.Info("健康服务器列表:")
-	for _, server := range healthyServers {
-		logger.Info("  - %s: 权重=%d, EWMA=%.0fms", server.URL, server.CombinedWeight, server.LastEWMA)
+	} else {
+		availableServers = healthyServers
+		logger.Info("健康服务器列表:")
+		for _, server := range availableServers {
+			logger.Info("  - %s: 权重=%d, EWMA=%.0fms", server.URL, server.CombinedWeight, server.LastEWMA)
+		}
 	}
 
 	// 计算总权重（使用综合权重）
 	var totalWeight int
-	for _, server := range healthyServers {
+	for _, server := range availableServers {
 		totalWeight += server.CombinedWeight
 	}
 
@@ -204,7 +215,7 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	random := float64(time.Now().UnixNano()) / float64(time.Second)
 	weightSum := 0
 
-	for _, server := range healthyServers {
+	for _, server := range availableServers {
 		weightSum += server.CombinedWeight
 		if float64(weightSum) > random*float64(totalWeight) {
 			logger.Success("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% EWMA=%.0fms]",
@@ -215,7 +226,7 @@ func (pm *ProxyManager) selectUpstreamServer() *health.Server {
 	}
 
 	// 保底返回第一个服务器
-	server := healthyServers[0]
+	server := availableServers[0]
 	logger.Warn("选择服务器 %s [状态=%s 基础权重=%d 动态权重=%d 综合权重=%d 实际权重=%d 概率=%.1f%% EWMA=%.0fms]",
 		server.URL, server.Status, server.BaseWeight, server.DynamicWeight, server.CombinedWeight, server.CombinedWeight,
 		float64(server.CombinedWeight)/float64(totalWeight)*100, server.LastEWMA)

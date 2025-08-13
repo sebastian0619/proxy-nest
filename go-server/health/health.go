@@ -91,8 +91,6 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 	// 加载健康数据
 	hm.loadHealthData()
 
-
-
 	return hm
 }
 
@@ -167,10 +165,11 @@ func (hm *HealthManager) StopHealthCheck() {
 
 // healthCheckLoop 健康检查循环
 func (hm *HealthManager) healthCheckLoop() {
-	ticker := time.NewTicker(2 * time.Minute) // 每2分钟检查一次，减少频率
+	ticker := time.NewTicker(5 * time.Minute) // 每5分钟检查一次，减少频率
 	defer ticker.Stop()
 
-	// 立即执行第一次检查
+	// 延迟执行第一次检查，给服务器一些启动时间
+	time.Sleep(10 * time.Second)
 	hm.performHealthCheck()
 
 	for {
@@ -212,7 +211,7 @@ func (hm *HealthManager) performHealthCheck() {
 
 	logger.Info("开始执行健康检查...")
 
-	// 使用并发检查，但简化超时控制，与proxy_app.go保持一致
+	// 获取服务器列表
 	hm.mutex.RLock()
 	servers := make([]*Server, 0, len(hm.servers))
 	for _, server := range hm.servers {
@@ -220,12 +219,12 @@ func (hm *HealthManager) performHealthCheck() {
 	}
 	hm.mutex.RUnlock()
 
-	// 并发检查所有服务器
+	// 并发检查所有服务器，但使用更宽松的超时控制
 	var wg sync.WaitGroup
 	for _, server := range servers {
-		// 检查是否需要进行恢复检查
-		if server.Status == HealthStatusUnhealthy && time.Now().Before(server.RecoveryTime) {
-			logger.Info("跳过服务器 %s 的检查，仍在恢复期 (恢复时间: %v)", server.URL, server.RecoveryTime)
+		// 如果服务器当前是健康的，跳过健康检查，避免过度检查
+		if server.Status == HealthStatusHealthy && time.Since(server.LastCheckTime) < 2*time.Minute {
+			logger.Info("跳过服务器 %s 的检查，最近已检查过 (最后检查: %v)", server.URL, server.LastCheckTime)
 			continue
 		}
 
@@ -235,14 +234,36 @@ func (hm *HealthManager) performHealthCheck() {
 			logger.Info("开始检查服务器: %s", s.URL)
 			checkResult := hm.checkServerHealth(s)
 			logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
+			
+			// 健康检查失败时，不要立即标记为不健康，保持现有状态
+			if !checkResult.Success {
+				logger.Warn("服务器 %s 健康检查失败，但保持现有状态: %s", s.URL, s.Status)
+				// 只更新检查时间，不改变状态
+				hm.mutex.Lock()
+				s.LastCheckTime = time.Now()
+				hm.mutex.Unlock()
+				return
+			}
+			
 			hm.updateServerState(s, checkResult)
 		}(server)
 	}
 
-	// 等待所有检查完成
-	wg.Wait()
+	// 等待所有检查完成，但设置超时避免阻塞太久
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-		// 输出所有服务器状态
+	select {
+	case <-done:
+		logger.Info("所有健康检查完成")
+	case <-time.After(1 * time.Minute): // 1分钟超时
+		logger.Warn("健康检查超时，部分检查可能未完成")
+	}
+
+	// 输出所有服务器状态
 	logger.Info("健康检查完成，服务器状态:")
 	hm.mutex.RLock()
 	healthyCount := 0
@@ -389,8 +410,9 @@ type CheckResult struct {
 
 // makeRequest 发送HTTP请求
 func (hm *HealthManager) makeRequest(method, url string, body io.Reader) (*http.Response, error) {
-	// 使用配置的超时时间，与proxy_app.go保持一致
-	timeout := hm.config.RequestTimeout
+	// 健康检查使用较短的超时时间，避免阻塞太久
+	// 使用30秒超时，与连接超时保持一致
+	timeout := 30 * time.Second
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -726,47 +748,25 @@ func (hm *HealthManager) ReportUnhealthyServer(url, workerID, errorInfo string) 
 
 // GetHealthyServers 获取健康服务器
 func (hm *HealthManager) GetHealthyServers() []*Server {
-	// 使用快照机制，避免健康检查期间影响请求处理
-	hm.snapshotMutex.RLock()
-	defer hm.snapshotMutex.RUnlock()
+	hm.mutex.RLock()
+	defer hm.mutex.RUnlock()
 
-	// 如果快照为空或太旧，立即同步更新快照，确保请求处理能够获得健康服务器
-	if len(hm.healthyServersSnapshot) == 0 || time.Since(hm.lastSnapshotTime) > 5*time.Second {
-		if len(hm.healthyServersSnapshot) == 0 {
-			logger.Info("健康服务器快照为空，立即同步更新快照")
-		} else {
-			logger.Info("健康服务器快照过期，立即同步更新快照")
-		}
-		// 立即同步更新快照，确保请求处理能够获得健康服务器
-		hm.updateHealthyServersSnapshot()
-	}
-
-	// 如果快照仍然为空，尝试从服务器状态直接获取
-	if len(hm.healthyServersSnapshot) == 0 {
-		logger.Warn("健康服务器快照仍然为空，尝试从服务器状态直接获取")
-		hm.mutex.RLock()
-		var healthyServers []*Server
-		for _, server := range hm.servers {
-			if server.Status == HealthStatusHealthy {
-				healthyServers = append(healthyServers, server)
-			}
-		}
-		hm.mutex.RUnlock()
-		
-		if len(healthyServers) > 0 {
-			logger.Info("从服务器状态直接获取到 %d 个健康服务器", len(healthyServers))
-			return healthyServers
+	var healthyServers []*Server
+	for _, server := range hm.servers {
+		if server.Status == HealthStatusHealthy {
+			healthyServers = append(healthyServers, server)
 		}
 	}
 
-	// 返回快照的副本，避免外部修改
-	healthyServers := make([]*Server, len(hm.healthyServersSnapshot))
-	copy(healthyServers, hm.healthyServersSnapshot)
-
-	logger.Info("GetHealthyServers 结果: 从快照返回 %d 个健康服务器", len(healthyServers))
+	logger.Info("GetHealthyServers 结果: 从服务器状态直接获取到 %d 个健康服务器", len(healthyServers))
 	return healthyServers
 }
 
+// updateHealthyServersSnapshot 更新健康服务器快照
+func (hm *HealthManager) updateHealthyServersSnapshot() {
+	// 快照机制已移除，此函数不再需要
+	logger.Info("快照机制已移除，updateHealthyServersSnapshot不再执行")
+}
 
 
 // GetAllServers 获取所有服务器
