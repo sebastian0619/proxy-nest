@@ -219,8 +219,7 @@ func (hm *HealthManager) performHealthCheck() {
 	}
 	hm.mutex.RUnlock()
 
-	// 并发检查所有服务器，但使用更宽松的超时控制
-	var wg sync.WaitGroup
+	// 顺序检查所有服务器，不使用goroutine
 	for _, server := range servers {
 		// 如果服务器当前是健康的，跳过健康检查，避免过度检查
 		if server.Status == HealthStatusHealthy && time.Since(server.LastCheckTime) < 2*time.Minute {
@@ -228,39 +227,21 @@ func (hm *HealthManager) performHealthCheck() {
 			continue
 		}
 
-		wg.Add(1)
-		go func(s *Server) {
-			defer wg.Done()
-			logger.Info("开始检查服务器: %s", s.URL)
-			checkResult := hm.checkServerHealth(s)
-			logger.Info("服务器 %s 检查完成，结果: %t", s.URL, checkResult.Success)
-			
-			// 健康检查失败时，不要立即标记为不健康，保持现有状态
-			if !checkResult.Success {
-				logger.Warn("服务器 %s 健康检查失败，但保持现有状态: %s", s.URL, s.Status)
-				// 只更新检查时间，不改变状态
-				hm.mutex.Lock()
-				s.LastCheckTime = time.Now()
-				hm.mutex.Unlock()
-				return
-			}
-			
-			hm.updateServerState(s, checkResult)
-		}(server)
-	}
-
-	// 等待所有检查完成，但设置超时避免阻塞太久
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.Info("所有健康检查完成")
-	case <-time.After(1 * time.Minute): // 1分钟超时
-		logger.Warn("健康检查超时，部分检查可能未完成")
+		logger.Info("开始检查服务器: %s", server.URL)
+		checkResult := hm.checkServerHealth(server)
+		logger.Info("服务器 %s 检查完成，结果: %t", server.URL, checkResult.Success)
+		
+		// 健康检查失败时，不要立即标记为不健康，保持现有状态
+		if !checkResult.Success {
+			logger.Warn("服务器 %s 健康检查失败，但保持现有状态: %s", server.URL, server.Status)
+			// 只更新检查时间，不改变状态
+			hm.mutex.Lock()
+			server.LastCheckTime = time.Now()
+			hm.mutex.Unlock()
+			continue
+		}
+		
+		hm.updateServerState(server, checkResult)
 	}
 
 	// 输出所有服务器状态

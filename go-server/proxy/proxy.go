@@ -65,7 +65,8 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 
 	client := &http.Client{
 		Transport: transport,
-		// 不设置Timeout，使用context控制超时
+		// 设置客户端超时，与配置的RequestTimeout保持一致
+		Timeout: cfg.RequestTimeout,
 	}
 
 	logger.Info("HTTP客户端配置完成 - MaxIdleConns: %d, MaxIdleConnsPerHost: %d, IdleConnTimeout: %v, DialTimeout: %v",
@@ -239,8 +240,9 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	timeout := pm.config.RequestTimeout
 	logger.Info("使用配置的超时时间: %v", timeout)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// 不使用context超时，避免context canceled错误
+	// 直接使用HTTP客户端的超时设置
+	ctx := context.Background()
 
 	// 所有请求都使用GET方法
 	method := "GET"
