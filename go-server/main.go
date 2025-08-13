@@ -85,6 +85,9 @@ func main() {
 
 	// 停止健康检查
 	healthManager.StopHealthCheck()
+	
+	// 清理连接池
+	healthManager.CloseIdleConnections()
 
 	logger.Info("服务器已关闭")
 }
