@@ -142,8 +142,8 @@ func NewHealthManager(cfg *config.Config) *HealthManager {
 		connectionRateData: make(map[string]*ConnectionRateData),
 	}
 
-	// 加载服务器配置
-	hm.loadServers()
+	// 初始化服务器配置
+	hm.initializeServers()
 
 	// 加载健康数据
 	hm.loadHealthData()
@@ -575,7 +575,7 @@ func (hm *HealthManager) batchHealthCheck(servers []*Server) []*CheckResult {
 			results[serverIndex] = &CheckResult{
 				Success:      false,
 				Error:        fmt.Sprintf("请求失败: %v", err),
-				ResponseTime: responseTime,
+				ResponseTime: int64(responseTime.Milliseconds()),
 			}
 			continue
 		}
@@ -631,7 +631,7 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 		return &CheckResult{
 			Success:      false,
 			Error:        fmt.Sprintf("HTTP状态码错误: %d", resp.StatusCode),
-			ResponseTime: responseTime,
+			ResponseTime: int64(responseTime.Milliseconds()),
 		}
 	}
 
@@ -639,32 +639,32 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 		// 验证Content-Type
 		contentType := resp.Header.Get("Content-Type")
 		if !strings.HasPrefix(contentType, "image/") {
-			return &CheckResult{
-				Success:      false,
-				Error:        fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
-				ResponseTime: responseTime,
-			}
+					return &CheckResult{
+			Success:      false,
+			Error:        fmt.Sprintf("Content-Type不是图片类型: %s", contentType),
+			ResponseTime: int64(responseTime.Milliseconds()),
+		}
 		}
 
 		// 读取响应体并验证确实是图片数据
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return &CheckResult{
-				Success:      false,
-				Error:        fmt.Sprintf("读取响应体失败: %v", err),
-				ResponseTime: responseTime,
-			}
+					return &CheckResult{
+			Success:      false,
+			Error:        fmt.Sprintf("读取响应体失败: %v", err),
+			ResponseTime: int64(responseTime.Milliseconds()),
+		}
 		}
 
 		logger.Info("响应体读取成功，大小: %d字节", len(body))
 
 		// 验证图片数据大小（至少应该有几百字节）
 		if len(body) < 100 {
-			return &CheckResult{
-				Success:      false,
-				Error:        fmt.Sprintf("图片数据太小: %d字节", len(body)),
-				ResponseTime: responseTime,
-			}
+					return &CheckResult{
+			Success:      false,
+			Error:        fmt.Sprintf("图片数据太小: %d字节", len(body)),
+			ResponseTime: int64(responseTime.Milliseconds()),
+		}
 		}
 
 		// 验证图片数据格式，确保浏览器能够直接显示
@@ -686,7 +686,7 @@ func (hm *HealthManager) processHealthCheckResponse(server *Server, resp *http.R
 	// 成功
 	return &CheckResult{
 		Success:      true,
-		ResponseTime: responseTime,
+		ResponseTime: int64(responseTime.Milliseconds()),
 	}
 }
 
@@ -857,22 +857,23 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 	var newBaseWeight, newCombinedWeight int
 	var newStatus HealthStatus
 	var newErrorCount int
-	var newRecoveryTime time.Time
+	// var newRecoveryTime time.Time  // 已移除，不再使用
 	var logMessage string
 
 	if checkResult.Success {
 		// 计算响应时间相关数据
-		newResponseTimes := append(server.ResponseTimes, checkResult.ResponseTime)
+		responseTimeDuration := time.Duration(checkResult.ResponseTime) * time.Millisecond
+		newResponseTimes := append(server.ResponseTimes, responseTimeDuration)
 		if len(newResponseTimes) > 3 {
 			newResponseTimes = newResponseTimes[1:]
 		}
 
 		if len(newResponseTimes) == 3 {
-			var total int64
+			var total time.Duration
 			for _, rt := range newResponseTimes {
 				total += rt
 			}
-			avgResponseTime = float64(total) / 3.0
+			avgResponseTime = float64(total.Milliseconds()) / 3.0
 		} else {
 			avgResponseTime = float64(checkResult.ResponseTime)
 		}
@@ -904,7 +905,7 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 
 		newStatus = HealthStatusHealthy
 		newErrorCount = 0
-		newRecoveryTime = time.Time{}
+		// newRecoveryTime = time.Time{}  // 已移除，不再使用
 
 		logMessage = fmt.Sprintf("健康检查成功 - %s: 响应时间=%dms, 最近3次平均=%.0fms, EWMA=%.0fms, 基础权重=%d, 综合权重=%d",
 			server.URL, checkResult.ResponseTime, avgResponseTime, newEWMA,
@@ -913,7 +914,7 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 		// 健康检查失败时，立即标记为不健康，不需要等待错误次数达到阈值
 		newStatus = HealthStatusUnhealthy
 		newErrorCount = server.ErrorCount + 1
-		newRecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)
+		// newRecoveryTime = time.Now().Add(hm.config.UnhealthyTimeout)  // 已移除，不再使用
 
 		logMessage = fmt.Sprintf("服务器 %s 健康检查失败，立即标记为不健康，错误次数: %d", server.URL, newErrorCount)
 	}
@@ -928,9 +929,9 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 
 		server.Status = newStatus
 		server.ErrorCount = newErrorCount
-		server.RecoveryTime = newRecoveryTime
-		server.LastResponseTime = checkResult.ResponseTime
-		server.ResponseTimes = append(server.ResponseTimes, checkResult.ResponseTime)
+		// server.RecoveryTime = newRecoveryTime  // 已移除，不再使用
+		// server.LastResponseTime = checkResult.ResponseTime  // 已移除，使用ResponseTimes切片
+		server.ResponseTimes = append(server.ResponseTimes, time.Duration(checkResult.ResponseTime)*time.Millisecond)
 		if len(server.ResponseTimes) > 3 {
 			server.ResponseTimes = server.ResponseTimes[1:]
 		}
@@ -940,7 +941,7 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 	} else {
 		server.Status = newStatus
 		server.ErrorCount = newErrorCount
-		server.RecoveryTime = newRecoveryTime
+		// server.RecoveryTime = newRecoveryTime  // 已移除，不再使用
 	}
 
 	server.LastCheckTime = time.Now()
