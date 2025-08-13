@@ -264,7 +264,6 @@ func (hm *HealthManager) performHealthCheck() {
 	}
 
 	// 输出所有服务器状态
-	// 输出所有服务器状态
 	logger.Info("健康检查完成，服务器状态:")
 	hm.mutex.RLock()
 	healthyCount := 0
@@ -753,17 +752,7 @@ func (hm *HealthManager) GetHealthyServers() []*Server {
 			healthyServers = append(healthyServers, server)
 		}
 	}
-	hm.mutex.RLock()
-	defer hm.mutex.RUnlock()
 
-	var healthyServers []*Server
-	for _, server := range hm.servers {
-		if server.Status == HealthStatusHealthy {
-			healthyServers = append(healthyServers, server)
-		}
-	}
-
-	logger.Info("GetHealthyServers 结果: 从服务器状态直接获取到 %d 个健康服务器", len(healthyServers))
 	logger.Info("GetHealthyServers 结果: 从服务器状态直接获取到 %d 个健康服务器", len(healthyServers))
 	return healthyServers
 }
