@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"proxy-nest-go/config"
-	"proxy-nest-go/logger"
+	"main/config"
+	"main/logger"
 )
 
 // HealthStatus 健康状态
