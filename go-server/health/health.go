@@ -657,7 +657,9 @@ func (hm *HealthManager) createHealthCheckRequest(server *Server) (*http.Request
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		healthCheckURL = fmt.Sprintf("%s%s", server.URL, testURL)
+		// 为图片健康检查也添加_health_check=1参数，确保与tmdb-api保持一致
+		healthCheckURL = fmt.Sprintf("%s%s?_health_check=1&_timestamp=%d",
+			server.URL, testURL, time.Now().Unix())
 		method = "GET"
 		logger.Info("图片健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 	} else {
@@ -763,7 +765,9 @@ func (hm *HealthManager) checkServerHealth(server *Server) *CheckResult {
 		if testURL == "" {
 			testURL = "/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png"
 		}
-		healthCheckURL := fmt.Sprintf("%s%s", server.URL, testURL)
+		// 为图片健康检查也添加_health_check=1参数，确保与tmdb-api保持一致
+		healthCheckURL := fmt.Sprintf("%s%s?_health_check=1&_timestamp=%d",
+			server.URL, testURL, time.Now().Unix())
 		method = "GET"
 		logger.Info("图片健康检查 %s: %s %s", server.URL, method, healthCheckURL)
 
