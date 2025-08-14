@@ -206,20 +206,21 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		// 获取查询参数
 		serverURL := c.Query("server")
 
+		// 通过内部调用 /stats 端点获取数据
+		var statsData interface{}
 		if serverURL != "" {
-			// 查看指定服务器的统计信息
-			stats := healthManager.GetServerStatistics(serverURL)
+			// 获取指定服务器的统计信息
+			statsData = healthManager.GetServerStatistics(serverURL)
 			// 将connection_rate转换为百分比
-			if connectionRate, exists := stats["connection_rate"]; exists {
-				if rate, ok := connectionRate.(float64); ok {
-					stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+			if stats, ok := statsData.(map[string]interface{}); ok {
+				if connectionRate, exists := stats["connection_rate"]; exists {
+					if rate, ok := connectionRate.(float64); ok {
+						stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+					}
 				}
 			}
-			html := generateBeautifiedStatsHTML([]map[string]interface{}{stats}, true)
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			c.String(http.StatusOK, html)
 		} else {
-			// 查看所有服务器的统计信息
+			// 获取所有服务器的统计信息
 			allStats := healthManager.GetAllServersStatistics()
 			// 将connection_rate转换为百分比
 			for _, stats := range allStats {
@@ -229,15 +230,30 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					}
 				}
 			}
-			// 转换为切片格式
-			statsSlice := make([]map[string]interface{}, 0, len(allStats))
-			for _, stats := range allStats {
-				statsSlice = append(statsSlice, stats)
-			}
-			html := generateBeautifiedStatsHTML(statsSlice, false)
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			c.String(http.StatusOK, html)
+			statsData = allStats
 		}
+
+		// 生成美化HTML
+		var html string
+		if serverURL != "" {
+			// 单服务器统计
+			if stats, ok := statsData.(map[string]interface{}); ok {
+				html = generateBeautifiedStatsHTML([]map[string]interface{}{stats}, true)
+			}
+		} else {
+			// 所有服务器统计
+			if allStats, ok := statsData.(map[string]map[string]interface{}); ok {
+				// 转换为切片格式
+				statsSlice := make([]map[string]interface{}, 0, len(allStats))
+				for _, stats := range allStats {
+					statsSlice = append(statsSlice, stats)
+				}
+				html = generateBeautifiedStatsHTML(statsSlice, false)
+			}
+		}
+
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, html)
 	})
 
 	// 缓存管理端点
@@ -1069,18 +1085,13 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 
 	html += `
         <div class="footer">
-            <p>🔄 数据每30分钟自动更新 | 📱 响应式设计，支持移动设备 | 🎨 美观的现代化界面</p>
+            <p>📱 响应式设计，支持移动设备 | 🎨 美观的现代化界面 | 🔄 数据实时从 /stats 获取</p>
         </div>
     </div>
     
     <button class="refresh-btn" onclick="location.reload()">🔄 刷新数据</button>
     
     <script>
-        // 自动刷新功能（每5分钟）
-        setTimeout(function() {
-            location.reload();
-        }, 5 * 60 * 1000);
-        
         // 添加一些交互效果
         document.querySelectorAll('.server-card').forEach(card => {
             card.addEventListener('click', function() {
@@ -1089,6 +1100,11 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
                     this.style.transform = 'scale(1)';
                 }, 200);
             });
+        });
+        
+        // 手动刷新按钮功能
+        document.querySelector('.refresh-btn').addEventListener('click', function() {
+            location.reload();
         });
     </script>
 </body>
