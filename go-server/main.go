@@ -171,8 +171,29 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				"endpoints": gin.H{
 					"all_stats":    "/stats",
 					"server_stats": "/stats?server=<server_url>",
+					"beautify":     "/stats/beautify",
 				},
 			})
+		}
+	})
+
+	// 美化统计信息端点（浏览器友好）
+	router.GET("/stats/beautify", func(c *gin.Context) {
+		// 获取查询参数
+		serverURL := c.Query("server")
+
+		if serverURL != "" {
+			// 查看指定服务器的统计信息
+			stats := healthManager.GetServerStatistics(serverURL)
+			html := generateBeautifiedStatsHTML([]gin.H{stats}, true)
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, html)
+		} else {
+			// 查看所有服务器的统计信息
+			allStats := healthManager.GetAllServersStatistics()
+			html := generateBeautifiedStatsHTML(allStats, false)
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, html)
 		}
 	})
 
@@ -625,4 +646,541 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			logger.CacheInfo("磁盘缓存写入: %s (IsImage: %t)", fullURL, isImage)
 		}
 	}
+}
+
+// generateBeautifiedStatsHTML 生成美化的统计信息HTML页面
+func generateBeautifiedStatsHTML(servers []gin.H, singleServer bool) string {
+	// 计算统计概览
+	totalServers := len(servers)
+	healthyCount := 0
+	unhealthyCount := 0
+	
+	for _, server := range servers {
+		if status, ok := server["status"].(string); ok {
+			if status == "healthy" {
+				healthyCount++
+			} else {
+				unhealthyCount++
+			}
+		}
+	}
+	
+	overallHealthRate := 0.0
+	if totalServers > 0 {
+		overallHealthRate = float64(healthyCount) / float64(totalServers) * 100
+	}
+
+	// 分离健康和不健康的服务器
+	var healthyServers []gin.H
+	var unhealthyServers []gin.H
+	
+	for _, server := range servers {
+		if status, ok := server["status"].(string); ok {
+			if status == "healthy" {
+				healthyServers = append(healthyServers, server)
+			} else {
+				unhealthyServers = append(unhealthyServers, server)
+			}
+		}
+	}
+
+	// 生成HTML页面
+	html := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TMDB代理服务器统计信息</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .overview {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-card.healthy {
+            border-left: 5px solid #28a745;
+        }
+        
+        .stat-card.unhealthy {
+            border-left: 5px solid #dc3545;
+        }
+        
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .stat-number.healthy {
+            color: #28a745;
+        }
+        
+        .stat-number.unhealthy {
+            color: #dc3545;
+        }
+        
+        .stat-number.total {
+            color: #007bff;
+        }
+        
+        .stat-label {
+            color: #6c757d;
+            font-size: 1.1em;
+        }
+        
+        .servers-section {
+            padding: 30px;
+        }
+        
+        .section-title {
+            font-size: 1.8em;
+            margin-bottom: 25px;
+            color: #343a40;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 10px;
+        }
+        
+        .server-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 25px;
+        }
+        
+        .server-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            border-left: 5px solid;
+            transition: all 0.3s ease;
+        }
+        
+        .server-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+        }
+        
+        .server-card.healthy {
+            border-left-color: #28a745;
+        }
+        
+        .server-card.unhealthy {
+            border-left-color: #dc3545;
+        }
+        
+        .server-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .server-url {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #343a40;
+            word-break: break-all;
+        }
+        
+        .server-status {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .server-status.healthy {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .server-status.unhealthy {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .server-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .metric {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .metric-label {
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-bottom: 5px;
+        }
+        
+        .metric-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #343a40;
+        }
+        
+        .metric-value.percentage {
+            color: #007bff;
+        }
+        
+        .metric-value.success {
+            color: #28a745;
+        }
+        
+        .metric-value.warning {
+            color: #ffc107;
+        }
+        
+        .metric-value.danger {
+            color: #dc3545;
+        }
+        
+        .server-details {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 15px;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .detail-row:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        
+        .detail-label {
+            font-weight: 500;
+            color: #495057;
+        }
+        
+        .detail-value {
+            color: #6c757d;
+        }
+        
+        .footer {
+            background: #343a40;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 0.9em;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 25px;
+            font-size: 1.1em;
+            cursor: pointer;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s ease;
+        }
+        
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        @media (max-width: 768px) {
+            .server-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .overview {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+            
+            .server-metrics {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 TMDB代理服务器统计信息</h1>
+            <p>实时监控上游服务器健康状态和性能指标</p>
+        </div>
+        
+        <div class="overview">
+            <div class="stat-card total">
+                <div class="stat-number total">` + fmt.Sprintf("%d", totalServers) + `</div>
+                <div class="stat-label">总服务器数</div>
+            </div>
+            <div class="stat-card healthy">
+                <div class="stat-number healthy">` + fmt.Sprintf("%d", healthyCount) + `</div>
+                <div class="stat-label">健康服务器</div>
+            </div>
+            <div class="stat-card unhealthy">
+                <div class="stat-number unhealthy">` + fmt.Sprintf("%d", unhealthyCount) + `</div>
+                <div class="stat-label">不健康服务器</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">` + fmt.Sprintf("%.1f", overallHealthRate) + `%</div>
+                <div class="stat-label">整体健康率</div>
+            </div>
+        </div>`
+
+	// 添加健康服务器部分
+	if len(healthyServers) > 0 {
+		html += `
+        <div class="servers-section">
+            <h2 class="section-title">✅ 健康服务器 (${len(healthyServers)}个)</h2>
+            <div class="server-grid">`
+		
+		html += generateServerCards(healthyServers)
+		
+		html += `
+            </div>
+        </div>`
+	}
+
+	// 添加不健康服务器部分
+	if len(unhealthyServers) > 0 {
+		html += `
+        <div class="servers-section">
+            <h2 class="section-title">❌ 不健康服务器 (${len(unhealthyServers)}个)</h2>
+            <div class="server-grid">`
+		
+		html += generateServerCards(unhealthyServers)
+		
+		html += `
+            </div>
+        </div>`
+	}
+
+	html += `
+        <div class="footer">
+            <p>🔄 数据每30分钟自动更新 | 📱 响应式设计，支持移动设备 | 🎨 美观的现代化界面</p>
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="location.reload()">🔄 刷新数据</button>
+    
+    <script>
+        // 自动刷新功能（每5分钟）
+        setTimeout(function() {
+            location.reload();
+        }, 5 * 60 * 1000);
+        
+        // 添加一些交互效果
+        document.querySelectorAll('.server-card').forEach(card => {
+            card.addEventListener('click', function() {
+                this.style.transform = 'scale(1.02)';
+                setTimeout(() => {
+                    this.style.transform = 'scale(1)';
+                }, 200);
+            });
+        });
+    </script>
+</body>
+</html>`
+
+	return html
+}
+
+// generateServerCards 生成服务器卡片HTML
+func generateServerCards(servers []gin.H) string {
+	var html string
+	
+	for _, server := range servers {
+		url := server["url"].(string)
+		status := server["status"].(string)
+		connectionRate := server["connection_rate"].(float64)
+		confidence := server["confidence"].(float64)
+		baseWeight := server["base_weight"].(int)
+		dynamicWeight := server["dynamic_weight"].(int)
+		combinedWeight := server["combined_weight"].(int)
+		priority := server["priority"].(int)
+		totalRequests := server["total_requests"].(int64)
+		successRequests := server["success_requests"].(int64)
+		sampleProgress := server["sample_progress"].(string)
+		sampleAvgSpeed := server["sample_1000_avg_speed"].(float64)
+		lastCheckTime := server["last_check_time"].(string)
+		isReady := server["is_ready"].(bool)
+
+		// 确定状态样式
+		statusClass := "unhealthy"
+		if status == "healthy" {
+			statusClass = "healthy"
+		}
+
+		// 美化参数显示
+		connectionRatePercent := fmt.Sprintf("%.2f%%", connectionRate*100)
+		confidencePercent := fmt.Sprintf("%.0f%%", confidence*100)
+		
+		// 美化优先级显示
+		priorityText := "低优先级"
+		priorityColor := "warning"
+		if priority == 2 {
+			priorityText = "中优先级"
+			priorityColor = "info"
+		} else if priority == 3 {
+			priorityText = "高优先级"
+			priorityColor = "success"
+		}
+		
+		// 美化就绪状态显示
+		readyText := "未就绪"
+		readyColor := "danger"
+		if isReady {
+			readyText = "已就绪"
+			readyColor = "success"
+		}
+		
+		// 美化连接率显示
+		connectionRateClass := "danger"
+		if connectionRate >= 0.8 {
+			connectionRateClass = "success"
+		} else if connectionRate >= 0.5 {
+			connectionRateClass = "warning"
+		}
+		
+		// 美化置信度显示
+		confidenceClass := "danger"
+		if confidence >= 0.8 {
+			confidenceClass = "success"
+		} else if confidence >= 0.5 {
+			confidenceClass = "warning"
+		}
+
+		html += `
+                <div class="server-card ` + statusClass + `">
+                    <div class="server-header">
+                        <div class="server-url">` + url + `</div>
+                        <div class="server-status ` + statusClass + `">` + status + `</div>
+                    </div>
+                    
+                    <div class="server-metrics">
+                        <div class="metric">
+                            <div class="metric-label">📊 连接率</div>
+                            <div class="metric-value percentage ` + connectionRateClass + `">` + connectionRatePercent + `</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">🎯 置信度</div>
+                            <div class="metric-value ` + confidenceClass + `">` + confidencePercent + `</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">⭐ 优先级</div>
+                            <div class="metric-value ` + priorityColor + `">` + priorityText + `</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">🔧 就绪状态</div>
+                            <div class="metric-value ` + readyColor + `">` + readyText + `</div>
+                        </div>
+                    </div>
+                    
+                    <div class="server-details">
+                        <div class="detail-row">
+                            <span class="detail-label">⚖️ 基础权重:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%d", baseWeight) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">⚡ 动态权重:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%d", dynamicWeight) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">🎯 综合权重:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%d", combinedWeight) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">✅ 成功请求:</span>
+                            <span class="detail-value success">` + fmt.Sprintf("%d", successRequests) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">📈 总请求:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%d", totalRequests) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">📊 样本进度:</span>
+                            <span class="detail-value">` + sampleProgress + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">🚀 1000样本平均速度:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%.1fms", sampleAvgSpeed) + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">🕒 最后检查时间:</span>
+                            <span class="detail-value">` + lastCheckTime + `</span>
+                        </div>
+                    </div>
+                </div>`
+	}
+	
+	return html
 }
