@@ -1,60 +1,84 @@
-version: '3'
+version: '3.8'
 
 services:
-  tmdb-proxy-go:
-    image: ghcr.io/sebastian0619/proxy-nest/proxy-go:latest
-    container_name: tmdb-proxy-go
+  tmdb-go-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - "6636:6635"  # 使用不同端口避免冲突
+      - "${PORT:-8080}:8080"
     environment:
-      # 服务器配置
-      - PORT=6635
-      - NUM_WORKERS=4                # 工作线程数，建议设置为CPU核心数-1
-      - TZ=Asia/Shanghai            # 时区
-      - LOG_LEVEL=INFO              # 日志级别：DEBUG, INFO, WARNING, ERROR
-      
-      # 上游配置
-      - UPSTREAM_TYPE=tmdb-api       # 上游服务器类型：tmdb-api, tmdb-image, 或 custom
-      - TMDB_API_KEY=your_api_key    # 替换为你的TMDB API密钥
-      - TMDB_IMAGE_TEST_URL=/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
-      - CUSTOM_CONTENT_TYPE=application/json  # 自定义上游的默认Content-Type
-      
-      # 上游服务器列表
-      - UPSTREAM_SERVERS=https://api.themoviedb.org,https://api.tmdb.org
-      
-      # 缓存配置
-      - CACHE_ENABLED=true           # 启用缓存
-      - CACHE_DIR=/app/cache
-      - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
-      
-      # 内存缓存配置
-      - MEMORY_CACHE_SIZE=1000       # 内存缓存条目数
-      - MEMORY_CACHE_TTL=3600000     # 内存缓存过期时间（1小时）
-      - MEMORY_CACHE_CLEANUP_INTERVAL=60000  # 内存缓存清理间隔（1分钟）
-      
-      # 磁盘缓存配置
-      - DISK_CACHE_TTL=86400000      # 磁盘缓存过期时间（24小时）
-      - DISK_CACHE_CLEANUP_INTERVAL=3600000  # 磁盘缓存清理间隔（1小时）
-      
-      # 健康检查配置
-      - REQUEST_TIMEOUT=300000      # 请求超时时间（5分钟）
-      - UNHEALTHY_TIMEOUT=300000    # 不健康状态超时（5分钟）
-      - MAX_ERRORS_BEFORE_UNHEALTHY=3
-      - HEALTH_CHECK_INTERVAL=60    # 健康检查间隔（60秒，1分钟）
-      - HEALTH_CHECK_INITIAL_DELAY=30 # 健康检查初始延迟（30秒）
-      
-      # 负载均衡配置
-      - BASE_WEIGHT_MULTIPLIER=20    # 基础权重乘数
-      - DYNAMIC_WEIGHT_MULTIPLIER=50 # 动态权重乘数
-      - ALPHA_INITIAL=0.5           # 初始alpha值
-      - ALPHA_ADJUSTMENT_STEP=0.1   # alpha调整步长
+      - PORT=${PORT:-8080}
+      - UPSTREAM_SERVERS=${UPSTREAM_SERVERS}
+      - UPSTREAM_TYPE=${UPSTREAM_TYPE:-tmdb-api}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TMDB_IMAGE_TEST_URL=${TMDB_IMAGE_TEST_URL:-/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30s}
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-30m}
+      - HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-30s}
+      - MAX_ERRORS_BEFORE_UNHEALTHY=${MAX_ERRORS_BEFORE_UNHEALTHY:-3}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - CACHE_DIR=${CACHE_DIR:-./cache}
+      - CACHE_TTL=${CACHE_TTL:-24h}
+      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-1GB}
+      - MEMORY_CACHE_SIZE=${MEMORY_CACHE_SIZE:-1000}
+      - MEMORY_CACHE_TTL=${MEMORY_CACHE_TTL:-1h}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CLEAR_HEALTH_DATA=false
     volumes:
-      - ./cache:/app/cache
+      - ./cache:./cache
+      - ./health_data.json:./health_data.json
+      - ./connection_rate_data.json:./connection_rate_data.json
     restart: unless-stopped
-    # 移除healthcheck，与JavaScript版本保持一致
-    # healthcheck:
-    #   test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6635/"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 40s 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tmdb-network
+
+  # 清除健康数据版本的服务
+  tmdb-go-proxy-clear:
+    profiles: ["clear"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - PORT=${PORT:-8080}
+      - UPSTREAM_SERVERS=${UPSTREAM_SERVERS}
+      - UPSTREAM_TYPE=${UPSTREAM_TYPE:-tmdb-api}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TMDB_IMAGE_TEST_URL=${TMDB_IMAGE_TEST_URL:-/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30s}
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-30m}
+      - HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-30s}
+      - MAX_ERRORS_BEFORE_UNHEALTHY=${MAX_ERRORS_BEFORE_UNHEALTHY:-3}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - CACHE_DIR=${CACHE_DIR:-./cache}
+      - CACHE_TTL=${CACHE_TTL:-24h}
+      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-1GB}
+      - MEMORY_CACHE_SIZE=${MEMORY_CACHE_SIZE:-1000}
+      - MEMORY_CACHE_TTL=${MEMORY_CACHE_TTL:-1h}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CLEAR_HEALTH_DATA=true
+    volumes:
+      - ./cache:./cache
+      - ./health_data.json:./health_data.json
+      - ./connection_rate_data.json:./connection_rate_data.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tmdb-network
+
+networks:
+  tmdb-network:
+    driver: bridge 

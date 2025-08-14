@@ -38,6 +38,13 @@ func main() {
 
 	// 初始化健康管理器
 	healthManager := health.NewHealthManager(cfg)
+	
+	// 检查是否清除健康数据
+	if os.Getenv("CLEAR_HEALTH_DATA") == "true" {
+		logger.Info("检测到CLEAR_HEALTH_DATA=true，清除健康数据")
+		healthManager.ClearHealthData()
+	}
+	
 	healthManager.StartHealthCheck()
 
 	// 初始化代理管理器
@@ -149,7 +156,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 统计信息端点
+			// 统计信息端点
 	router.GET("/stats", func(c *gin.Context) {
 		// 获取查询参数
 		serverURL := c.Query("server")
@@ -157,6 +164,14 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		if serverURL != "" {
 			// 查看指定服务器的统计信息
 			stats := healthManager.GetServerStatistics(serverURL)
+			// 将connection_rate转换为百分比
+			if statsMap, ok := stats.(map[string]interface{}); ok {
+				if connectionRate, exists := statsMap["connection_rate"]; exists {
+					if rate, ok := connectionRate.(float64); ok {
+						statsMap["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+					}
+				}
+			}
 			c.JSON(http.StatusOK, stats)
 		} else {
 			// 查看所有服务器的统计信息
@@ -165,6 +180,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 			// 获取所有服务器的统计信息并返回
 			allStats := healthManager.GetAllServersStatistics()
+			
+			// 将connection_rate转换为百分比
+			for _, stats := range allStats {
+				if connectionRate, exists := stats["connection_rate"]; exists {
+					if rate, ok := connectionRate.(float64); ok {
+						stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+					}
+				}
+			}
+			
 			c.JSON(http.StatusOK, gin.H{
 				"message": "统计信息已输出到控制台",
 				"servers": allStats,
@@ -191,7 +216,12 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		} else {
 			// 查看所有服务器的统计信息
 			allStats := healthManager.GetAllServersStatistics()
-			html := generateBeautifiedStatsHTML(allStats, false)
+			// 转换为切片格式
+			statsSlice := make([]gin.H, 0, len(allStats))
+			for _, stats := range allStats {
+				statsSlice = append(statsSlice, stats)
+			}
+			html := generateBeautifiedStatsHTML(statsSlice, false)
 			c.Header("Content-Type", "text/html; charset=utf-8")
 			c.String(http.StatusOK, html)
 		}

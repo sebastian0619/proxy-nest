@@ -242,6 +242,49 @@ func (hm *HealthManager) CloseIdleConnections() {
 	}
 }
 
+// ClearHealthData 清除健康数据
+func (hm *HealthManager) ClearHealthData() {
+	hm.mutex.Lock()
+	defer hm.mutex.Unlock()
+	
+	// 清除健康数据文件
+	if hm.healthFile != "" {
+		if err := os.Remove(hm.healthFile); err != nil && !os.IsNotExist(err) {
+			logger.Error("删除健康数据文件失败: %v", err)
+		} else {
+			logger.Info("健康数据文件已删除: %s", hm.healthFile)
+		}
+	}
+	
+	// 清除连接率数据文件
+	if hm.connectionRateFile != "" {
+		if err := os.Remove(hm.connectionRateFile); err != nil && !os.IsNotExist(err) {
+			logger.Error("删除连接率数据文件失败: %v", err)
+		} else {
+			logger.Info("连接率数据文件已删除: %s", hm.connectionRateFile)
+		}
+	}
+	
+	// 重置所有服务器状态
+	for _, server := range hm.servers {
+		server.Status = HealthStatusHealthy
+		server.ErrorCount = 0
+		server.LastCheckTime = time.Time{}
+		server.LastEWMA = 0
+		server.ResponseTimes = make([]time.Duration, 0, 3)
+		server.TotalRequests = 0
+		server.SuccessRequests = 0
+		server.ConnectionRate = 0.8
+		server.LastRateUpdate = time.Now()
+	}
+	
+	// 清除内存中的数据
+	hm.healthData = make(map[string]*HealthData)
+	hm.connectionRateData = make(map[string]*ConnectionRateData)
+	
+	logger.Info("所有健康数据已清除，服务器状态已重置")
+}
+
 // UpdateConnectionRate 更新服务器的连接率（持久化版本）
 func (hm *HealthManager) UpdateConnectionRate(server *Server, success bool, responseTime time.Duration) {
 	// 获取或创建连接率数据
