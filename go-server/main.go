@@ -138,10 +138,11 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 		return true
 	}
 
-	// 检查查询参数中是否包含健康检查标识
-	if strings.Contains(query, "_health_check=1") {
-		return true
-	}
+	// 健康检查请求不应该被跳过，应该被正确处理
+	// 所以这里不检查 _health_check=1 参数
+	// if strings.Contains(query, "_health_check=1") {
+	// 	return true
+	// }
 
 	return false
 }
