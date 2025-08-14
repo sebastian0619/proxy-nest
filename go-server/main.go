@@ -123,10 +123,7 @@ func shouldSkipRequest(path string) bool {
 		}
 	}
 
-	// 特别处理健康检查相关的请求
-	if strings.Contains(path, "/3/configuration") && strings.Contains(path, "api_key=") {
-		return true
-	}
+
 
 	return false
 }
@@ -138,11 +135,8 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 		return true
 	}
 
-	// 健康检查请求不应该被跳过，应该被正确处理
-	// 所以这里不检查 _health_check=1 参数
-	// if strings.Contains(query, "_health_check=1") {
-	// 	return true
-	// }
+	// 不跳过任何其他请求，让它们进入代理处理流程
+	// 健康检查请求会在 handleProxyRequest 中被识别和处理
 
 	return false
 }
