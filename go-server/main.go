@@ -43,6 +43,10 @@ func main() {
 	if os.Getenv("CLEAR_HEALTH_DATA") == "true" {
 		logger.Info("检测到CLEAR_HEALTH_DATA=true，清除健康数据")
 		healthManager.ClearHealthData()
+		
+		// 清除健康数据后，将环境变量重置为false，避免下次重启时再次清除
+		logger.Info("健康数据已清除，环境变量已重置为false")
+		os.Setenv("CLEAR_HEALTH_DATA", "false")
 	}
 	
 	healthManager.StartHealthCheck()
@@ -724,8 +728,8 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	}
 
 	// 分离健康和不健康的服务器
-	var healthyServers []gin.H
-	var unhealthyServers []gin.H
+	var healthyServers []map[string]interface{}
+	var unhealthyServers []map[string]interface{}
 	
 	for _, server := range servers {
 		if status, ok := server["status"].(string); ok {
@@ -759,7 +763,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
         }
         
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
             background: rgba(255, 255, 255, 0.95);
             border-radius: 20px;
@@ -1053,7 +1057,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	if len(healthyServers) > 0 {
 		html += `
         <div class="servers-section">
-            <h2 class="section-title">✅ 健康服务器 (${len(healthyServers)}个)</h2>
+            <h2 class="section-title">✅ 健康服务器 (` + fmt.Sprintf("%d", len(healthyServers)) + `个)</h2>
             <div class="server-grid">`
 		
 		html += generateServerCards(healthyServers)
@@ -1067,7 +1071,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	if len(unhealthyServers) > 0 {
 		html += `
         <div class="servers-section">
-            <h2 class="section-title">❌ 不健康服务器 (${len(unhealthyServers)}个)</h2>
+            <h2 class="section-title">❌ 不健康服务器 (` + fmt.Sprintf("%d", len(unhealthyServers)) + `个)</h2>
             <div class="server-grid">`
 		
 		html += generateServerCards(unhealthyServers)
@@ -1108,24 +1112,28 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 }
 
 // generateServerCards 生成服务器卡片HTML
-func generateServerCards(servers []gin.H) string {
+func generateServerCards(servers []map[string]interface{}) string {
 	var html string
 	
 	for _, server := range servers {
-		url := server["url"].(string)
-		status := server["status"].(string)
-		connectionRate := server["connection_rate"].(float64)
-		confidence := server["confidence"].(float64)
-		baseWeight := server["base_weight"].(int)
-		dynamicWeight := server["dynamic_weight"].(int)
-		combinedWeight := server["combined_weight"].(int)
-		priority := server["priority"].(int)
-		totalRequests := server["total_requests"].(int64)
-		successRequests := server["success_requests"].(int64)
-		sampleProgress := server["sample_progress"].(string)
-		sampleAvgSpeed := server["sample_1000_avg_speed"].(float64)
-		lastCheckTime := server["last_check_time"].(string)
-		isReady := server["is_ready"].(bool)
+		// 安全地获取所有字段，提供默认值
+		url := getStringValue(server, "url", "未知")
+		status := getStringValue(server, "status", "unknown")
+		
+		// 获取数值字段，提供默认值
+		connectionRate := getFloatValue(server, "connection_rate", 0.0)
+		confidence := getFloatValue(server, "confidence", 0.0)
+		baseWeight := getIntValue(server, "base_weight", 0)
+		dynamicWeight := getIntValue(server, "dynamic_weight", 0)
+		combinedWeight := getIntValue(server, "combined_weight", 0)
+		priority := getIntValue(server, "priority", 0)
+		totalRequests := getInt64Value(server, "total_requests", 0)
+		successRequests := getInt64Value(server, "success_requests", 0)
+		sampleProgress := getStringValue(server, "sample_progress", "0/1000 (0.0%)")
+		sampleAvgSpeed := getFloatValue(server, "sample_1000_avg_speed", 0.0)
+		lastCheckTime := getStringValue(server, "last_check_time", "从未检查")
+		isReady := getBoolValue(server, "is_ready", false)
+		lastEWMA := getFloatValue(server, "last_ewma", 0.0)
 
 		// 确定状态样式
 		statusClass := "unhealthy"
@@ -1236,4 +1244,54 @@ func generateServerCards(servers []gin.H) string {
 	}
 	
 	return html
+}
+
+// 辅助函数：安全地获取字符串值
+func getStringValue(data map[string]interface{}, key string, defaultValue string) string {
+	if value, exists := data[key]; exists {
+		if str, ok := value.(string); ok {
+			return str
+		}
+	}
+	return defaultValue
+}
+
+// 辅助函数：安全地获取浮点数值
+func getFloatValue(data map[string]interface{}, key string, defaultValue float64) float64 {
+	if value, exists := data[key]; exists {
+		if f, ok := value.(float64); ok {
+			return f
+		}
+	}
+	return defaultValue
+}
+
+// 辅助函数：安全地获取整数值
+func getIntValue(data map[string]interface{}, key string, defaultValue int) int {
+	if value, exists := data[key]; exists {
+		if i, ok := value.(int); ok {
+			return i
+		}
+	}
+	return defaultValue
+}
+
+// 辅助函数：安全地获取int64值
+func getInt64Value(data map[string]interface{}, key string, defaultValue int64) int64 {
+	if value, exists := data[key]; exists {
+		if i, ok := value.(int64); ok {
+			return i
+		}
+	}
+	return defaultValue
+}
+
+// 辅助函数：安全地获取布尔值
+func getBoolValue(data map[string]interface{}, key string, defaultValue bool) bool {
+	if value, exists := data[key]; exists {
+		if b, ok := value.(bool); ok {
+			return b
+		}
+	}
+	return defaultValue
 }
