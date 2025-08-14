@@ -220,6 +220,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		} else {
 			// 获取所有服务器的统计信息
 			allStats := healthManager.GetAllServersStatistics()
+			logger.Info("获取到所有服务器统计，数量: %d", len(allStats))
+			
 			// 将connection_rate转换为百分比
 			for _, stats := range allStats {
 				if connectionRate, exists := stats["connection_rate"]; exists {
@@ -241,12 +243,25 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		} else {
 			// 所有服务器统计
 			if allStats, ok := statsData.(map[string]map[string]interface{}); ok {
+				logger.Info("类型断言成功，开始转换为切片格式")
 				// 转换为切片格式
 				statsSlice := make([]map[string]interface{}, 0, len(allStats))
 				for _, stats := range allStats {
 					statsSlice = append(statsSlice, stats)
 				}
-				html = generateBeautifiedStatsHTML(statsSlice, false)
+				logger.Info("转换完成，切片长度: %d", len(statsSlice))
+				
+				// 临时调试：显示原始数据
+				if len(statsSlice) == 0 {
+					html = `<html><body><h1>调试信息</h1><p>没有服务器数据</p><pre>` + 
+						fmt.Sprintf("%+v", allStats) + `</pre></body></html>`
+				} else {
+					html = generateBeautifiedStatsHTML(statsSlice, false)
+				}
+			} else {
+				logger.Error("类型断言失败，statsData类型: %T", statsData)
+				html = `<html><body><h1>调试信息</h1><p>类型断言失败</p><pre>类型: %T\n数据: %+v</pre></body></html>`
+				html = fmt.Sprintf(html, statsData, statsData)
 			}
 		}
 
@@ -731,15 +746,23 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	var healthyServers []map[string]interface{}
 	var unhealthyServers []map[string]interface{}
 	
+	// 调试信息：打印所有服务器的状态
+	logger.Info("开始分类服务器，总数: %d", len(servers))
+	
 	for _, server := range servers {
 		if status, ok := server["status"].(string); ok {
+			logger.Info("服务器状态: %s", status)
 			if status == "healthy" {
 				healthyServers = append(healthyServers, server)
 			} else {
 				unhealthyServers = append(unhealthyServers, server)
 			}
+		} else {
+			logger.Warning("服务器状态字段类型错误或缺失")
 		}
 	}
+	
+	logger.Info("分类完成 - 健康服务器: %d, 不健康服务器: %d", len(healthyServers), len(unhealthyServers))
 
 	// 生成HTML页面
 	html := `<!DOCTYPE html>
@@ -1238,6 +1261,10 @@ func generateServerCards(servers []map[string]interface{}) string {
                         <div class="detail-row">
                             <span class="detail-label">🕒 最后检查时间:</span>
                             <span class="detail-value">` + lastCheckTime + `</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">📈 最后EWMA:</span>
+                            <span class="detail-value">` + fmt.Sprintf("%.2f", lastEWMA) + `</span>
                         </div>
                     </div>
                 </div>`
