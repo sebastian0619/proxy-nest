@@ -210,14 +210,28 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		if serverURL != "" {
 			// 查看指定服务器的统计信息
 			stats := healthManager.GetServerStatistics(serverURL)
-			html := generateBeautifiedStatsHTML([]gin.H{stats}, true)
+			// 将connection_rate转换为百分比
+			if connectionRate, exists := stats["connection_rate"]; exists {
+				if rate, ok := connectionRate.(float64); ok {
+					stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+				}
+			}
+			html := generateBeautifiedStatsHTML([]map[string]interface{}{stats}, true)
 			c.Header("Content-Type", "text/html; charset=utf-8")
 			c.String(http.StatusOK, html)
 		} else {
 			// 查看所有服务器的统计信息
 			allStats := healthManager.GetAllServersStatistics()
+			// 将connection_rate转换为百分比
+			for _, stats := range allStats {
+				if connectionRate, exists := stats["connection_rate"]; exists {
+					if rate, ok := connectionRate.(float64); ok {
+						stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+					}
+				}
+			}
 			// 转换为切片格式
-			statsSlice := make([]gin.H, 0, len(allStats))
+			statsSlice := make([]map[string]interface{}, 0, len(allStats))
 			for _, stats := range allStats {
 				statsSlice = append(statsSlice, stats)
 			}
@@ -679,7 +693,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 }
 
 // generateBeautifiedStatsHTML 生成美化的统计信息HTML页面
-func generateBeautifiedStatsHTML(servers []gin.H, singleServer bool) string {
+func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer bool) string {
 	// 计算统计概览
 	totalServers := len(servers)
 	healthyCount := 0
