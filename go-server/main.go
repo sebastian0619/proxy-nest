@@ -758,7 +758,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 				unhealthyServers = append(unhealthyServers, server)
 			}
 		} else {
-			logger.Warning("服务器状态字段类型错误或缺失")
+			logger.Warn("服务器状态字段类型错误或缺失")
 		}
 	}
 	
