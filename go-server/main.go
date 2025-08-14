@@ -165,11 +165,9 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			// 查看指定服务器的统计信息
 			stats := healthManager.GetServerStatistics(serverURL)
 			// 将connection_rate转换为百分比
-			if statsMap, ok := stats.(map[string]interface{}); ok {
-				if connectionRate, exists := statsMap["connection_rate"]; exists {
-					if rate, ok := connectionRate.(float64); ok {
-						statsMap["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
-					}
+			if connectionRate, exists := stats["connection_rate"]; exists {
+				if rate, ok := connectionRate.(float64); ok {
+					stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
 				}
 			}
 			c.JSON(http.StatusOK, stats)
