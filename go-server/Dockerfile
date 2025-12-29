@@ -35,6 +35,14 @@ RUN echo "验证源代码结构..." && \
 # 初始化Go模块（确保模块正确初始化）
 RUN go mod tidy
 
+# 验证Go模块状态
+RUN echo "验证Go模块状态..." && \
+    go env GOMOD && \
+    go env GOPATH && \
+    go env GOROOT && \
+    cat go.mod && \
+    echo "✓ Go模块状态验证通过"
+
 # ============================================
 # 前端构建验证
 # ============================================
@@ -50,7 +58,13 @@ RUN echo "验证前端UI代码..." && \
 # 构建应用（使用详细输出）
 # 构建时会自动包含嵌入的UI HTML代码
 # 确保在正确的模块路径下构建
-RUN pwd && ls -la && \
+# 使用go list验证包路径
+RUN echo "验证包路径..." && \
+    go list -m && \
+    go list ./... && \
+    echo "✓ 包路径验证通过"
+
+RUN echo "开始构建..." && \
     go build -v -ldflags="-s -w" -o tmdb-go-proxy .
 
 # 运行阶段
