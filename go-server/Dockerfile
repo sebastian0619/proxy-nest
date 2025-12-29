@@ -1,5 +1,5 @@
 # 构建阶段
-FROM hub.kingschats.com/golang:1.22-alpine AS builder
+FROM golang:1.22-alpine AS builder
 
 # 设置Go模块环境变量
 ENV GO111MODULE=on \
