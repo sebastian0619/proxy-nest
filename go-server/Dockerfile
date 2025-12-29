@@ -23,7 +23,14 @@ RUN go mod download && \
     go mod verify
 
 # 复制源代码（包括包含UI HTML的main.go）
+# 先复制所有源代码文件
 COPY . .
+
+# 验证文件结构
+RUN echo "验证源代码结构..." && \
+    ls -la && \
+    ls -la cache/ config/ health/ logger/ proxy/ && \
+    echo "✓ 源代码结构验证通过"
 
 # 初始化Go模块（确保模块正确初始化）
 RUN go mod tidy
@@ -42,7 +49,9 @@ RUN echo "验证前端UI代码..." && \
 
 # 构建应用（使用详细输出）
 # 构建时会自动包含嵌入的UI HTML代码
-RUN go build -v -ldflags="-s -w" -o tmdb-go-proxy .
+# 确保在正确的模块路径下构建
+RUN pwd && ls -la && \
+    go build -v -ldflags="-s -w" -o tmdb-go-proxy .
 
 # 运行阶段
 FROM alpine:latest

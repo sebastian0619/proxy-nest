@@ -1,13 +1,13 @@
 name: Build and Push TMDB Proxy JS (Multi-Arch)
 
 on:
-  push:
-    branches: [ JS ]
-    paths:
-      - '**'
-  release:
-    types: [created]
+  # 禁用JS构建，只保留手动触发
   workflow_dispatch:
+    inputs:
+      enable_js_build:
+        description: 'Enable JS build (disabled by default)'
+        required: false
+        default: 'false'
 
 env:
   REGISTRY: ghcr.io
