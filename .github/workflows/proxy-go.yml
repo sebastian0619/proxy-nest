@@ -5,8 +5,6 @@ on:
     branches: [ JS ]
   pull_request:
     branches: [ JS ]
-  release:
-    types: [created]
   workflow_dispatch:
 
 env:
@@ -45,10 +43,12 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/JS'}}
+            # 普通push时打test标签（用于测试）
+            type=raw,value=test,enable=${{ github.event_name == 'push' }}
+            # 其他标签（分支名、SHA、日期等）
             type=ref,event=branch
             type=sha,format=short
-            type=raw,value={{date 'YYYYMMDD'}}
+            type=raw,value=test-{{date 'YYYYMMDD'}},enable=${{ github.event_name == 'push' }}
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:

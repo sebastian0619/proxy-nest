@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"proxy-nest-go/cache"
-	"proxy-nest-go/config"
-	"proxy-nest-go/health"
-	"proxy-nest-go/logger"
-	"proxy-nest-go/proxy"
+	"main/cache"
+	"main/config"
+	"main/health"
+	"main/logger"
+	"main/proxy"
 
 	"github.com/gin-gonic/gin"
 )
@@ -114,11 +114,6 @@ func shouldSkipRequest(path string) bool {
 		"/robots.txt",
 		"/sitemap.xml",
 		"/.well-known/",
-		"/health",
-		"/status",
-		"/stats",
-		"/config",
-		"/cache",
 	}
 
 	for _, skipPath := range skipPaths {
@@ -145,10 +140,120 @@ func shouldSkipRequestWithQuery(path string, query string) bool {
 	return false
 }
 
+// apiKeyAuth API密钥验证中间件
+func apiKeyAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 白名单端点 - 无需身份验证
+		whitelist := []string{
+			"/health",   // 健康检查
+			"/status",   // 服务器状态
+			"/stats",    // 统计信息
+			"/upstream", // 上游代理状态
+		}
+
+		// 检查是否在白名单中
+		requestPath := c.Request.URL.Path
+		for _, path := range whitelist {
+			if requestPath == path {
+				c.Next()
+				return
+			}
+		}
+
+		// 检查API密钥
+		apiKey := c.GetHeader("X-API-Key")
+		expectedKey := os.Getenv("API_KEY")
+
+		// 如果设置了API_KEY，则需要验证；如果未设置，则警告但允许访问
+		if expectedKey != "" && apiKey != expectedKey {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":     "API key required",
+				"message":   "Please provide X-API-Key header with valid API key",
+				"endpoint":  requestPath,
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			c.Abort()
+			return
+		}
+
+		// 如果没有设置API_KEY，记录警告
+		if expectedKey == "" {
+			logger.Warn("API访问未受保护: %s (建议设置API_KEY环境变量)", requestPath)
+		}
+
+		c.Next()
+	}
+}
+
+// validateCacheClearRequest 验证缓存清理请求
+func validateCacheClearRequest(c *gin.Context) bool {
+	cacheType := c.Query("type")
+	validTypes := []string{"", "memory", "l2", "disk", "all"}
+
+	// 验证缓存类型参数
+	isValid := false
+	for _, validType := range validTypes {
+		if cacheType == validType {
+			isValid = true
+			break
+		}
+	}
+
+	if !isValid {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":     "Invalid cache type",
+			"message":   "Supported types: memory, l2, disk, all",
+			"provided":  cacheType,
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+		return false
+	}
+
+	// 清除所有缓存时需要确认
+	if cacheType == "" || cacheType == "all" {
+		confirm := c.Query("confirm")
+		if confirm != "yes" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":     "Confirmation required",
+				"message":   "Clearing all caches requires confirmation. Add ?confirm=yes",
+				"cache_type": cacheType,
+				"timestamp":  time.Now().Format(time.RFC3339),
+			})
+			return false
+		}
+	}
+
+	return true
+}
+
 // setupRoutes 设置路由
 func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheManager *cache.CacheManager, healthManager *health.HealthManager, cfg *config.Config, startTime time.Time) {
+	// ===============================================
+	// Web UI 路由 - 不需要API密钥验证
+	// ===============================================
+	router.GET("/ui", func(c *gin.Context) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, getWebUIHTML())
+	})
+
+	router.GET("/ui/", func(c *gin.Context) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, getWebUIHTML())
+	})
+
+	// 🔒 API安全中间件 - 保护敏感端点
+	// router.Use(apiKeyAuth()) // 暂时注释掉以测试路由
+
+	// 创建API路由组 - 所有管理API都放在/mapi路径下
+	apiGroup := router.Group("/mapi")
+	// 为API组应用安全中间件
+	apiGroup.Use(apiKeyAuth())
+
 	// 健康检查端点
-	router.GET("/health", func(c *gin.Context) {
+	apiGroup.GET("/health", func(c *gin.Context) {
+		logger.Info("Health check endpoint called")
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -156,7 +261,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	})
 
 			// 统计信息端点
-	router.GET("/stats", func(c *gin.Context) {
+	apiGroup.GET("/stats", func(c *gin.Context) {
 		// 获取查询参数
 		serverURL := c.Query("server")
 
@@ -191,16 +296,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				"message": "统计信息已输出到控制台",
 				"servers": allStats,
 				"endpoints": gin.H{
-					"all_stats":    "/stats",
-					"server_stats": "/stats?server=<server_url>",
-					"beautify":     "/stats/beautify",
+					"all_stats":    "/mapi/stats",
+					"server_stats": "/mapi/stats?server=<server_url>",
+					"beautify":     "/mapi/stats/beautify",
 				},
 			})
 		}
 	})
 
 	// 美化统计信息端点（浏览器友好）
-	router.GET("/stats/beautify", func(c *gin.Context) {
+	apiGroup.GET("/stats/beautify", func(c *gin.Context) {
 		// 获取查询参数
 		serverURL := c.Query("server")
 
@@ -270,13 +375,41 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	})
 
 	// 缓存管理端点
-	router.GET("/cache/info", func(c *gin.Context) {
+	apiGroup.GET("/cache/info", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
 		// 获取缓存信息
 		memoryStats := cacheManager.GetMemoryCache().GetStats()
-		diskStats := cacheManager.GetDiskCache().GetStats()
+		l2Stats := cacheManager.GetL2CacheStats()
+		
+		var l2CacheInfo gin.H
+		if cacheManager.GetConfig().UseRedis {
+			l2CacheInfo = gin.H{
+				"type":         "redis",
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"nodes":        cacheManager.GetConfig().RedisClusterNodes,
+				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
+				"current_size": l2Stats.CurrentSize,
+				"total_files":  l2Stats.TotalFiles,
+				"total_size":   l2Stats.TotalSize,
+				"pool_size":    cacheManager.GetConfig().RedisPoolSize,
+			}
+		} else {
+			l2CacheInfo = gin.H{
+				"type":         "disk",
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"cache_dir":    cacheManager.GetConfig().CacheDir,
+				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
+				"max_size":     cacheManager.GetConfig().CacheMaxSize,
+				"current_size": l2Stats.CurrentSize,
+				"total_files":  l2Stats.TotalFiles,
+				"total_size":   l2Stats.TotalSize,
+			}
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"cache_enabled": cacheManager.GetConfig().CacheEnabled,
+			"architecture":  "L1 (Memory) + L2 (Redis/Disk)",
 			"memory_cache": gin.H{
 				"enabled":      cacheManager.GetConfig().CacheEnabled,
 				"max_size":     cacheManager.GetConfig().MemoryCacheSize,
@@ -286,30 +419,34 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				"misses":       memoryStats.Misses,
 				"hit_rate":     memoryStats.HitRate,
 			},
-			"disk_cache": gin.H{
-				"enabled":      cacheManager.GetConfig().CacheEnabled,
-				"cache_dir":    cacheManager.GetConfig().CacheDir,
-				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
-				"max_size":     cacheManager.GetConfig().CacheMaxSize,
-				"current_size": diskStats.CurrentSize,
-				"total_files":  diskStats.TotalFiles,
-				"total_size":   diskStats.TotalSize,
-			},
+			"l2_cache": l2CacheInfo,
 			"endpoints": gin.H{
-				"cache_info":   "/cache/info",
-				"clear_cache":  "/cache/clear",
-				"clear_memory": "/cache/clear?type=memory",
-				"clear_disk":   "/cache/clear?type=disk",
-				"cache_keys":   "/cache/keys",
-				"cache_search": "/cache/search?q=<query>",
+				"cache_info":   "/mapi/cache/info",
+				"clear_cache":  "/mapi/cache/clear",
+				"clear_memory": "/mapi/cache/clear?type=memory",
+				"clear_l2":     "/mapi/cache/clear?type=l2",
+				"cache_keys":   "/mapi/cache/keys",
+				"cache_search": "/mapi/cache/search?q=<query>",
 			},
 		})
 	})
 
 	// 清除缓存端点
-	router.POST("/cache/clear", func(c *gin.Context) {
+	apiGroup.POST("/cache/clear", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		// 🔒 验证请求参数
+		if !validateCacheClearRequest(c) {
+			return
+		}
+
 		// 获取查询参数，决定清除哪种类型的缓存
 		cacheType := c.Query("type")
+
+		// 📊 审计日志 - 记录缓存清理操作
+		logger.Info("缓存清理操作 - 类型: %s, IP: %s, User-Agent: %s",
+			cacheType, c.ClientIP(), c.GetHeader("User-Agent"))
 
 		var result gin.H
 		var status int
@@ -326,9 +463,54 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			status = http.StatusOK
 			logger.Info("内存缓存已通过API清除")
 
+			// 如果启用了嵌套代理检测，尝试联动清理上游代理的内存缓存
+			if cfg.EnableNestedProxyDetection {
+				go pm.performUpstreamCacheClear("memory")
+			}
+
+		case "l2":
+			// 清除L2缓存（Redis或磁盘缓存）
+			if err := cacheManager.ClearL2Cache(); err != nil {
+				cacheType := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheType = "Redis"
+				}
+				result = gin.H{
+					"error":     fmt.Sprintf("清除%s缓存失败", cacheType),
+					"message":   err.Error(),
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusInternalServerError
+				logger.Error("API清除%s缓存失败: %v", cacheType, err)
+			} else {
+				cacheType := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheType = "Redis"
+				}
+				result = gin.H{
+					"message":   fmt.Sprintf("%s缓存已清除", cacheType),
+					"type":      "l2",
+					"backend":   cacheType,
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusOK
+				logger.Info("%s缓存已通过API清除", cacheType)
+
+				// 如果启用了嵌套代理检测，尝试联动清理上游代理的L2缓存
+				if cfg.EnableNestedProxyDetection {
+					go pm.performUpstreamCacheClear("l2")
+				}
+			}
+
 		case "disk":
-			// 只清除磁盘缓存
-			if err := cacheManager.GetDiskCache().Clear(); err != nil {
+			// 兼容性：清除磁盘缓存（如果不是使用Redis的话）
+			if cacheManager.GetConfig().UseRedis {
+				result = gin.H{
+					"error":     "当前使用Redis缓存，请使用 type=l2",
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusBadRequest
+			} else if err := cacheManager.ClearL2Cache(); err != nil {
 				result = gin.H{
 					"error":     "清除磁盘缓存失败",
 					"message":   err.Error(),
@@ -349,7 +531,11 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		default:
 			// 清除所有缓存
 			cacheManager.GetMemoryCache().Clear()
-			if err := cacheManager.GetDiskCache().Clear(); err != nil {
+			if err := cacheManager.ClearL2Cache(); err != nil {
+				cacheType := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheType = "Redis"
+				}
 				result = gin.H{
 					"error":     "清除缓存失败",
 					"message":   err.Error(),
@@ -365,6 +551,11 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				}
 				status = http.StatusOK
 				logger.Info("所有缓存已通过API清除")
+
+				// 如果启用了嵌套代理检测，尝试联动清理上游代理的所有缓存
+				if cfg.EnableNestedProxyDetection {
+					go pm.performUpstreamCacheClear("all")
+				}
 			}
 		}
 
@@ -372,13 +563,15 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	})
 
 	// 获取缓存键列表端点
-	router.GET("/cache/keys", func(c *gin.Context) {
+	apiGroup.GET("/cache/keys", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
 		// 获取查询参数
 		limit := c.DefaultQuery("limit", "100")
 		offset := c.DefaultQuery("offset", "0")
 
-		// 获取磁盘缓存的键列表
-		keys, err := cacheManager.GetDiskCache().GetKeys(limit, offset)
+		// 获取L2缓存的键列表
+		keys, err := cacheManager.GetL2CacheKeys(limit, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":     "获取缓存键列表失败",
@@ -388,20 +581,28 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			return
 		}
 
+		cacheType := "磁盘"
+		if cacheManager.GetConfig().UseRedis {
+			cacheType = "Redis"
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"keys":   keys,
-			"total":  len(keys),
-			"limit":  limit,
-			"offset": offset,
+			"keys":     keys,
+			"total":    len(keys),
+			"limit":    limit,
+			"offset":   offset,
+			"backend":  cacheType,
 			"endpoints": gin.H{
-				"cache_keys":   "/cache/keys",
-				"cache_search": "/cache/search?q=<query>",
+				"cache_keys":   "/mapi/cache/keys",
+				"cache_search": "/mapi/cache/search?q=<query>",
 			},
 		})
 	})
 
 	// 搜索缓存端点
-	router.GET("/cache/search", func(c *gin.Context) {
+	apiGroup.GET("/cache/search", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
 		query := c.Query("q")
 		if query == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -413,7 +614,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		}
 
 		// 搜索缓存
-		results, err := cacheManager.GetDiskCache().Search(query)
+		results, err := cacheManager.SearchL2Cache(query)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":     "搜索缓存失败",
@@ -423,16 +624,22 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			return
 		}
 
+		cacheType := "磁盘"
+		if cacheManager.GetConfig().UseRedis {
+			cacheType = "Redis"
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"query":     query,
 			"results":   results,
 			"total":     len(results),
+			"backend":   cacheType,
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	})
 
 	// 服务器状态端点
-	router.GET("/status", func(c *gin.Context) {
+	apiGroup.GET("/status", func(c *gin.Context) {
 		// 获取系统状态信息
 		uptime := time.Since(startTime)
 
@@ -443,18 +650,21 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"timestamp":  time.Now().Format(time.RFC3339),
 			"version":    "tmdb-go-proxy/1.0",
 			"endpoints": gin.H{
-				"health":      "/health",
-				"status":      "/status",
-				"stats":       "/stats",
-				"cache_info":  "/cache/info",
-				"cache_clear": "/cache/clear",
+				"health":      "/mapi/health",
+				"status":      "/mapi/status",
+				"stats":       "/mapi/stats",
+				"cache_info":  "/mapi/cache/info",
+				"cache_clear": "/mapi/cache/clear",
+				"upstream":    "/mapi/upstream",
 			},
 		})
 	})
 
 	// 配置信息端点
-	router.GET("/config", func(c *gin.Context) {
+	apiGroup.GET("/config", func(c *gin.Context) {
 		// 返回当前配置信息（不包含敏感信息）
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
 		c.JSON(http.StatusOK, gin.H{
 			"port": cfg.Port,
 			"cache": gin.H{
@@ -470,16 +680,129 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				"initial_delay": cfg.HealthCheckInitialDelay.String(),
 			},
 			"endpoints": gin.H{
-				"config":     "/config",
-				"health":     "/health",
-				"status":     "/status",
-				"stats":      "/stats",
-				"cache_info": "/cache/info",
+				"config":     "/mapi/config",
+				"health":     "/mapi/health",
+				"status":     "/mapi/status",
+				"stats":      "/mapi/stats",
+				"cache_info": "/mapi/cache/info",
 			},
 		})
 	})
 
+	// 上游代理检测状态端点
+	apiGroup.GET("/upstream", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
+
+		// 构建响应数据
+		upstreamList := make([]gin.H, 0, len(upstreamInfo))
+		totalProxies := 0
+		tmdbProxies := 0
+
+		for url, info := range upstreamInfo {
+			upstreamList = append(upstreamList, gin.H{
+				"url":          url,
+				"is_tmdb_proxy": info.IsTMDBProxy,
+				"version":      info.Version,
+				"last_checked": info.LastChecked.Format(time.RFC3339),
+				"check_count":  info.CheckCount,
+			})
+
+			totalProxies++
+			if info.IsTMDBProxy {
+				tmdbProxies++
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"enabled":              cfg.EnableNestedProxyDetection,
+			"total_upstream_servers": totalProxies,
+			"tmdb_proxy_servers":   tmdbProxies,
+			"upstream_servers":     upstreamList,
+			"timestamp":            time.Now().Format(time.RFC3339),
+			"endpoints": gin.H{
+				"upstream_status": "/mapi/upstream",
+				"cache_clear":     "/mapi/cache/clear",
+			},
+		})
+	})
+
+	// ===============================================
+	// 向后兼容性路由 - 保持原有端点可用
+	// ===============================================
+
+	// 兼容性路由组 - 不需要API密钥验证
+	compatGroup := router.Group("")
+
+	// 健康检查兼容路由
+	compatGroup.GET("/health", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "healthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+			"note":      "This is a compatibility endpoint. Please use /mapi/health for new integrations.",
+		})
+	})
+
+	// 状态信息兼容路由
+	compatGroup.GET("/status", func(c *gin.Context) {
+		uptime := time.Since(startTime)
+
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.JSON(http.StatusOK, gin.H{
+			"status":     "running",
+			"uptime":     uptime.String(),
+			"start_time": startTime.Format(time.RFC3339),
+			"timestamp":  time.Now().Format(time.RFC3339),
+			"version":    "tmdb-go-proxy/1.0",
+			"note":       "This is a compatibility endpoint. Please use /mapi/status for new integrations.",
+			"endpoints": gin.H{
+				"health":      "/mapi/health",
+				"status":      "/mapi/status",
+				"stats":       "/mapi/stats",
+				"cache_info":  "/mapi/cache/info",
+				"cache_clear": "/mapi/cache/clear",
+				"upstream":    "/mapi/upstream",
+			},
+		})
+	})
+
+	// 配置信息兼容路由
+	compatGroup.GET("/config", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.JSON(http.StatusOK, gin.H{
+			"port": cfg.Port,
+			"cache": gin.H{
+				"enabled":         cfg.Cache.CacheEnabled,
+				"cache_dir":       cfg.Cache.CacheDir,
+				"memory_ttl":      cfg.Cache.MemoryCacheTTL.String(),
+				"disk_ttl":        cfg.Cache.DiskCacheTTL.String(),
+				"memory_max_size": cfg.Cache.MemoryCacheSize,
+				"disk_max_size":   cfg.Cache.CacheMaxSize,
+			},
+			"health_check": gin.H{
+				"interval":      cfg.HealthCheckInterval.String(),
+				"initial_delay": cfg.HealthCheckInitialDelay.String(),
+			},
+			"note": "This is a compatibility endpoint. Please use /mapi/config for new integrations.",
+			"endpoints": gin.H{
+				"config":     "/mapi/config",
+				"health":     "/mapi/health",
+				"status":     "/mapi/status",
+				"stats":      "/mapi/stats",
+				"cache_info": "/mapi/cache/info",
+			},
+		})
+	})
+
+	// ===============================================
 	// 代理请求处理 - 使用NoRoute捕获所有其他请求
+	// ===============================================
 	router.NoRoute(func(c *gin.Context) {
 		handleProxyRequest(c, proxyManager, cacheManager)
 	})
@@ -553,7 +876,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 检查缓存
 	if cacheManager.GetConfig().CacheEnabled {
-		if cachedItem, err := cacheManager.GetDiskCache().Get(cacheKey); err == nil && cachedItem != nil {
+		if cachedItem, err := cacheManager.GetFromL2Cache(cacheKey); err == nil && cachedItem != nil {
 			// 验证缓存内容
 			if proxyManager.ValidateResponse(cachedItem.Data, cachedItem.ContentType) {
 				c.Header("Content-Type", cachedItem.ContentType)
@@ -570,10 +893,18 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 						c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
 						return
 					}
-					logger.CacheHit("磁盘缓存命中: %s (图片, IsImage: %t)", fullURL, cachedItem.IsImage)
+					cacheType := "磁盘"
+					if cacheManager.GetConfig().UseRedis {
+						cacheType = "Redis"
+					}
+					logger.CacheHit("%s缓存命中: %s (图片, IsImage: %t)", cacheType, fullURL, cachedItem.IsImage)
 				} else if strings.Contains(cachedItem.ContentType, "application/json") {
 					c.JSON(http.StatusOK, cachedItem.Data)
-					logger.CacheHit("磁盘缓存命中: %s (JSON)", fullURL)
+					cacheType := "磁盘"
+					if cacheManager.GetConfig().UseRedis {
+						cacheType = "Redis"
+					}
+					logger.CacheHit("%s缓存命中: %s (JSON)", cacheType, fullURL)
 				} else {
 					// 非JSON响应，根据数据类型处理
 					switch data := cachedItem.Data.(type) {
@@ -584,11 +915,19 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 					default:
 						c.JSON(http.StatusOK, cachedItem.Data)
 					}
-					logger.CacheHit("磁盘缓存命中: %s (其他)", fullURL)
+					cacheType := "磁盘"
+					if cacheManager.GetConfig().UseRedis {
+						cacheType = "Redis"
+					}
+					logger.CacheHit("%s缓存命中: %s (其他)", cacheType, fullURL)
 				}
 				return
 			} else {
-				logger.Error("磁盘缓存验证失败: %s", fullURL)
+				cacheType := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheType = "Redis"
+				}
+				logger.Error("%s缓存验证失败: %s", cacheType, fullURL)
 			}
 		}
 
@@ -657,6 +996,10 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	c.Header("Content-Type", response.ContentType)
 	logger.Info("响应头设置完成，Content-Type: %s", response.ContentType)
 
+	// 添加程序标识符到代理响应
+	c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+	c.Header("X-TMDB-Proxy-Version", "1.0")
+
 	// 发送响应
 	if response.IsImage {
 		logger.Info("开始发送图片响应，数据类型: %T", response.Data)
@@ -711,11 +1054,19 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		cacheManager.GetMemoryCache().Set(cacheKey, cacheItem, response.ContentType)
 		logger.CacheInfo("内存缓存写入: %s (IsImage: %t)", fullURL, isImage)
 
-		// 保存到磁盘缓存
-		if err := cacheManager.GetDiskCache().Set(cacheKey, cacheItem, response.ContentType); err != nil {
-			logger.Error("保存磁盘缓存失败: %v", err)
+		// 保存到L2缓存（Redis或磁盘缓存）
+		if err := cacheManager.SetToL2Cache(cacheKey, cacheItem, response.ContentType); err != nil {
+			cacheType := "磁盘"
+			if cacheManager.GetConfig().UseRedis {
+				cacheType = "Redis"
+			}
+			logger.Error("保存%s缓存失败: %v", cacheType, err)
 		} else {
-			logger.CacheInfo("磁盘缓存写入: %s (IsImage: %t)", fullURL, isImage)
+			cacheType := "磁盘"
+			if cacheManager.GetConfig().UseRedis {
+				cacheType = "Redis"
+			}
+			logger.CacheInfo("%s缓存写入: %s (IsImage: %t)", cacheType, fullURL, isImage)
 		}
 	}
 }
@@ -1321,4 +1672,451 @@ func getBoolValue(data map[string]interface{}, key string, defaultValue bool) bo
 		}
 	}
 	return defaultValue
+}
+
+// getWebUIHTML 返回Web UI的HTML内容
+func getWebUIHTML() string {
+	return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TMDB Go Proxy - 管理界面</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus@2.4.4/dist/index.full.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus@2.4.4/dist/index.css">
+    <style>
+        .app-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+        }
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .result-json {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-healthy { background: #67c23a; }
+        .status-unhealthy { background: #f56c6c; }
+        .status-unknown { background: #e6a23c; }
+    </style>
+</head>
+<body>
+    <div id="app" class="app-container">
+         <div class="header">
+             <h1>🎬 TMDB Go Proxy 管理控制台</h1>
+             <p style="margin-top: 10px;">
+                 <el-input
+                     v-model="apiKey"
+                     placeholder="请输入API Key (X-API-Key)"
+                     type="password"
+                     show-password
+                     style="max-width: 400px; margin: 0 auto;"
+                 ></el-input>
+                 <el-button type="primary" @click="saveApiKey" style="margin-left: 10px;">
+                     保存
+                 </el-button>
+             </p>
+         </div>
+
+        <el-tabs v-model="activeTab" @tab-click="handleTabClick">
+            <!-- 概览标签页 -->
+            <el-tab-pane label="📊 概览" name="overview">
+                <div class="card-grid">
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">
+                                <span class="status-indicator status-unknown" :class="healthStatusClass"></span>
+                                系统健康状态
+                            </div>
+                        </template>
+                        <p>查看系统运行状态和基本信息</p>
+                        <el-button type="primary" @click="checkHealth" :loading="loading.health">
+                            🔍 检查健康状态
+                        </el-button>
+                        <div v-if="results.health" class="result-json">
+                            {{ JSON.stringify(results.health, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">📈 服务器统计</div>
+                        </template>
+                        <p>查看上游服务器的连接统计和性能指标</p>
+                        <el-button type="primary" @click="getStats" :loading="loading.stats">
+                            📊 获取统计信息
+                        </el-button>
+                        <div v-if="results.stats" class="result-json">
+                            {{ JSON.stringify(results.stats, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">🔗 上游代理状态</div>
+                        </template>
+                        <p>查看检测到的嵌套代理服务器状态</p>
+                        <el-button type="primary" @click="getUpstreamStatus" :loading="loading.upstream">
+                            🔍 检查上游代理
+                        </el-button>
+                        <div v-if="results.upstream" class="result-json">
+                            {{ JSON.stringify(results.upstream, null, 2) }}
+                        </div>
+                    </el-card>
+                </div>
+            </el-tab-pane>
+
+            <!-- 缓存管理标签页 -->
+            <el-tab-pane label="💾 缓存管理" name="cache">
+                <div class="card-grid">
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">📊 缓存信息</div>
+                        </template>
+                        <p>查看缓存使用情况和统计信息</p>
+                        <el-button type="primary" @click="getCacheInfo" :loading="loading.cacheInfo">
+                            📈 查看缓存信息
+                        </el-button>
+                        <div v-if="results.cacheInfo" class="result-json">
+                            {{ JSON.stringify(results.cacheInfo, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">🗑️ 清除缓存</div>
+                        </template>
+                        <p>清除不同类型的缓存数据</p>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <el-button type="danger" @click="clearCache('all')" :loading="loading.clearCache">
+                                💥 清除所有缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearCache('memory')" :loading="loading.clearCache">
+                                🧠 清除内存缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearCache('l2')" :loading="loading.clearCache">
+                                💿 清除磁盘缓存
+                            </el-button>
+                        </div>
+                        <div v-if="results.clearCache" class="result-json">
+                            {{ JSON.stringify(results.clearCache, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">🔍 缓存搜索</div>
+                        </template>
+                        <p>按关键词搜索缓存中的内容</p>
+                        <el-input
+                            v-model="searchQuery"
+                            placeholder="输入搜索关键词"
+                            style="margin-bottom: 10px;"
+                        ></el-input>
+                        <el-button type="primary" @click="searchCache" :loading="loading.searchCache">
+                            🔍 搜索缓存
+                        </el-button>
+                        <div v-if="results.searchCache" class="result-json">
+                            {{ JSON.stringify(results.searchCache, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">📋 缓存键列表</div>
+                        </template>
+                        <p>查看缓存中的所有键</p>
+                        <el-input-number
+                            v-model="keysLimit"
+                            :min="1"
+                            :max="1000"
+                            style="margin-bottom: 10px;"
+                        ></el-input-number>
+                        <el-button type="primary" @click="getCacheKeys" :loading="loading.cacheKeys">
+                            📋 获取缓存键
+                        </el-button>
+                        <div v-if="results.cacheKeys" class="result-json">
+                            {{ JSON.stringify(results.cacheKeys, null, 2) }}
+                        </div>
+                    </el-card>
+                </div>
+            </el-tab-pane>
+
+            <!-- 系统配置标签页 -->
+            <el-tab-pane label="⚙️ 系统配置" name="config">
+                <el-card>
+                    <template #header>
+                        <div class="card-header">🔧 配置信息</div>
+                    </template>
+                    <p>查看当前系统配置参数</p>
+                    <el-button type="primary" @click="getSystemConfig" :loading="loading.config">
+                        ⚙️ 获取配置信息
+                    </el-button>
+                    <div v-if="results.config" class="result-json">
+                        {{ JSON.stringify(results.config, null, 2) }}
+                    </div>
+                </el-card>
+            </el-tab-pane>
+        </el-tabs>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+        const { ElButton, ElCard, ElTabs, ElTabPane, ElInput, ElInputNumber, ElMessage, ElMessageBox } = ElementPlus;
+
+        createApp({
+            components: {
+                ElButton,
+                ElCard,
+                ElTabs,
+                ElTabPane,
+                ElInput,
+                ElInputNumber
+            },
+            data() {
+                return {
+                    activeTab: 'overview',
+                    apiKey: '',
+                    searchQuery: '',
+                    keysLimit: 50,
+                    loading: {
+                        health: false,
+                        stats: false,
+                        upstream: false,
+                        cacheInfo: false,
+                        clearCache: false,
+                        searchCache: false,
+                        cacheKeys: false,
+                        config: false
+                    },
+                    results: {}
+                }
+            },
+            computed: {
+                healthStatusClass() {
+                    if (!this.results.health) return 'status-unknown';
+                    return this.results.health.status === 'healthy' ? 'status-healthy' : 'status-unhealthy';
+                }
+            },
+            methods: {
+                 saveApiKey() {
+                     if (this.apiKey) {
+                         localStorage.setItem('tmdb_proxy_api_key', this.apiKey);
+                         ElMessage.success('API Key已保存');
+                     } else {
+                         ElMessage.warning('请输入API Key');
+                     }
+                 },
+
+                 async apiRequest(endpoint, options = {}) {
+                     if (!this.apiKey) {
+                         ElMessage.warning('请先设置API Key');
+                         throw new Error('API Key未设置');
+                     }
+
+                     const url = '/mapi' + endpoint;
+                     const defaultOptions = {
+                         headers: {
+                             'X-API-Key': this.apiKey,
+                             'Content-Type': 'application/json'
+                         }
+                     };
+
+                     const finalOptions = { ...defaultOptions, ...options };
+
+                     const response = await fetch(url, finalOptions);
+                     const data = await response.json();
+
+                     if (!response.ok) {
+                         throw new Error(data.message || data.error || '请求失败');
+                     }
+
+                     return data;
+                 },
+
+                 async checkHealth() {
+                     this.loading.health = true;
+                     try {
+                         const data = await this.apiRequest('/health');
+                         this.results.health = data;
+                         ElMessage.success('健康检查成功');
+                     } catch (error) {
+                         this.results.health = { error: error.message };
+                         ElMessage.error('健康检查失败: ' + error.message);
+                     } finally {
+                         this.loading.health = false;
+                     }
+                 },
+
+                 async getStats() {
+                     this.loading.stats = true;
+                     try {
+                         const data = await this.apiRequest('/stats');
+                         this.results.stats = data;
+                         ElMessage.success('统计信息获取成功');
+                     } catch (error) {
+                         this.results.stats = { error: error.message };
+                         ElMessage.error('获取统计信息失败: ' + error.message);
+                     } finally {
+                         this.loading.stats = false;
+                     }
+                 },
+
+                 async getUpstreamStatus() {
+                     this.loading.upstream = true;
+                     try {
+                         const data = await this.apiRequest('/upstream');
+                         this.results.upstream = data;
+                         ElMessage.success('上游代理状态获取成功');
+                     } catch (error) {
+                         this.results.upstream = { error: error.message };
+                         ElMessage.error('获取上游代理状态失败: ' + error.message);
+                     } finally {
+                         this.loading.upstream = false;
+                     }
+                 },
+
+                 async getCacheInfo() {
+                     this.loading.cacheInfo = true;
+                     try {
+                         const data = await this.apiRequest('/cache/info');
+                         this.results.cacheInfo = data;
+                         ElMessage.success('缓存信息获取成功');
+                     } catch (error) {
+                         this.results.cacheInfo = { error: error.message };
+                         ElMessage.error('获取缓存信息失败: ' + error.message);
+                     } finally {
+                         this.loading.cacheInfo = false;
+                     }
+                 },
+
+                 async clearCache(type = 'all') {
+                     const confirmMessage = type === 'all' ?
+                         '确定要清除所有缓存吗？这将影响系统性能！' :
+                         '确定要清除' + type + '缓存吗？';
+
+                     try {
+                         await ElMessageBox.confirm(confirmMessage, '确认操作', {
+                             confirmButtonText: '确定',
+                             cancelButtonText: '取消',
+                             type: 'warning'
+                         });
+                     } catch {
+                         return; // 用户取消
+                     }
+
+                     this.loading.clearCache = true;
+                     try {
+                         const data = await this.apiRequest(
+                             '/cache/clear' + (type !== 'all' ? '?type=' + type : '?confirm=yes'),
+                             { method: 'POST' }
+                         );
+                         this.results.clearCache = data;
+                         ElMessage.success('缓存清除成功');
+                     } catch (error) {
+                         this.results.clearCache = { error: error.message };
+                         ElMessage.error('缓存清除失败: ' + error.message);
+                     } finally {
+                         this.loading.clearCache = false;
+                     }
+                 },
+
+                 async searchCache() {
+                     if (!this.searchQuery.trim()) {
+                         ElMessage.warning('请输入搜索关键词');
+                         return;
+                     }
+
+                     this.loading.searchCache = true;
+                     try {
+                         const data = await this.apiRequest('/cache/search?q=' + encodeURIComponent(this.searchQuery));
+                         this.results.searchCache = data;
+                         ElMessage.success('缓存搜索成功');
+                     } catch (error) {
+                         this.results.searchCache = { error: error.message };
+                         ElMessage.error('缓存搜索失败: ' + error.message);
+                     } finally {
+                         this.loading.searchCache = false;
+                     }
+                 },
+
+                 async getCacheKeys() {
+                     this.loading.cacheKeys = true;
+                     try {
+                         const data = await this.apiRequest('/cache/keys?limit=' + this.keysLimit);
+                         this.results.cacheKeys = data;
+                         ElMessage.success('缓存键列表获取成功');
+                     } catch (error) {
+                         this.results.cacheKeys = { error: error.message };
+                         ElMessage.error('获取缓存键列表失败: ' + error.message);
+                     } finally {
+                         this.loading.cacheKeys = false;
+                     }
+                 },
+
+                 async getSystemConfig() {
+                     this.loading.config = true;
+                     try {
+                         const data = await this.apiRequest('/config');
+                         this.results.config = data;
+                         ElMessage.success('配置信息获取成功');
+                     } catch (error) {
+                         this.results.config = { error: error.message };
+                         ElMessage.error('获取配置信息失败: ' + error.message);
+                     } finally {
+                         this.loading.config = false;
+                     }
+                 },
+
+                handleTabClick(tab) {
+                    // 可以在这里添加标签切换时的逻辑
+                }
+            },
+
+             mounted() {
+                 // 从localStorage加载API Key
+                 const savedApiKey = localStorage.getItem('tmdb_proxy_api_key');
+                 if (savedApiKey) {
+                     this.apiKey = savedApiKey;
+                 }
+
+                 // 页面加载时自动检查健康状态（如果有API Key）
+                 if (this.apiKey) {
+                     setTimeout(() => {
+                         this.checkHealth();
+                     }, 1000);
+                 }
+             }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>`
 }
