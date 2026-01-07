@@ -29,16 +29,16 @@ func NewRedisCache(cfg *config.CacheConfig) (*RedisCache, error) {
 
 	// 创建Redis集群客户端
 	client := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:        cfg.RedisClusterNodes,
-		Password:     cfg.RedisPassword,
-		PoolSize:     cfg.RedisPoolSize,
-		MinIdleConns: cfg.RedisMinIdleConns,
-		DialTimeout:  cfg.RedisConnectTimeout,
-		ReadTimeout:  cfg.RedisReadTimeout,
-		WriteTimeout: cfg.RedisWriteTimeout,
-		IdleTimeout:  cfg.RedisIdleTimeout,
-		MaxRetries:   cfg.RedisMaxRetries,
-		MinRetryDelay: cfg.RedisRetryDelay,
+		Addrs:           cfg.RedisClusterNodes,
+		Password:        cfg.RedisPassword,
+		PoolSize:        cfg.RedisPoolSize,
+		MinIdleConns:    cfg.RedisMinIdleConns,
+		DialTimeout:     cfg.RedisConnectTimeout,
+		ReadTimeout:     cfg.RedisReadTimeout,
+		WriteTimeout:    cfg.RedisWriteTimeout,
+		ConnMaxIdleTime: cfg.RedisIdleTimeout, // 使用ConnMaxIdleTime替代IdleTimeout
+		MaxRetries:      cfg.RedisMaxRetries,
+		MinRetryBackoff: cfg.RedisRetryDelay, // 使用MinRetryBackoff替代MinRetryDelay
 	})
 
 	ctx := context.Background()
