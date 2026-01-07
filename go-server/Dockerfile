@@ -34,6 +34,8 @@ COPY main.go ./
 RUN echo "验证源代码结构..." && \
     ls -la && \
     ls -la cache/ config/ health/ logger/ proxy/ && \
+    echo "验证cache目录中的Go文件..." && \
+    ls -la cache/*.go && \
     echo "✓ 源代码结构验证通过"
 
 # 初始化Go模块（确保模块正确初始化）
