@@ -821,10 +821,60 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		fullURL += "?" + c.Request.URL.RawQuery
 	}
 
+	// 如果缓存被完全禁用，直接处理请求，不检查缓存也不保存缓存
+	if !cacheManager.GetConfig().CacheEnabled {
+		logger.Info("缓存已禁用，直接处理请求: %s", fullURL)
+		response, err := proxyManager.HandleRequest(fullURL, c.Request.Header)
+		if err != nil {
+			logger.Error("请求处理失败: %s -> %v", fullURL, err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":     err.Error(),
+				"url":       fullURL,
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 设置响应头
+		c.Header("Content-Type", response.ContentType)
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		// 发送响应
+		if response.IsImage {
+			switch data := response.Data.(type) {
+			case []byte:
+				c.Data(http.StatusOK, response.ContentType, data)
+			case string:
+				c.Data(http.StatusOK, response.ContentType, []byte(data))
+			default:
+				logger.Error("图片响应数据类型错误: %T", response.Data)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
+				return
+			}
+		} else if strings.Contains(response.ContentType, "application/json") {
+			c.JSON(http.StatusOK, response.Data)
+		} else {
+			switch data := response.Data.(type) {
+			case string:
+				c.Data(http.StatusOK, response.ContentType, []byte(data))
+			case []byte:
+				c.Data(http.StatusOK, response.ContentType, data)
+			default:
+				c.JSON(http.StatusOK, response.Data)
+			}
+		}
+		logger.Success("响应已发送（无缓存）: %s (%dms)", fullURL, response.ResponseTime)
+		return
+	}
+
 	// 生成缓存键 - 使用完整的URL（包括查询参数）
 	cacheKey := cache.GetCacheKey(fullURL)
 
 	// 不输出每个请求的详细信息，避免日志过于冗余
+
+	// 检查是否为健康检查请求（不缓存）
+	isHealthCheck := strings.Contains(query, "_health_check=1")
 
 	// 健康检查请求不缓存，直接处理
 	if isHealthCheck {
