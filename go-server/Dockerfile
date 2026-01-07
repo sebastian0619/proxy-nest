@@ -18,9 +18,10 @@ RUN apk add --no-cache git ca-certificates tzdata
 # 复制go mod文件
 COPY go.mod go.sum ./
 
-# 下载依赖并缓存
+# 下载依赖并缓存，确保所有依赖都被下载（包括redis）
 RUN go mod download && \
-    go mod verify
+    go mod verify && \
+    go mod tidy
 
 # 复制源代码目录（确保所有包都被复制）
 COPY cache/ ./cache/
@@ -40,10 +41,8 @@ RUN echo "验证源代码结构..." && \
     test -f cache/redis_cache.go && echo "✓ redis_cache.go存在" || (echo "✗ redis_cache.go不存在" && exit 1) && \
     echo "✓ 源代码结构验证通过"
 
-# 初始化Go模块（确保模块正确初始化）
-# 先下载所有依赖，然后运行 tidy 来更新 go.sum
-RUN go mod download && \
-    go mod tidy
+# 验证go.sum已包含所有依赖（go mod tidy已在上面运行）
+RUN go mod verify
 
 # 验证Go模块和包路径（逐个验证，避免go list ./...失败）
 RUN echo "验证Go模块..." && \
