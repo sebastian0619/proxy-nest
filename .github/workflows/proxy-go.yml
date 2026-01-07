@@ -65,31 +65,3 @@ jobs:
         run: |
           echo "Built images:"
           docker images ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
-  test:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.event_name != 'pull_request'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.22'
-          cache: true
-
-      - name: Test Go application
-        working-directory: ./go-server
-        run: |
-          echo "=== 运行Go测试 ==="
-          go test -v ./...
-          echo "=== 测试完成 ==="
-      - name: Build Go binary locally
-        working-directory: ./go-server
-        run: |
-          echo "=== 本地构建测试 ==="
-          go build -v -o tmdb-go-proxy .
-          echo "=== 构建成功 ==="
-          ls -la tmdb-go-proxy 

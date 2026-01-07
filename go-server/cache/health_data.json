@@ -1,0 +1,17 @@
+{
+  "https://api.themoviedb.org": {
+    "url": "https://api.themoviedb.org",
+    "status": "unhealthy",
+    "errorCount": 3,
+    "lastCheckTime": "2025-08-07T16:35:12.971563422+08:00",
+    "lastUpdate": "2025-08-07T16:35:12.971566422+08:00",
+    "unhealthySince": "2025-08-07T16:35:12.971599088+08:00"
+  },
+  "https://api.tmdb.org": {
+    "url": "https://api.tmdb.org",
+    "status": "healthy",
+    "errorCount": 0,
+    "lastCheckTime": "2025-08-07T16:43:03.293151607+08:00",
+    "lastUpdate": "2025-08-07T16:43:03.293154691+08:00"
+  }
+}

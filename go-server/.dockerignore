@@ -15,6 +15,9 @@ proxy-nest-go
 *.test
 coverage.out
 
+# 冲突文件
+*Conflict*
+
 # 缓存数据文件（保留源代码）
 cache/*.json
 cache/*.dat

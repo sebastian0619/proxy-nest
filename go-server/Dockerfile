@@ -41,7 +41,9 @@ RUN echo "验证源代码结构..." && \
     echo "✓ 源代码结构验证通过"
 
 # 初始化Go模块（确保模块正确初始化）
-RUN go mod tidy
+# 先下载所有依赖，然后运行 tidy 来更新 go.sum
+RUN go mod download && \
+    go mod tidy
 
 # 验证Go模块和包路径（逐个验证，避免go list ./...失败）
 RUN echo "验证Go模块..." && \
