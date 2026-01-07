@@ -43,12 +43,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # 普通push时打test标签（用于测试）
+            # 普通push时打test标签（用于测试，永远指向最新版本）
             type=raw,value=test,enable=${{ github.event_name == 'push' }}
-            # 其他标签（分支名、SHA、日期等）
+            # 其他标签（分支名、SHA等）
             type=ref,event=branch
             type=sha,format=short
-            type=raw,value=test-{{date 'YYYYMMDD'}},enable=${{ github.event_name == 'push' }}
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
