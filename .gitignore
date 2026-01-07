@@ -13,8 +13,11 @@
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-cache/
+# 忽略根目录的cache数据文件，但保留go-server/cache/中的源代码
+/cache/
 cache_index.json
+# 但允许go-server/cache/中的.go源代码文件
+!go-server/cache/*.go
 
 # 参考文件，不编译到程序中
 proxy_app.go
