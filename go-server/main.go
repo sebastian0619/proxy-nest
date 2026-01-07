@@ -528,7 +528,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					cacheTypeName = "Redis"
 				}
 				result = gin.H{
-					"error":     "清除缓存失败",
+					"error":     fmt.Sprintf("清除%s缓存失败", cacheTypeName),
 					"message":   err.Error(),
 					"timestamp": time.Now().Format(time.RFC3339),
 				}
