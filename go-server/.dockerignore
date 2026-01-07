@@ -1,0 +1,49 @@
+# Git相关
+.git
+.gitignore
+
+# 构建产物
+tmdb-go-proxy
+proxy-nest-go
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试文件
+*_test.go
+*.test
+coverage.out
+
+# 缓存数据文件（保留源代码）
+cache/*.json
+cache/*.dat
+cache/*.tmp
+cache/*.img
+.cache/
+
+# 日志文件
+*.log
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+
+# 文档
+README.md
+*.md
+
+# Docker相关
+Dockerfile*
+docker-compose*
+.dockerignore 

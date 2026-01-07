@@ -1,0 +1,36 @@
+{
+  "name": "proxy-nest-js",
+  "version": "1.1.0",
+  "description": "TMDB API and Image proxy service",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "chalk": "^4.1.2",
+    "express": "^4.18.2",
+    "morgan": "^1.10.0",
+    "lru-cache": "^7.14.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebastian0619/proxy-nest.git"
+  },
+  "keywords": [
+    "tmdb",
+    "proxy",
+    "api",
+    "image"
+  ],
+  "author": "Sebastian0619",
+  "license": "MIT"
+}
+

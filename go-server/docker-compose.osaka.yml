@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # TMDB Go代理服务
+  tmdb-go-proxy:
+    build: .
+    container_name: tmdb-go-proxy-osaka
+    ports:
+      - "6635:6635"
+    environment:
+      # 基础配置
+      - PORT=6635
+      - LOG_LEVEL=info
+      
+      # Redis集群配置
+      - USE_REDIS=true
+      - REDIS_CLUSTER_NODES=singapore.your-domain.com:6379,shanghai.your-domain.com:6379,seoul.your-domain.com:6379,osaka.your-domain.com:6379,amsterdam.your-domain.com:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_POOL_SIZE=15
+      - REDIS_MIN_IDLE_CONNS=3
+      
+      # TTL配置
+      - JSON_MEMORY_TTL=15
+      - JSON_DISK_TTL=360
+      - IMAGE_MEMORY_TTL=30
+      - IMAGE_DISK_TTL=10080
+      
+      # TMDB配置
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - UPSTREAM_TYPE=tmdb-api
+      
+    depends_on:
+      - redis-osaka
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+
+  # 大阪Redis节点
+  redis-osaka:
+    image: redis:7-alpine
+    container_name: redis-osaka
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-osaka-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 15000
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+volumes:
+  redis-osaka-data:
+    driver: local
+
+networks:
+  tmdb-network:
+    driver: bridge
+

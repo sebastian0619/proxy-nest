@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # Go应用服务
+  tmdb-go-proxy:
+    build: .
+    container_name: tmdb-go-proxy
+    ports:
+      - "6635:6635"
+    environment:
+      # 基础配置
+      - PORT=6635
+      - LOG_LEVEL=info
+      
+      # 缓存配置
+      - CACHE_ENABLED=true
+      - USE_REDIS=true
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379,redis-3:6379
+      - REDIS_PASSWORD=
+      - REDIS_POOL_SIZE=10
+      - REDIS_MIN_IDLE_CONNS=2
+      
+      # 优化的TTL配置
+      - JSON_MEMORY_TTL=15
+      - JSON_DISK_TTL=360
+      - IMAGE_MEMORY_TTL=30
+      - IMAGE_DISK_TTL=10080
+      
+      # TMDB配置
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - UPSTREAM_TYPE=tmdb-api
+    depends_on:
+      - redis-1
+      - redis-2
+      - redis-3
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+
+  # Redis集群节点1
+  redis-1:
+    image: redis:7-alpine
+    container_name: redis-singapore
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-1-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Redis集群节点2
+  redis-2:
+    image: redis:7-alpine
+    container_name: redis-shanghai
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-2-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Redis集群节点3
+  redis-3:
+    image: redis:7-alpine
+    container_name: redis-seoul
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis-3-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Redis管理界面（可选）
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=redis-1:redis-1:6379,redis-2:redis-2:6379,redis-3:redis-3:6379
+    depends_on:
+      - redis-1
+      - redis-2
+      - redis-3
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+
+volumes:
+  redis-1-data:
+    driver: local
+  redis-2-data:
+    driver: local
+  redis-3-data:
+    driver: local
+
+networks:
+  tmdb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

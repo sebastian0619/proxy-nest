@@ -1,0 +1,43 @@
+version: '3.8'
+
+# 测试版本的docker-compose配置
+# 使用GitHub Container Registry的test标签镜像
+services:
+  tmdb-api:
+    image: ghcr.io/sebastian0619/proxy-nest/proxy-go:test
+    container_name: tmdb-api-test
+    ports:
+      - "6635:6635"
+    env_file:
+      - .env
+    environment:
+      # 服务特定配置覆盖
+      - UPSTREAM_TYPE=${UPSTREAM_TYPE_API:-tmdb-api}
+      - UPSTREAM_SERVERS=${UPSTREAM_SERVERS_API}
+      - DISK_CACHE_CLEANUP_INTERVAL=${DISK_CACHE_CLEANUP_INTERVAL_API}
+      - MEMORY_CACHE_CLEANUP_INTERVAL=${MEMORY_CACHE_CLEANUP_INTERVAL_API}
+      - CACHE_TTL=${CACHE_TTL_API}
+      - PORT=6635
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+    volumes:
+      - ./cache:/app/cache
+    restart: unless-stopped
+    networks:
+      - tmdb
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6635/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  tmdb:
+    driver: bridge
+
+
+
+
+
+
