@@ -465,7 +465,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 			// 如果启用了嵌套代理检测，尝试联动清理上游代理的内存缓存
 			if cfg.EnableNestedProxyDetection {
-				go proxyManager.performUpstreamCacheClear("memory")
+				go proxyManager.PerformUpstreamCacheClear("memory")
 			}
 
 		case "l2":
@@ -498,7 +498,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 				// 如果启用了嵌套代理检测，尝试联动清理上游代理的L2缓存
 				if cfg.EnableNestedProxyDetection {
-					go proxyManager.performUpstreamCacheClear("l2")
+					go proxyManager.PerformUpstreamCacheClear("l2")
 				}
 			}
 
@@ -532,9 +532,9 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			// 清除所有缓存
 			cacheManager.GetMemoryCache().Clear()
 			if err := cacheManager.ClearL2Cache(); err != nil {
-				cacheType := "磁盘"
+				cacheTypeName := "磁盘"
 				if cacheManager.GetConfig().UseRedis {
-					cacheType = "Redis"
+					cacheTypeName = "Redis"
 				}
 				result = gin.H{
 					"error":     "清除缓存失败",
@@ -554,7 +554,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 				// 如果启用了嵌套代理检测，尝试联动清理上游代理的所有缓存
 				if cfg.EnableNestedProxyDetection {
-					go proxyManager.performUpstreamCacheClear("all")
+					go proxyManager.PerformUpstreamCacheClear("all")
 				}
 			}
 		}

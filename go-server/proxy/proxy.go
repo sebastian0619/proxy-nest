@@ -893,8 +893,8 @@ func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
 	return result
 }
 
-// performUpstreamCacheClear 执行上游代理缓存清理
-func (pm *ProxyManager) performUpstreamCacheClear(cacheType string) {
+// PerformUpstreamCacheClear 执行上游代理缓存清理
+func (pm *ProxyManager) PerformUpstreamCacheClear(cacheType string) {
 	logger.Info("开始执行上游代理缓存清理联动 (类型: %s)", cacheType)
 
 	upstreamInfo := pm.GetUpstreamProxyInfo()
