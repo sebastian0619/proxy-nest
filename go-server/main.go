@@ -1970,29 +1970,37 @@ func getWebUIHTML() string {
                  },
 
                  async apiRequest(endpoint, options = {}) {
-                     if (!this.apiKey) {
-                         ElMessage.warning('请先设置API Key');
-                         throw new Error('API Key未设置');
-                     }
-
+                     // 如果没有设置API Key，仍然尝试请求（后端可能允许无API Key访问）
                      const url = '/mapi' + endpoint;
                      const defaultOptions = {
                          headers: {
-                             'X-API-Key': this.apiKey,
                              'Content-Type': 'application/json'
                          }
                      };
 
-                     const finalOptions = { ...defaultOptions, ...options };
-
-                     const response = await fetch(url, finalOptions);
-                     const data = await response.json();
-
-                     if (!response.ok) {
-                         throw new Error(data.message || data.error || '请求失败');
+                     // 如果设置了API Key，添加到请求头
+                     if (this.apiKey) {
+                         defaultOptions.headers['X-API-Key'] = this.apiKey;
                      }
 
-                     return data;
+                     const finalOptions = { ...defaultOptions, ...options };
+
+                     try {
+                         const response = await fetch(url, finalOptions);
+                         const data = await response.json();
+
+                         if (!response.ok) {
+                             throw new Error(data.message || data.error || '请求失败');
+                         }
+
+                         return data;
+                     } catch (error) {
+                         // 如果是网络错误，提供更友好的错误信息
+                         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                             throw new Error('网络请求失败，请检查服务器是否运行');
+                         }
+                         throw error;
+                     }
                  },
 
                  async checkHealth() {
@@ -2068,12 +2076,23 @@ func getWebUIHTML() string {
 
                      this.loading.clearCache = true;
                      try {
+                         // 构建查询参数
+                         let queryParams = '';
+                         if (type === 'all') {
+                             queryParams = '?type=all&confirm=yes';
+                         } else {
+                             queryParams = '?type=' + type;
+                         }
                          const data = await this.apiRequest(
-                             '/cache/clear' + (type !== 'all' ? '?type=' + type : '?confirm=yes'),
+                             '/cache/clear' + queryParams,
                              { method: 'POST' }
                          );
                          this.results.clearCache = data;
                          ElMessage.success('缓存清除成功');
+                         // 清除缓存后，刷新缓存信息
+                         if (this.apiKey) {
+                             setTimeout(() => this.getCacheInfo(), 500);
+                         }
                      } catch (error) {
                          this.results.clearCache = { error: error.message };
                          ElMessage.error('缓存清除失败: ' + error.message);
