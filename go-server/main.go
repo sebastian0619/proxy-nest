@@ -463,10 +463,6 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			status = http.StatusOK
 			logger.Info("内存缓存已通过API清除")
 
-			// 如果启用了嵌套代理检测，尝试联动清理上游代理的内存缓存
-			if cfg.EnableNestedProxyDetection {
-				go proxyManager.PerformUpstreamCacheClear("memory")
-			}
 
 		case "l2":
 			// 清除L2缓存（Redis或磁盘缓存）
@@ -495,11 +491,6 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				}
 				status = http.StatusOK
 				logger.Info("%s缓存已通过API清除", cacheType)
-
-				// 如果启用了嵌套代理检测，尝试联动清理上游代理的L2缓存
-				if cfg.EnableNestedProxyDetection {
-					go proxyManager.PerformUpstreamCacheClear("l2")
-				}
 			}
 
 		case "disk":
@@ -551,11 +542,6 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				}
 				status = http.StatusOK
 				logger.Info("所有缓存已通过API清除")
-
-				// 如果启用了嵌套代理检测，尝试联动清理上游代理的所有缓存
-				if cfg.EnableNestedProxyDetection {
-					go proxyManager.PerformUpstreamCacheClear("all")
-				}
 			}
 		}
 
@@ -840,9 +826,6 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 	// 不输出每个请求的详细信息，避免日志过于冗余
 
-	// 检查是否为健康检查请求（不缓存）
-	isHealthCheck := strings.Contains(query, "_health_check=1")
-
 	// 健康检查请求不缓存，直接处理
 	if isHealthCheck {
 		logger.Info("健康检查请求，跳过缓存: %s", fullURL)
@@ -874,7 +857,7 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		return
 	}
 
-	// 检查缓存
+	// 检查缓存（如果缓存被禁用，直接跳过缓存逻辑）
 	if cacheManager.GetConfig().CacheEnabled {
 		if cachedItem, err := cacheManager.GetFromL2Cache(cacheKey); err == nil && cachedItem != nil {
 			// 验证缓存内容
