@@ -26,3 +26,9 @@ proxy_app.go
 go.work
 .cursorrules
 .cursorrules
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.staging

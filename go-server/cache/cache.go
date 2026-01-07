@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"proxy-nest-go/config"
-	"proxy-nest-go/logger"
+	"main/config"
+	"main/logger"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 )
@@ -92,6 +92,7 @@ type CacheStats struct {
 // CacheManager 缓存管理器
 type CacheManager struct {
 	diskCache   *DiskCache
+	redisCache  *RedisCache
 	memoryCache *MemoryCache
 	config      *config.CacheConfig
 }
@@ -544,28 +545,53 @@ func (mc *MemoryCache) startCleanup(interval time.Duration) {
 // NewCacheManager 创建缓存管理器
 func NewCacheManager(cfg *config.CacheConfig) (*CacheManager, error) {
 	if !cfg.CacheEnabled {
-		logger.Info("本地缓存已禁用")
+		logger.Info("缓存已禁用")
 		// 返回空操作缓存对象
 		return &CacheManager{
 			diskCache:   &DiskCache{config: cfg},
+			redisCache:  nil,
 			memoryCache: &MemoryCache{},
 			config:      cfg,
 		}, nil
 	}
 
-	diskCache := NewDiskCache(cfg)
-	if err := diskCache.Init(); err != nil {
-		return nil, err
+	var diskCache *DiskCache
+	var redisCache *RedisCache
+
+	// 根据配置选择使用Redis还是磁盘缓存
+	if cfg.UseRedis {
+		// 使用Redis缓存
+		var err error
+		redisCache, err = NewRedisCache(cfg)
+		if err != nil {
+			logger.Error("Redis缓存初始化失败，回退到磁盘缓存: %v", err)
+			// Redis失败时回退到磁盘缓存
+			diskCache = NewDiskCache(cfg)
+			if err := diskCache.Init(); err != nil {
+				return nil, fmt.Errorf("磁盘缓存初始化也失败: %w", err)
+			}
+			logger.Info("已回退到磁盘缓存")
+		} else {
+			logger.Info("Redis集群缓存已启用")
+		}
+	} else {
+		// 使用磁盘缓存
+		diskCache = NewDiskCache(cfg)
+		if err := diskCache.Init(); err != nil {
+			return nil, err
+		}
+		logger.Info("磁盘缓存已启用")
 	}
 
+	// 内存缓存始终启用
 	memoryCache, err := NewMemoryCache(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	logger.Info("本地缓存已启用")
 	return &CacheManager{
 		diskCache:   diskCache,
+		redisCache:  redisCache,
 		memoryCache: memoryCache,
 		config:      cfg,
 	}, nil
@@ -630,9 +656,107 @@ func (cm *CacheManager) GetDiskCache() *DiskCache {
 	return cm.diskCache
 }
 
+// GetRedisCache 获取Redis缓存
+func (cm *CacheManager) GetRedisCache() *RedisCache {
+	return cm.redisCache
+}
+
 // GetMemoryCache 获取内存缓存
 func (cm *CacheManager) GetMemoryCache() *MemoryCache {
 	return cm.memoryCache
+}
+
+// GetL2Cache 获取L2缓存（Redis或磁盘）
+func (cm *CacheManager) GetL2Cache() interface{} {
+	if cm.redisCache != nil {
+		return cm.redisCache
+	}
+	return cm.diskCache
+}
+
+// GetL2CacheStats 获取L2缓存统计信息
+func (cm *CacheManager) GetL2CacheStats() *CacheStats {
+	if cm.redisCache != nil {
+		return cm.redisCache.GetStats()
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.GetStats()
+	}
+	return &CacheStats{}
+}
+
+// ClearL2Cache 清空L2缓存
+func (cm *CacheManager) ClearL2Cache() error {
+	if cm.redisCache != nil {
+		return cm.redisCache.Clear()
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.Clear()
+	}
+	return nil
+}
+
+// GetL2CacheKeys 获取L2缓存键列表
+func (cm *CacheManager) GetL2CacheKeys(limitStr, offsetStr string) ([]string, error) {
+	if cm.redisCache != nil {
+		return cm.redisCache.GetKeys(limitStr, offsetStr)
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.GetKeys(limitStr, offsetStr)
+	}
+	return []string{}, nil
+}
+
+// SearchL2Cache 搜索L2缓存
+func (cm *CacheManager) SearchL2Cache(query string) ([]*CacheMeta, error) {
+	if cm.redisCache != nil {
+		return cm.redisCache.Search(query)
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.Search(query)
+	}
+	return []*CacheMeta{}, nil
+}
+
+// GetFromL2Cache 从L2缓存获取数据
+func (cm *CacheManager) GetFromL2Cache(key string) (*CacheItem, error) {
+	if cm.redisCache != nil {
+		return cm.redisCache.Get(key)
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.Get(key)
+	}
+	return nil, nil
+}
+
+// SetToL2Cache 设置L2缓存数据
+func (cm *CacheManager) SetToL2Cache(key string, value *CacheItem, contentType string) error {
+	if cm.redisCache != nil {
+		return cm.redisCache.Set(key, value, contentType)
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.Set(key, value, contentType)
+	}
+	return nil
+}
+
+// DeleteFromL2Cache 从L2缓存删除数据
+func (cm *CacheManager) DeleteFromL2Cache(key string) error {
+	if cm.redisCache != nil {
+		return cm.redisCache.Delete(key)
+	}
+	if cm.diskCache != nil {
+		return cm.diskCache.Delete(key)
+	}
+	return nil
+}
+
+// Close 关闭缓存管理器
+func (cm *CacheManager) Close() error {
+	if cm.redisCache != nil {
+		return cm.redisCache.Close()
+	}
+	return nil
 }
 
 // GetStats 获取磁盘缓存统计信息

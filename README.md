@@ -26,7 +26,27 @@
   - 🔀 灵活的请求转发规则
   - 🛠️ 支持自定义响应处理
 
-### 2. ⚖️ 负载均衡
+### 2. 🔒 API安全保护
+
+Go版本新增API安全保护机制：
+
+- **API密钥验证**: 敏感操作需要API密钥
+- **白名单机制**: 健康检查等端点无需验证
+- **审计日志**: 记录敏感操作的访问信息
+- **请求验证**: 防止无效的缓存清理请求
+
+**敏感端点保护**:
+- `/cache/clear` - 缓存清理 (高危)
+- `/cache/keys` - 缓存键列表 (中危)
+- `/config` - 配置信息 (中危)
+
+**白名单端点** (无需API密钥):
+- `/health` - 健康检查
+- `/status` - 服务器状态
+- `/stats` - 统计信息
+- `/upstream` - 上游代理状态
+
+### 3. ⚖️ 负载均衡
 - **动态权重计算**
   - ⏱️ 基于响应时间的实时权重调整
   - 📊 支持基础权重（长期表现）
@@ -224,6 +244,133 @@ docker logs --tail 100 tmdb-proxy
    - 调整`REQUEST_TIMEOUT`（建议: 5000ms）
    - 调整`UNHEALTHY_TIMEOUT`（建议: 5分钟）
    - 调整`MAX_ERRORS_BEFORE_UNHEALTHY`（建议: 3-5）
+
+## 🔒 API安全保护
+
+Go版本实现了全面的API安全保护机制，防止未经授权的访问和操作。
+
+### 安全特性
+
+- **API密钥验证**: 敏感端点需要有效的API密钥
+- **白名单机制**: 健康检查等监控端点无需验证
+- **请求验证**: 防止无效参数的缓存清理操作
+- **审计日志**: 记录所有敏感操作的访问信息
+
+### 配置API密钥
+
+```bash
+# 1. 设置环境变量 (强烈推荐)
+export API_KEY=your_secure_api_key_here
+
+# 2. 启动程序
+docker-compose up
+```
+
+### 端点安全等级
+
+| 端点 | 风险等级 | 保护要求 | 说明 |
+|------|----------|----------|------|
+| `/cache/clear` | 🔴 高危 | API密钥+确认 | 清除所有缓存 |
+| `/cache/keys` | 🟡 中危 | API密钥 | 暴露缓存键信息 |
+| `/config` | 🟡 中危 | API密钥 | 暴露服务器配置 |
+| `/cache/info` | ⚠️ 低危 | API密钥 | 缓存统计信息 |
+| `/cache/search` | ⚠️ 低危 | API密钥 | 缓存搜索功能 |
+| `/health` | ✅ 安全 | 无需密钥 | 健康检查 |
+| `/status` | ✅ 安全 | 无需密钥 | 服务器状态 |
+| `/stats` | ✅ 安全 | 无需密钥 | 统计信息 |
+| `/upstream` | ✅ 安全 | 无需密钥 | 上游代理状态 |
+
+### 使用示例
+
+```bash
+# ✅ 健康检查 - 无需API密钥
+curl http://localhost:6635/health
+
+# ✅ 服务器状态 - 无需API密钥
+curl http://localhost:6635/status
+
+# ❌ 缓存清理 - 需要API密钥
+curl -X POST http://localhost:6635/cache/clear
+# 返回: {"error": "API key required"}
+
+# ✅ 缓存清理 - 使用API密钥
+curl -X POST http://localhost:6635/cache/clear?confirm=yes \
+  -H "X-API-Key: your_secure_api_key_here"
+
+# ✅ 缓存清理 - 清除特定类型
+curl -X POST http://localhost:6635/cache/clear?type=memory \
+  -H "X-API-Key: your_secure_api_key_here"
+```
+
+### 安全建议
+
+1. **生产环境必须设置API_KEY**
+2. **定期更换API密钥**
+3. **监控敏感端点的访问日志**
+4. **使用强密码作为API密钥**
+5. **限制API密钥的网络访问范围**
+
+## 🔗 嵌套代理检测
+
+### 功能说明
+Go版本支持检测上游服务器是否也是基于相同程序部署的代理服务器。当检测到嵌套代理时，可以实现缓存清理的联动功能。
+
+### 工作原理
+1. **程序标识**: 所有响应都包含 `X-TMDB-Proxy` 和 `X-TMDB-Proxy-Version` 头信息
+2. **自动检测**: 代理请求时自动检测上游服务器的响应头
+3. **联动清理**: 清理本地缓存时自动调用上游代理的缓存清理API
+
+### 配置选项
+```bash
+# 启用嵌套代理检测 (默认: true)
+export ENABLE_NESTED_PROXY_DETECTION=true
+```
+
+### 查看上游代理状态
+```bash
+curl http://localhost:6635/upstream
+```
+
+响应示例:
+```json
+{
+  "enabled": true,
+  "total_upstream_servers": 2,
+  "tmdb_proxy_servers": 1,
+  "upstream_servers": [
+    {
+      "url": "https://api.example.com",
+      "is_tmdb_proxy": true,
+      "version": "1.0",
+      "last_checked": "2025-11-20T10:30:00Z",
+      "check_count": 15
+    },
+    {
+      "url": "https://another-api.com",
+      "is_tmdb_proxy": false,
+      "version": "",
+      "last_checked": "2025-11-20T10:25:00Z",
+      "check_count": 8
+    }
+  ]
+}
+```
+
+### 联动缓存清理
+当启用嵌套代理检测时，执行本地缓存清理会自动触发上游TMDB代理的缓存清理:
+
+```bash
+# 清理所有缓存 (包括上游代理)
+curl -X POST http://localhost:6635/cache/clear
+```
+
+日志输出示例:
+```
+检测到上游服务器 https://api.example.com 也是TMDB代理程序 (版本: 1.0)
+开始执行上游代理缓存清理联动 (类型: all)
+调用上游代理缓存清理API: https://api.example.com/cache/clear?type=all
+成功清理上游代理 https://api.example.com 的缓存 (类型: all)
+```
 
 ## �� 许可证
 

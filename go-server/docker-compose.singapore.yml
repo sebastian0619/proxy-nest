@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # TMDB Go代理服务
+  tmdb-go-proxy:
+    build: .
+    container_name: tmdb-go-proxy-singapore
+    ports:
+      - "6635:6635"
+    environment:
+      # 基础配置
+      - PORT=6635
+      - LOG_LEVEL=info
+      
+      # Redis集群配置 (包含所有地域节点)
+      - USE_REDIS=true
+      - REDIS_CLUSTER_NODES=singapore.your-domain.com:6379,shanghai.your-domain.com:6379,seoul.your-domain.com:6379,osaka.your-domain.com:6379,amsterdam.your-domain.com:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_POOL_SIZE=15
+      - REDIS_MIN_IDLE_CONNS=3
+      - REDIS_CONNECT_TIMEOUT=5
+      - REDIS_READ_TIMEOUT=3
+      - REDIS_WRITE_TIMEOUT=3
+      
+      # 优化的TTL配置
+      - JSON_MEMORY_TTL=15
+      - JSON_DISK_TTL=360
+      - IMAGE_MEMORY_TTL=30
+      - IMAGE_DISK_TTL=10080
+      
+      # TMDB配置
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - UPSTREAM_TYPE=tmdb-api
+      
+    depends_on:
+      - redis-singapore
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+
+  # 新加坡Redis节点 (主节点)
+  redis-singapore:
+    image: redis:7-alpine
+    container_name: redis-singapore
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-singapore-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 15000
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Redis管理界面 (仅在新加坡部署)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=singapore:singapore.your-domain.com:6379,shanghai:shanghai.your-domain.com:6379,seoul:seoul.your-domain.com:6379,osaka:osaka.your-domain.com:6379,amsterdam:amsterdam.your-domain.com:6379
+    networks:
+      - tmdb-network
+    restart: unless-stopped
+
+volumes:
+  redis-singapore-data:
+    driver: local
+
+networks:
+  tmdb-network:
+    driver: bridge
+

@@ -1,0 +1,79 @@
+name: Release Multi-Arch Docker Images
+
+on:
+  # 禁用JS release构建
+  workflow_dispatch:
+    inputs:
+      enable_js_release:
+        description: 'Enable JS release build (disabled by default)'
+        required: false
+        default: 'false'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/proxy-js
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: Create Release Assets
+        run: |
+          echo "## Docker Images" >> $GITHUB_OUTPUT
+          echo "The following Docker images have been built and pushed:" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Supported Architectures:" >> $GITHUB_OUTPUT
+          echo "- linux/amd64 (Intel/AMD x86_64)" >> $GITHUB_OUTPUT
+          echo "- linux/arm64 (ARM 64-bit, Apple Silicon, etc.)" >> $GITHUB_OUTPUT
+          echo "- linux/arm/v7 (ARM 32-bit v7)" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Pull Command:" >> $GITHUB_OUTPUT
+          echo "```bash" >> $GITHUB_OUTPUT
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "```" >> $GITHUB_OUTPUT 

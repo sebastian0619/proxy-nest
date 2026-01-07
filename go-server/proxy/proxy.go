@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"proxy-nest-go/cache"
-	"proxy-nest-go/config"
-	"proxy-nest-go/health"
-	"proxy-nest-go/logger"
+	"main/cache"
+	"main/config"
+	"main/health"
+	"main/logger"
 )
 
 // ProxyResponse 代理响应
@@ -33,6 +33,17 @@ type ProxyManager struct {
 	healthManager *health.HealthManager
 	client        *http.Client
 	mutex         sync.RWMutex
+	// 上游服务器嵌套代理检测
+	upstreamProxies map[string]*UpstreamProxyInfo
+}
+
+// UpstreamProxyInfo 上游代理信息
+type UpstreamProxyInfo struct {
+	URL           string    // 上游服务器URL
+	IsTMDBProxy   bool      // 是否为TMDB代理
+	Version       string    // 代理版本
+	LastChecked   time.Time // 最后检查时间
+	CheckCount    int       // 检查次数
 }
 
 // NewProxyManager 创建代理管理器
@@ -72,10 +83,11 @@ func NewProxyManager(cfg *config.Config, cacheManager *cache.CacheManager, healt
 		transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
 
 	return &ProxyManager{
-		config:        cfg,
-		cacheManager:  cacheManager,
-		healthManager: healthManager,
-		client:        client,
+		config:          cfg,
+		cacheManager:    cacheManager,
+		healthManager:   healthManager,
+		client:          client,
+		upstreamProxies: make(map[string]*UpstreamProxyInfo),
 	}
 }
 
@@ -108,7 +120,7 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 	}
 
 	// 处理响应
-	return pm.processResponse(response)
+	return pm.processResponse(response, server.URL)
 }
 
 // selectUpstreamServer 选择上游服务器
@@ -440,10 +452,13 @@ func isValidImage(data []byte) bool {
 }
 
 // processResponse 处理响应
-func (pm *ProxyManager) processResponse(resp *http.Response) (*ProxyResponse, error) {
+func (pm *ProxyManager) processResponse(resp *http.Response, serverURL string) (*ProxyResponse, error) {
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
+
+	// 检测上游服务器是否为TMDB代理
+	pm.detectUpstreamProxy(resp, serverURL)
 
 	// 根据上游类型处理响应
 	var responseData interface{}
@@ -810,4 +825,130 @@ func (pm *ProxyManager) updateServerPerformance(serverURL string, responseTime t
 		pm.healthManager.UpdateConnectionRate(server, true, responseTime) // 成功，包含响应时间
 		logger.Debug("更新服务器 %s 性能指标: 响应时间=%v, 连接率更新", serverURL, responseTime)
 	}
+}
+
+// detectUpstreamProxy 检测上游服务器是否为TMDB代理
+func (pm *ProxyManager) detectUpstreamProxy(resp *http.Response, serverURL string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
+	// 检查响应头是否包含TMDB代理标识符
+	proxyHeader := resp.Header.Get("X-TMDB-Proxy")
+	versionHeader := resp.Header.Get("X-TMDB-Proxy-Version")
+
+	if proxyHeader != "" {
+		// 找到匹配的上游代理
+		info := pm.upstreamProxies[serverURL]
+		if info == nil {
+			info = &UpstreamProxyInfo{
+				URL:         serverURL,
+				IsTMDBProxy: true,
+				Version:     versionHeader,
+				LastChecked: time.Now(),
+				CheckCount:  1,
+			}
+			logger.Info("检测到上游服务器 %s 也是TMDB代理程序 (版本: %s)", serverURL, versionHeader)
+		} else {
+			info.IsTMDBProxy = true
+			info.Version = versionHeader
+			info.LastChecked = time.Now()
+			info.CheckCount++
+		}
+		pm.upstreamProxies[serverURL] = info
+	} else {
+		// 如果没有检测到标识符，也记录这个服务器（标记为非代理）
+		if info := pm.upstreamProxies[serverURL]; info == nil {
+			pm.upstreamProxies[serverURL] = &UpstreamProxyInfo{
+				URL:         serverURL,
+				IsTMDBProxy: false,
+				Version:     "",
+				LastChecked: time.Now(),
+				CheckCount:  1,
+			}
+		}
+	}
+}
+
+// IsUpstreamTMDBProxy 检查上游服务器是否为TMDB代理
+func (pm *ProxyManager) IsUpstreamTMDBProxy(serverURL string) (bool, string) {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+
+	info := pm.upstreamProxies[serverURL]
+	if info != nil && info.IsTMDBProxy {
+		return true, info.Version
+	}
+	return false, ""
+}
+
+// GetUpstreamProxyInfo 获取所有上游代理信息
+func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+
+	result := make(map[string]*UpstreamProxyInfo)
+	for k, v := range pm.upstreamProxies {
+		result[k] = v
+	}
+	return result
+}
+
+// performUpstreamCacheClear 执行上游代理缓存清理
+func (pm *ProxyManager) performUpstreamCacheClear(cacheType string) {
+	logger.Info("开始执行上游代理缓存清理联动 (类型: %s)", cacheType)
+
+	upstreamInfo := pm.GetUpstreamProxyInfo()
+	if len(upstreamInfo) == 0 {
+		logger.Info("没有检测到上游代理服务器，跳过联动清理")
+		return
+	}
+
+	for serverURL, info := range upstreamInfo {
+		if !info.IsTMDBProxy {
+			logger.Debug("上游服务器 %s 不是TMDB代理，跳过", serverURL)
+			continue
+		}
+
+		// 异步清理每个上游代理的缓存
+		go func(url string, cacheType string) {
+			if err := pm.clearUpstreamCache(url, cacheType); err != nil {
+				logger.Warn("清理上游代理 %s 缓存失败: %v", url, err)
+			} else {
+				logger.Info("成功清理上游代理 %s 的缓存 (类型: %s)", url, cacheType)
+			}
+		}(serverURL, cacheType)
+	}
+}
+
+// clearUpstreamCache 清理上游代理的缓存
+func (pm *ProxyManager) clearUpstreamCache(serverURL string, cacheType string) error {
+	// 构建上游缓存清理API的URL
+	clearURL := fmt.Sprintf("%s/cache/clear?type=%s", serverURL, cacheType)
+
+	logger.Info("调用上游代理缓存清理API: %s", clearURL)
+
+	// 创建请求
+	req, err := http.NewRequest("POST", clearURL, nil)
+	if err != nil {
+		return fmt.Errorf("创建上游缓存清理请求失败: %v", err)
+	}
+
+	// 设置User-Agent标识这是一个联动清理请求
+	req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (cache-clear-linkage)")
+	req.Header.Set("X-Cache-Clear-Linkage", "true")
+
+	// 发送请求
+	resp, err := pm.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("发送上游缓存清理请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查响应状态
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("上游缓存清理请求失败，状态码: %d", resp.StatusCode)
+	}
+
+	logger.Info("上游代理 %s 缓存清理完成", serverURL)
+	return nil
 }

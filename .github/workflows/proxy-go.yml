@@ -2,9 +2,9 @@ name: Build and Push TMDB Proxy Go (Multi-Arch)
 
 on:
   push:
-    branches: [ JS ]
+    branches: [ main ]
   pull_request:
-    branches: [ JS ]
+    branches: [ main ]
   workflow_dispatch:
 
 env:

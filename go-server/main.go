@@ -465,7 +465,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 			// 如果启用了嵌套代理检测，尝试联动清理上游代理的内存缓存
 			if cfg.EnableNestedProxyDetection {
-				go pm.performUpstreamCacheClear("memory")
+				go proxyManager.performUpstreamCacheClear("memory")
 			}
 
 		case "l2":
@@ -498,7 +498,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 				// 如果启用了嵌套代理检测，尝试联动清理上游代理的L2缓存
 				if cfg.EnableNestedProxyDetection {
-					go pm.performUpstreamCacheClear("l2")
+					go proxyManager.performUpstreamCacheClear("l2")
 				}
 			}
 
@@ -554,7 +554,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 				// 如果启用了嵌套代理检测，尝试联动清理上游代理的所有缓存
 				if cfg.EnableNestedProxyDetection {
-					go pm.performUpstreamCacheClear("all")
+					go proxyManager.performUpstreamCacheClear("all")
 				}
 			}
 		}

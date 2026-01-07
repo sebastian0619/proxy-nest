@@ -1,50 +1,49 @@
-version: '3'
-
 services:
-  tmdb-proxy:
-    image: ghcr.io/sebastian0619/proxy-nest/proxy-js:latest
-    container_name: tmdb-proxy
+  tmdb-api:
+    image: ghcr.io/sebastian0619/proxy-nest/proxy-go:test
+    container_name: tmdb-api
     ports:
       - "6635:6635"
+    env_file:
+      - .env
     environment:
-      # 服务器配置
-      - PORT=3000
-      - NUM_WORKERS=4                # 工作线程数，建议设置为CPU核心数-1
-      - TZ=Asia/Shanghai            # 时区
-      
-      # TMDB配置
-      - UPSTREAM_TYPE=tmdb-api       # 上游服务器类型：tmdb-api 或 tmdb-image
-      - TMDB_API_KEY=your_api_key    # 替换为你的TMDB API密钥
-      - TMDB_IMAGE_TEST_URL=/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.png
-      
-      # 上游服务器列表
-      - UPSTREAM_SERVERS=https://api.themoviedb.org,https://api.tmdb.org
-      
-      # 缓存配置
-      - CACHE_DIR=/app/cache
-      - CACHE_MAX_SIZE=1000          # 磁盘缓存最大条目数
-      
-      # 内存缓存配置
-      - MEMORY_CACHE_SIZE=1000       # 内存缓存条目数
-      - MEMORY_CACHE_TTL=3600000     # 内存缓存过期时间（1小时）
-      - MEMORY_CACHE_CLEANUP_INTERVAL=60000  # 内存缓存清理间隔（1分钟）
-      
-      # 磁盘缓存配置
-      - DISK_CACHE_TTL=86400000      # 磁盘缓存过期时间（24小时）
-      - DISK_CACHE_CLEANUP_INTERVAL=3600000  # 磁盘缓存清理间隔（1小时）
-      
-      
-      # 健康检查配置
-      - REQUEST_TIMEOUT=5000        # 请求超时时间（5秒）
-      - UNHEALTHY_TIMEOUT=300000    # 不健康状态超时（5分钟）
-      - MAX_ERRORS_BEFORE_UNHEALTHY=3
-      - HEALTH_CHECK_INTERVAL=30000 # 健康检查间隔（30秒）
-      
-      # 负载均衡配置
-      - BASE_WEIGHT_MULTIPLIER=20    # 基础权重乘数
-      - DYNAMIC_WEIGHT_MULTIPLIER=50 # 动态权重乘数
-      - ALPHA_INITIAL=0.5           # 初始alpha值
-      - ALPHA_ADJUSTMENT_STEP=0.1   # alpha调整步长
+      # 服务特定配置覆盖
+      - UPSTREAM_TYPE=${UPSTREAM_TYPE_API}
+      - UPSTREAM_SERVERS=${UPSTREAM_SERVERS_API}
+      - DISK_CACHE_CLEANUP_INTERVAL=${DISK_CACHE_CLEANUP_INTERVAL_API}
+      - MEMORY_CACHE_CLEANUP_INTERVAL=${MEMORY_CACHE_CLEANUP_INTERVAL_API}
+      - CACHE_TTL=${CACHE_TTL_API}
+      # - HTTP_PROXY=${HTTP_PROXY_API}  # 可选代理
     volumes:
       - ./cache:/app/cache
-    restart: unless-stopped
+    restart: always
+    networks:
+      - tmdb
+
+  tmdb-image:
+    build:
+      context: ./go-server
+      dockerfile: Dockerfile.local
+    container_name: tmdb-image
+    ports:
+      - "6633:6635"
+    env_file:
+      - .env
+    environment:
+      # 服务特定配置覆盖
+      - UPSTREAM_TYPE=${UPSTREAM_TYPE_IMAGE}
+      - UPSTREAM_SERVERS=${UPSTREAM_SERVERS_IMAGE}
+      - DISK_CACHE_CLEANUP_INTERVAL=${DISK_CACHE_CLEANUP_INTERVAL_IMAGE}
+      - MEMORY_CACHE_CLEANUP_INTERVAL=${MEMORY_CACHE_CLEANUP_INTERVAL_IMAGE}
+      - CACHE_TTL=${CACHE_TTL_IMAGE}
+      - HTTP_PROXY=${HTTP_PROXY_IMAGE}
+      - TMDB_IMAGE_TEST_URL=${TMDB_IMAGE_TEST_URL}
+    volumes:
+      - ./image:/app/cache
+    restart: always
+    networks:
+      - tmdb
+
+networks:
+  tmdb:
+    driver: bridge
