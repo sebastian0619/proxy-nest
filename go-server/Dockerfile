@@ -36,6 +36,8 @@ RUN echo "验证源代码结构..." && \
     ls -la cache/ config/ health/ logger/ proxy/ && \
     echo "验证cache目录中的Go文件..." && \
     ls -la cache/*.go && \
+    echo "检查redis_cache.go是否存在..." && \
+    test -f cache/redis_cache.go && echo "✓ redis_cache.go存在" || (echo "✗ redis_cache.go不存在" && exit 1) && \
     echo "✓ 源代码结构验证通过"
 
 # 初始化Go模块（确保模块正确初始化）
