@@ -168,11 +168,13 @@ func apiKeyAuth() gin.HandlerFunc {
 
 		// 如果设置了API_KEY，则需要验证；如果未设置，则警告但允许访问
 		if expectedKey != "" && apiKey != expectedKey {
+			// 提供更友好的错误信息（中文）
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":     "API key required",
-				"message":   "Please provide X-API-Key header with valid API key",
+				"error":     "需要API Key验证",
+				"message":   "请设置API_KEY环境变量，并在请求头中提供X-API-Key",
 				"endpoint":  requestPath,
 				"timestamp": time.Now().Format(time.RFC3339),
+				"note":      "API Key只能通过环境变量API_KEY配置，无法在UI中设置",
 			})
 			c.Abort()
 			return
@@ -257,9 +259,12 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// API Key状态检查端点（不需要API Key验证）
 	router.GET("/mapi/api-key-status", func(c *gin.Context) {
 		expectedKey := os.Getenv("API_KEY")
+		hasApiKey := expectedKey != ""
 		c.JSON(http.StatusOK, gin.H{
-			"api_key_required": expectedKey != "",
-			"api_key_set":      expectedKey != "",
+			"api_key_required": hasApiKey,
+			"api_key_set":      hasApiKey,
+			"message":          hasApiKey ? "API Key已从环境变量配置，管理API需要API Key验证" : "API Key未设置，管理API可直接访问",
+			"note":             "API Key只能通过环境变量API_KEY配置，无法在UI中设置",
 			"timestamp":        time.Now().Format(time.RFC3339),
 		})
 	})
@@ -800,9 +805,12 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"tmdb_proxy_servers":   tmdbProxies,
 			"upstream_servers":     upstreamList,
 			"timestamp":            time.Now().Format(time.RFC3339),
+			"note":                 "此端点显示自动检测到的上游代理服务器（通过响应头X-TMDB-Proxy识别）。如需手动配置上游服务器列表用于聚合API，请设置UPSTREAM_PROXY_SERVERS环境变量。",
+			"config_note":          "手动配置上游服务器：export UPSTREAM_PROXY_SERVERS=http://server1:6635,http://server2:6635",
 			"endpoints": gin.H{
-				"upstream_status": "/api/upstream",
-				"cache_clear":     "/mapi/cache/clear",
+				"upstream_status":    "/api/upstream",
+				"upstream_aggregate": "/mapi/upstream/aggregate",
+				"cache_clear":        "/mapi/cache/clear",
 			},
 		})
 	})
@@ -2017,8 +2025,11 @@ func getWebUIHTML() string {
          <div class="header">
              <h1>🎬 TMDB Go Proxy 管理控制台</h1>
              <p style="margin-top: 10px; color: rgba(255,255,255,0.9);">
-                 <span v-if="apiKeyRequired">🔒 API Key已从环境变量加载</span>
+                 <span v-if="apiKeyRequired">🔒 API Key已从环境变量配置（管理API需要API Key验证）</span>
                  <span v-else>ℹ️ API Key未设置（管理API可直接访问）</span>
+             </p>
+             <p v-if="apiKeyRequired" style="margin-top: 5px; color: rgba(255,255,255,0.8); font-size: 12px;">
+                 ⚠️ 注意：API Key只能通过环境变量API_KEY配置，无法在UI中设置。如果管理API调用失败，请检查后端是否设置了API_KEY环境变量。
              </p>
          </div>
 
@@ -2166,7 +2177,10 @@ func getWebUIHTML() string {
                         <template #header>
                             <div class="card-header">🔗 上游服务器状态</div>
                         </template>
-                        <p>查看检测到的嵌套代理服务器状态</p>
+                        <p>查看检测到的嵌套代理服务器状态（自动检测，需要上游服务器返回X-TMDB-Proxy响应头）</p>
+                        <p style="font-size: 12px; color: #666; margin-top: 5px; margin-bottom: 10px;">
+                            💡 提示：此功能自动检测上游代理服务器。如需手动配置上游服务器列表用于聚合API，请设置UPSTREAM_PROXY_SERVERS环境变量。
+                        </p>
                         <el-button type="primary" @click="getUpstreamStatus" :loading="loading.upstream">
                             🔍 检查上游代理
                         </el-button>
@@ -2257,7 +2271,10 @@ func getWebUIHTML() string {
                          if (response.ok) {
                              const data = await response.json();
                              this.apiKeyRequired = data.api_key_required || false;
-                             // 如果环境变量设置了API_KEY，UI不需要处理，后端会自动验证
+                             // 如果环境变量设置了API_KEY，需要提示用户
+                             if (this.apiKeyRequired) {
+                                 console.log('API Key已从环境变量配置，管理API需要API Key验证');
+                             }
                          }
                      } catch (error) {
                          // 忽略错误，可能是网络问题
@@ -2273,11 +2290,8 @@ func getWebUIHTML() string {
                          }
                      };
 
-                     // 如果API Key已从环境变量加载，添加到请求头
-                     if (this.apiKey) {
-                         defaultOptions.headers['X-API-Key'] = this.apiKey;
-                     }
-
+                     // 注意：API Key只能通过环境变量API_KEY配置，前端无法设置
+                     // 如果后端设置了API_KEY，前端请求会失败，需要用户在后端配置
                      const finalOptions = { ...defaultOptions, ...options };
 
                      try {
@@ -2287,7 +2301,7 @@ func getWebUIHTML() string {
                          if (!response.ok) {
                              // 如果是401错误，说明需要API Key
                              if (response.status === 401) {
-                                 throw new Error('需要API Key验证，请设置API_KEY环境变量');
+                                 throw new Error(data.message || '需要API Key验证，请设置API_KEY环境变量');
                              }
                              throw new Error(data.message || data.error || '请求失败');
                          }
