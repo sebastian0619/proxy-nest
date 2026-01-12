@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -249,6 +251,9 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 为API组应用安全中间件
 	apiGroup.Use(apiKeyAuth())
 
+	// 创建公开路由组 - 不需要API Key的端点
+	publicGroup := router.Group("/api")
+
 	// API Key状态检查端点（不需要API Key验证）
 	router.GET("/mapi/api-key-status", func(c *gin.Context) {
 		expectedKey := os.Getenv("API_KEY")
@@ -259,7 +264,18 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 健康检查端点
+	// 健康检查端点 - 公开端点，不需要API Key
+	publicGroup.GET("/health", func(c *gin.Context) {
+		logger.Info("Health check endpoint called")
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "healthy",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
+
+	// 健康检查端点 - 管理端点（需要API Key）
 	apiGroup.GET("/health", func(c *gin.Context) {
 		logger.Info("Health check endpoint called")
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
@@ -270,7 +286,51 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-			// 统计信息端点
+	// 统计信息端点 - 公开端点，不需要API Key
+	publicGroup.GET("/stats", func(c *gin.Context) {
+		// 获取查询参数
+		serverURL := c.Query("server")
+
+		if serverURL != "" {
+			// 查看指定服务器的统计信息
+			stats := healthManager.GetServerStatistics(serverURL)
+			// 将connection_rate转换为百分比
+			if connectionRate, exists := stats["connection_rate"]; exists {
+				if rate, ok := connectionRate.(float64); ok {
+					stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+				}
+			}
+			c.JSON(http.StatusOK, stats)
+		} else {
+			// 查看所有服务器的统计信息
+			// 同时输出到控制台和返回HTTP响应
+			healthManager.PrintServerStatistics()
+
+			// 获取所有服务器的统计信息并返回
+			allStats := healthManager.GetAllServersStatistics()
+			
+			// 将connection_rate转换为百分比
+			for _, stats := range allStats {
+				if connectionRate, exists := stats["connection_rate"]; exists {
+					if rate, ok := connectionRate.(float64); ok {
+						stats["connection_rate"] = fmt.Sprintf("%.2f%%", rate*100)
+					}
+				}
+			}
+			
+			c.JSON(http.StatusOK, gin.H{
+				"message": "统计信息已输出到控制台",
+				"servers": allStats,
+				"endpoints": gin.H{
+					"all_stats":    "/api/stats",
+					"server_stats": "/api/stats?server=<server_url>",
+					"beautify":     "/api/stats/beautify",
+				},
+			})
+		}
+	})
+
+	// 统计信息端点 - 管理端点（需要API Key）
 	apiGroup.GET("/stats", func(c *gin.Context) {
 		// 获取查询参数
 		serverURL := c.Query("server")
@@ -634,7 +694,29 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 服务器状态端点
+	// 服务器状态端点 - 公开端点，不需要API Key
+	publicGroup.GET("/status", func(c *gin.Context) {
+		// 获取系统状态信息
+		uptime := time.Since(startTime)
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":     "running",
+			"uptime":     uptime.String(),
+			"start_time": startTime.Format(time.RFC3339),
+			"timestamp":  time.Now().Format(time.RFC3339),
+			"version":    "tmdb-go-proxy/1.0",
+			"endpoints": gin.H{
+				"health":      "/api/health",
+				"status":      "/api/status",
+				"stats":       "/api/stats",
+				"cache_info":  "/mapi/cache/info",
+				"cache_clear": "/mapi/cache/clear",
+				"upstream":    "/api/upstream",
+			},
+		})
+	})
+
+	// 服务器状态端点 - 管理端点（需要API Key）
 	apiGroup.GET("/status", func(c *gin.Context) {
 		// 获取系统状态信息
 		uptime := time.Since(startTime)
@@ -685,7 +767,47 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 上游代理检测状态端点
+	// 上游代理检测状态端点 - 公开端点，不需要API Key
+	publicGroup.GET("/upstream", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
+
+		// 构建响应数据
+		upstreamList := make([]gin.H, 0, len(upstreamInfo))
+		totalProxies := 0
+		tmdbProxies := 0
+
+		for url, info := range upstreamInfo {
+			upstreamList = append(upstreamList, gin.H{
+				"url":          url,
+				"is_tmdb_proxy": info.IsTMDBProxy,
+				"version":      info.Version,
+				"last_checked": info.LastChecked.Format(time.RFC3339),
+				"check_count":  info.CheckCount,
+			})
+
+			totalProxies++
+			if info.IsTMDBProxy {
+				tmdbProxies++
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"enabled":              cfg.EnableNestedProxyDetection,
+			"total_upstream_servers": totalProxies,
+			"tmdb_proxy_servers":   tmdbProxies,
+			"upstream_servers":     upstreamList,
+			"timestamp":            time.Now().Format(time.RFC3339),
+			"endpoints": gin.H{
+				"upstream_status": "/api/upstream",
+				"cache_clear":     "/mapi/cache/clear",
+			},
+		})
+	})
+
+	// 上游代理检测状态端点 - 管理端点（需要API Key）
 	apiGroup.GET("/upstream", func(c *gin.Context) {
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
@@ -721,6 +843,125 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"endpoints": gin.H{
 				"upstream_status": "/mapi/upstream",
 				"cache_clear":     "/mapi/cache/clear",
+			},
+		})
+	})
+
+	// 上游服务器聚合API端点 - 汇总所有上游服务器的状态和缓存信息
+	apiGroup.GET("/upstream/aggregate", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		// 获取配置的上游服务器列表
+		upstreamServers := cfg.UpstreamProxyServers
+		if len(upstreamServers) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"message": "未配置上游服务器",
+				"servers": []gin.H{},
+				"total":   0,
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 创建HTTP客户端
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+
+		// 获取API Key（用于调用上游服务器）
+		apiKey := os.Getenv("API_KEY")
+
+		// 并发获取所有上游服务器的信息
+		type ServerResult struct {
+			URL    string
+			Status gin.H
+			Cache  gin.H
+			Error  string
+		}
+
+		results := make([]ServerResult, 0, len(upstreamServers))
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		for _, serverURL := range upstreamServers {
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+
+				result := ServerResult{
+					URL: url,
+				}
+
+				// 获取状态信息
+				statusURL := fmt.Sprintf("%s/api/status", url)
+				req, err := http.NewRequest("GET", statusURL, nil)
+				if err == nil {
+					if apiKey != "" {
+						req.Header.Set("X-API-Key", apiKey)
+					}
+					resp, err := client.Do(req)
+					if err == nil {
+						if resp.StatusCode == http.StatusOK {
+							var statusData gin.H
+							if err := json.NewDecoder(resp.Body).Decode(&statusData); err == nil {
+								result.Status = statusData
+							}
+						}
+						resp.Body.Close()
+					}
+				}
+
+				// 获取缓存信息
+				cacheURL := fmt.Sprintf("%s/mapi/cache/info", url)
+				req, err = http.NewRequest("GET", cacheURL, nil)
+				if err == nil {
+					if apiKey != "" {
+						req.Header.Set("X-API-Key", apiKey)
+					}
+					resp, err := client.Do(req)
+					if err == nil {
+						if resp.StatusCode == http.StatusOK {
+							var cacheData gin.H
+							if err := json.NewDecoder(resp.Body).Decode(&cacheData); err == nil {
+								result.Cache = cacheData
+							}
+						}
+						resp.Body.Close()
+					} else {
+						result.Error = err.Error()
+					}
+				} else {
+					result.Error = err.Error()
+				}
+
+				mu.Lock()
+				results = append(results, result)
+				mu.Unlock()
+			}(serverURL)
+		}
+
+		wg.Wait()
+
+		// 构建响应
+		serverList := make([]gin.H, 0, len(results))
+		for _, result := range results {
+			serverList = append(serverList, gin.H{
+				"url":    result.URL,
+				"status": result.Status,
+				"cache":  result.Cache,
+				"error":  result.Error,
+			})
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"servers":   serverList,
+			"total":     len(serverList),
+			"timestamp": time.Now().Format(time.RFC3339),
+			"endpoints": gin.H{
+				"aggregate":    "/mapi/upstream/aggregate",
+				"upstream":     "/mapi/upstream",
+				"cache_clear":  "/mapi/cache/clear",
 			},
 		})
 	})
@@ -1905,6 +2146,37 @@ func getWebUIHTML() string {
                 </div>
             </el-tab-pane>
 
+            <!-- 上游服务器管理标签页 -->
+            <el-tab-pane label="🌐 上游服务器" name="upstream">
+                <div class="card-grid">
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">📊 上游服务器汇总</div>
+                        </template>
+                        <p>汇总所有上游服务器的状态和缓存信息</p>
+                        <el-button type="primary" @click="getUpstreamAggregate" :loading="loading.upstreamAggregate">
+                            📈 获取汇总信息
+                        </el-button>
+                        <div v-if="results.upstreamAggregate" class="result-json">
+                            {{ JSON.stringify(results.upstreamAggregate, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div class="card-header">🔗 上游服务器状态</div>
+                        </template>
+                        <p>查看检测到的嵌套代理服务器状态</p>
+                        <el-button type="primary" @click="getUpstreamStatus" :loading="loading.upstream">
+                            🔍 检查上游代理
+                        </el-button>
+                        <div v-if="results.upstream" class="result-json">
+                            {{ JSON.stringify(results.upstream, null, 2) }}
+                        </div>
+                    </el-card>
+                </div>
+            </el-tab-pane>
+
             <!-- 系统配置标签页 -->
             <el-tab-pane label="⚙️ 系统配置" name="config">
                 <el-card>
@@ -1947,13 +2219,24 @@ func getWebUIHTML() string {
                         health: false,
                         stats: false,
                         upstream: false,
+                        upstreamAggregate: false,
                         cacheInfo: false,
                         clearCache: false,
                         searchCache: false,
                         cacheKeys: false,
                         config: false
                     },
-                    results: {}
+                    results: {
+                        health: null,
+                        stats: null,
+                        upstream: null,
+                        upstreamAggregate: null,
+                        cacheInfo: null,
+                        clearCache: null,
+                        searchCache: null,
+                        cacheKeys: null,
+                        config: null
+                    }
                 }
             },
             computed: {
@@ -2019,10 +2302,38 @@ func getWebUIHTML() string {
                      }
                  },
 
+                 // 公开API请求（不需要API Key）
+                 async publicApiRequest(endpoint, options = {}) {
+                     const url = '/api' + endpoint;
+                     const defaultOptions = {
+                         headers: {
+                             'Content-Type': 'application/json'
+                         }
+                     };
+
+                     const finalOptions = { ...defaultOptions, ...options };
+
+                     try {
+                         const response = await fetch(url, finalOptions);
+                         const data = await response.json();
+
+                         if (!response.ok) {
+                             throw new Error(data.message || data.error || '请求失败');
+                         }
+
+                         return data;
+                     } catch (error) {
+                         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                             throw new Error('网络请求失败，请检查服务器是否运行');
+                         }
+                         throw error;
+                     }
+                 },
+
                  async checkHealth() {
                      this.loading.health = true;
                      try {
-                         const data = await this.apiRequest('/health');
+                         const data = await this.publicApiRequest('/health');
                          this.results.health = data;
                          ElMessage.success('健康检查成功');
                      } catch (error) {
@@ -2036,7 +2347,7 @@ func getWebUIHTML() string {
                  async getStats() {
                      this.loading.stats = true;
                      try {
-                         const data = await this.apiRequest('/stats');
+                         const data = await this.publicApiRequest('/stats');
                          this.results.stats = data;
                          ElMessage.success('统计信息获取成功');
                      } catch (error) {
@@ -2050,7 +2361,7 @@ func getWebUIHTML() string {
                  async getUpstreamStatus() {
                      this.loading.upstream = true;
                      try {
-                         const data = await this.apiRequest('/upstream');
+                         const data = await this.publicApiRequest('/upstream');
                          this.results.upstream = data;
                          ElMessage.success('上游代理状态获取成功');
                      } catch (error) {
@@ -2058,6 +2369,20 @@ func getWebUIHTML() string {
                          ElMessage.error('获取上游代理状态失败: ' + error.message);
                      } finally {
                          this.loading.upstream = false;
+                     }
+                 },
+
+                 async getUpstreamAggregate() {
+                     this.loading.upstreamAggregate = true;
+                     try {
+                         const data = await this.apiRequest('/upstream/aggregate');
+                         this.results.upstreamAggregate = data;
+                         ElMessage.success('上游服务器汇总信息获取成功');
+                     } catch (error) {
+                         this.results.upstreamAggregate = { error: error.message };
+                         ElMessage.error('获取上游服务器汇总信息失败: ' + error.message);
+                     } finally {
+                         this.loading.upstreamAggregate = false;
                      }
                  },
 

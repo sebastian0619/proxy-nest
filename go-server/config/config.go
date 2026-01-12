@@ -88,6 +88,9 @@ type Config struct {
 
 	// 嵌套代理检测配置
 	EnableNestedProxyDetection bool
+
+	// 上游代理服务器配置（用于同一套系统的其他实例）
+	UpstreamProxyServers []string
 }
 
 // LoadConfig 加载配置
@@ -173,6 +176,9 @@ func LoadConfig() *Config {
 
 	// 嵌套代理检测配置
 	config.EnableNestedProxyDetection = getEnvAsBool("ENABLE_NESTED_PROXY_DETECTION", true)
+
+	// 上游代理服务器配置（用于同一套系统的其他实例）
+	config.UpstreamProxyServers = getEnvAsStringSlice("UPSTREAM_PROXY_SERVERS", []string{})
 
 	return config
 }
