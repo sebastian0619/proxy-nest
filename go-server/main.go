@@ -147,10 +147,11 @@ func apiKeyAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 白名单端点 - 无需身份验证
 		whitelist := []string{
-			"/health",   // 健康检查
-			"/status",   // 服务器状态
-			"/stats",    // 统计信息
-			"/upstream", // 上游代理状态
+			"/health",     // 健康检查
+			"/status",     // 服务器状态
+			"/stats",      // 统计信息
+			"/upstream",   // 上游代理状态
+			"/cache/clear", // 清理缓存（常用操作，不需要API Key）
 		}
 
 		// 检查是否在白名单中
@@ -777,42 +778,198 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
 
+		// 获取自动检测到的上游服务器
 		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
 
-		// 构建响应数据
-		upstreamList := make([]gin.H, 0, len(upstreamInfo))
-		totalProxies := 0
-		tmdbProxies := 0
+		// 获取手动配置的上游服务器列表
+		configuredServers := cfg.UpstreamProxyServers
+		configuredServerMap := make(map[string]bool)
+		for _, url := range configuredServers {
+			configuredServerMap[url] = true
+		}
 
+		// 构建响应数据
+		upstreamList := make([]gin.H, 0)
+		autoDetectedCount := 0
+		tmdbProxies := 0
+		configuredCount := 0
+
+		// 添加自动检测到的服务器
 		for url, info := range upstreamInfo {
 			upstreamList = append(upstreamList, gin.H{
-				"url":          url,
+				"url":           url,
 				"is_tmdb_proxy": info.IsTMDBProxy,
 				"version":      info.Version,
 				"last_checked": info.LastChecked.Format(time.RFC3339),
 				"check_count":  info.CheckCount,
+				"source":       "auto_detected", // 标记为自动检测
 			})
 
-			totalProxies++
+			autoDetectedCount++
 			if info.IsTMDBProxy {
 				tmdbProxies++
 			}
 		}
 
+		// 添加手动配置的服务器（如果不在自动检测列表中）
+		for _, url := range configuredServers {
+			if _, exists := upstreamInfo[url]; !exists {
+				// 手动配置的服务器，尝试检测是否为TMDB代理
+				isTMDBProxy := false
+				version := ""
+				
+				// 如果启用了嵌套代理检测，可以尝试快速检测
+				if cfg.EnableNestedProxyDetection {
+					// 这里可以添加一个快速检测逻辑，但为了不阻塞响应，暂时标记为未知
+					// 实际检测会在后续请求中自动进行
+				}
+
+				upstreamList = append(upstreamList, gin.H{
+					"url":           url,
+					"is_tmdb_proxy": isTMDBProxy,
+					"version":       version,
+					"last_checked": time.Now().Format(time.RFC3339),
+					"check_count":  0,
+					"source":       "configured", // 标记为手动配置
+				})
+
+				configuredCount++
+				if isTMDBProxy {
+					tmdbProxies++
+				}
+			} else {
+				// 如果已经在自动检测列表中，标记为同时存在
+				configuredCount++
+			}
+		}
+
+		totalProxies := len(upstreamList)
+
 		c.JSON(http.StatusOK, gin.H{
-			"enabled":              cfg.EnableNestedProxyDetection,
+			"enabled":                cfg.EnableNestedProxyDetection,
 			"total_upstream_servers": totalProxies,
-			"tmdb_proxy_servers":   tmdbProxies,
-			"upstream_servers":     upstreamList,
-			"timestamp":            time.Now().Format(time.RFC3339),
-			"note":                 "此端点显示自动检测到的上游代理服务器（通过响应头X-TMDB-Proxy识别）。如需手动配置上游服务器列表用于聚合API，请设置UPSTREAM_PROXY_SERVERS环境变量。",
-			"config_note":          "手动配置上游服务器：export UPSTREAM_PROXY_SERVERS=http://server1:6635,http://server2:6635",
+			"tmdb_proxy_servers":     tmdbProxies,
+			"auto_detected_count":    autoDetectedCount,
+			"configured_count":       len(configuredServers),
+			"upstream_servers":       upstreamList,
+			"timestamp":              time.Now().Format(time.RFC3339),
+			"note":                   "此端点显示自动检测到的上游代理服务器（通过响应头X-TMDB-Proxy识别）和手动配置的服务器列表。自动检测需要上游服务器返回X-TMDB-Proxy响应头（需要上游服务器也更新到此版本）。",
+			"config_note":            "手动配置上游服务器：export UPSTREAM_PROXY_SERVERS=http://server1:6635,http://server2:6635",
+			"detection_note":          "自动检测需要上游服务器返回X-TMDB-Proxy响应头。如果上游服务器还没有更新到此版本，将无法自动检测，但可以通过UPSTREAM_PROXY_SERVERS环境变量手动配置。",
 			"endpoints": gin.H{
 				"upstream_status":    "/api/upstream",
 				"upstream_aggregate": "/mapi/upstream/aggregate",
-				"cache_clear":        "/mapi/cache/clear",
+				"cache_clear":        "/api/cache/clear",
 			},
 		})
+	})
+
+	// 清除缓存端点 - 公开版本（不需要API Key）
+	publicGroup.POST("/cache/clear", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		// 🔒 验证请求参数
+		if !validateCacheClearRequest(c) {
+			return
+		}
+
+		// 获取查询参数，决定清除哪种类型的缓存
+		cacheType := c.Query("type")
+
+		// 📊 审计日志 - 记录缓存清理操作
+		logger.Info("缓存清理操作（公开端点）- 类型: %s, IP: %s, User-Agent: %s",
+			cacheType, c.ClientIP(), c.GetHeader("User-Agent"))
+
+		var result gin.H
+		var status int
+
+		switch cacheType {
+		case "memory":
+			// 只清除内存缓存
+			cacheManager.GetMemoryCache().Clear()
+			result = gin.H{
+				"message":   "内存缓存已清除",
+				"type":      "memory",
+				"timestamp": time.Now().Format(time.RFC3339),
+			}
+			status = http.StatusOK
+			logger.Info("内存缓存已通过API清除（公开端点）")
+
+		case "l2":
+			// 清除L2缓存（Redis或磁盘缓存）
+			if err := cacheManager.ClearL2Cache(); err != nil {
+				cacheTypeName := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheTypeName = "Redis"
+				}
+				result = gin.H{
+					"error":     fmt.Sprintf("清除%s缓存失败", cacheTypeName),
+					"message":   err.Error(),
+					"type":      "l2",
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusInternalServerError
+				logger.Error("清除L2缓存失败（公开端点）: %v", err)
+			} else {
+				cacheTypeName := "磁盘"
+				if cacheManager.GetConfig().UseRedis {
+					cacheTypeName = "Redis"
+				}
+				result = gin.H{
+					"message":   fmt.Sprintf("%s缓存已清除", cacheTypeName),
+					"type":      "l2",
+					"backend":   cacheTypeName,
+					"timestamp": time.Now().Format(time.RFC3339),
+				}
+				status = http.StatusOK
+				logger.Info("%s缓存已通过API清除（公开端点）", cacheTypeName)
+			}
+
+		case "all":
+			// 清除所有缓存
+			confirm := c.Query("confirm")
+			if confirm != "yes" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":     "清除所有缓存需要确认",
+					"message":   "请在查询参数中添加 confirm=yes 以确认清除所有缓存",
+					"timestamp": time.Now().Format(time.RFC3339),
+				})
+				return
+			}
+
+			// 清除内存缓存
+			cacheManager.GetMemoryCache().Clear()
+			// 清除L2缓存
+			if err := cacheManager.ClearL2Cache(); err != nil {
+				logger.Warn("清除L2缓存时出错（公开端点）: %v", err)
+			}
+
+			result = gin.H{
+				"message":   "所有缓存已清除",
+				"type":      "all",
+				"timestamp": time.Now().Format(time.RFC3339),
+			}
+			status = http.StatusOK
+			logger.Info("所有缓存已通过API清除（公开端点）")
+
+		default:
+			// 默认清除所有缓存
+			cacheManager.GetMemoryCache().Clear()
+			if err := cacheManager.ClearL2Cache(); err != nil {
+				logger.Warn("清除L2缓存时出错（公开端点）: %v", err)
+			}
+
+			result = gin.H{
+				"message":   "所有缓存已清除（默认）",
+				"type":      "all",
+				"timestamp": time.Now().Format(time.RFC3339),
+			}
+			status = http.StatusOK
+			logger.Info("所有缓存已通过API清除（公开端点，默认）")
+		}
+
+		c.JSON(status, result)
 	})
 
 	// 上游代理检测状态端点 - 管理端点（需要API Key）
@@ -2328,14 +2485,14 @@ func getWebUIHTML() string {
                      const finalOptions = { ...defaultOptions, ...options };
 
                      try {
-                         const response = await fetch(url, finalOptions);
-                         const data = await response.json();
+                     const response = await fetch(url, finalOptions);
+                     const data = await response.json();
 
-                         if (!response.ok) {
-                             throw new Error(data.message || data.error || '请求失败');
-                         }
+                     if (!response.ok) {
+                         throw new Error(data.message || data.error || '请求失败');
+                     }
 
-                         return data;
+                     return data;
                      } catch (error) {
                          if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
                              throw new Error('网络请求失败，请检查服务器是否运行');
@@ -2439,7 +2596,8 @@ func getWebUIHTML() string {
                              queryParams = '?type=' + type;
                          }
                          
-                         const data = await this.apiRequest(
+                         // 使用公开端点清理缓存（不需要API Key）
+                         const data = await this.publicApiRequest(
                              '/cache/clear' + queryParams,
                              { method: 'POST' }
                          );
@@ -2519,9 +2677,9 @@ func getWebUIHTML() string {
                  this.checkApiKeyStatus();
                  
                  // 页面加载时自动检查健康状态
-                 setTimeout(() => {
-                     this.checkHealth();
-                 }, 1000);
+                     setTimeout(() => {
+                         this.checkHealth();
+                     }, 1000);
              }
         }).use(ElementPlus).mount('#app');
     </script>
