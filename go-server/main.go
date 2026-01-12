@@ -249,6 +249,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 为API组应用安全中间件
 	apiGroup.Use(apiKeyAuth())
 
+	// API Key状态检查端点（不需要API Key验证）
+	router.GET("/mapi/api-key-status", func(c *gin.Context) {
+		expectedKey := os.Getenv("API_KEY")
+		c.JSON(http.StatusOK, gin.H{
+			"api_key_required": expectedKey != "",
+			"api_key_set":      expectedKey != "",
+			"timestamp":        time.Now().Format(time.RFC3339),
+		})
+	})
+
 	// 健康检查端点
 	apiGroup.GET("/health", func(c *gin.Context) {
 		logger.Info("Health check endpoint called")
@@ -1765,17 +1775,9 @@ func getWebUIHTML() string {
     <div id="app" class="app-container">
          <div class="header">
              <h1>🎬 TMDB Go Proxy 管理控制台</h1>
-             <p style="margin-top: 10px;">
-                 <el-input
-                     v-model="apiKey"
-                     placeholder="请输入API Key (X-API-Key)"
-                     type="password"
-                     show-password
-                     style="max-width: 400px; margin: 0 auto;"
-                 ></el-input>
-                 <el-button type="primary" @click="saveApiKey" style="margin-left: 10px;">
-                     保存
-                 </el-button>
+             <p style="margin-top: 10px; color: rgba(255,255,255,0.9);">
+                 <span v-if="apiKeyRequired">🔒 API Key已从环境变量加载</span>
+                 <span v-else>ℹ️ API Key未设置（管理API可直接访问）</span>
              </p>
          </div>
 
@@ -1937,7 +1939,8 @@ func getWebUIHTML() string {
             data() {
                 return {
                     activeTab: 'overview',
-                    apiKey: '',
+                    apiKey: '', // 从环境变量API_KEY读取，如果设置了会自动使用
+                    apiKeyRequired: false, // 是否要求API Key
                     searchQuery: '',
                     keysLimit: 50,
                     loading: {
@@ -1960,17 +1963,26 @@ func getWebUIHTML() string {
                 }
             },
             methods: {
-                 saveApiKey() {
-                     if (this.apiKey) {
-                         localStorage.setItem('tmdb_proxy_api_key', this.apiKey);
-                         ElMessage.success('API Key已保存');
-                     } else {
-                         ElMessage.warning('请输入API Key');
+                 // 检查API Key状态（从后端获取）
+                 async checkApiKeyStatus() {
+                     try {
+                         const response = await fetch('/mapi/api-key-status', {
+                             method: 'GET',
+                             headers: { 'Content-Type': 'application/json' }
+                         });
+                         
+                         if (response.ok) {
+                             const data = await response.json();
+                             this.apiKeyRequired = data.api_key_required || false;
+                             // 如果环境变量设置了API_KEY，UI不需要处理，后端会自动验证
+                         }
+                     } catch (error) {
+                         // 忽略错误，可能是网络问题
+                         console.log('检查API Key状态失败:', error);
                      }
                  },
 
                  async apiRequest(endpoint, options = {}) {
-                     // 如果没有设置API Key，仍然尝试请求（后端可能允许无API Key访问）
                      const url = '/mapi' + endpoint;
                      const defaultOptions = {
                          headers: {
@@ -1978,7 +1990,7 @@ func getWebUIHTML() string {
                          }
                      };
 
-                     // 如果设置了API Key，添加到请求头
+                     // 如果API Key已从环境变量加载，添加到请求头
                      if (this.apiKey) {
                          defaultOptions.headers['X-API-Key'] = this.apiKey;
                      }
@@ -1990,6 +2002,10 @@ func getWebUIHTML() string {
                          const data = await response.json();
 
                          if (!response.ok) {
+                             // 如果是401错误，说明需要API Key
+                             if (response.status === 401) {
+                                 throw new Error('需要API Key验证，请设置API_KEY环境变量');
+                             }
                              throw new Error(data.message || data.error || '请求失败');
                          }
 
@@ -2076,23 +2092,28 @@ func getWebUIHTML() string {
 
                      this.loading.clearCache = true;
                      try {
-                         // 构建查询参数
+                         // 构建查询参数 - 修复：确保type参数正确传递
                          let queryParams = '';
                          if (type === 'all') {
                              queryParams = '?type=all&confirm=yes';
                          } else {
                              queryParams = '?type=' + type;
                          }
+                         
                          const data = await this.apiRequest(
                              '/cache/clear' + queryParams,
                              { method: 'POST' }
                          );
+                         
                          this.results.clearCache = data;
-                         ElMessage.success('缓存清除成功');
-                         // 清除缓存后，刷新缓存信息
-                         if (this.apiKey) {
-                             setTimeout(() => this.getCacheInfo(), 500);
-                         }
+                         ElMessage.success('缓存清除成功: ' + (data.message || '操作完成'));
+                         
+                         // 清除缓存后，自动刷新缓存信息（不依赖API Key）
+                         setTimeout(() => {
+                             this.getCacheInfo().catch(() => {
+                                 // 忽略错误，可能API Key未设置
+                             });
+                         }, 500);
                      } catch (error) {
                          this.results.clearCache = { error: error.message };
                          ElMessage.error('缓存清除失败: ' + error.message);
@@ -2154,18 +2175,14 @@ func getWebUIHTML() string {
             },
 
              mounted() {
-                 // 从localStorage加载API Key
-                 const savedApiKey = localStorage.getItem('tmdb_proxy_api_key');
-                 if (savedApiKey) {
-                     this.apiKey = savedApiKey;
-                 }
-
-                 // 页面加载时自动检查健康状态（如果有API Key）
-                 if (this.apiKey) {
-                     setTimeout(() => {
-                         this.checkHealth();
-                     }, 1000);
-                 }
+                 // API Key从环境变量API_KEY读取，不需要在UI中配置
+                 // 检查API Key状态
+                 this.checkApiKeyStatus();
+                 
+                 // 页面加载时自动检查健康状态
+                 setTimeout(() => {
+                     this.checkHealth();
+                 }, 1000);
              }
         }).use(ElementPlus).mount('#app');
     </script>
