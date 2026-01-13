@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1130,10 +1131,177 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"total":     len(serverList),
 			"timestamp": time.Now().Format(time.RFC3339),
 			"endpoints": gin.H{
-				"aggregate":    "/mapi/upstream/aggregate",
-				"upstream":     "/mapi/upstream",
-				"cache_clear":  "/mapi/cache/clear",
+				"aggregate":         "/mapi/upstream/aggregate",
+				"upstream":          "/mapi/upstream",
+				"cache_clear":       "/mapi/cache/clear",
+				"upstream_clear":    "/mapi/upstream/clear-cache",
 			},
+		})
+	})
+
+	// 上游服务器缓存清理端点 - 清理所有配置的上游服务器缓存
+	apiGroup.POST("/upstream/clear-cache", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+
+		// 获取查询参数，决定清除哪种类型的缓存
+		cacheType := c.Query("type")
+		if cacheType == "" {
+			cacheType = "all"
+		}
+
+		// 验证缓存类型
+		validTypes := map[string]bool{
+			"all":    true,
+			"memory": true,
+			"l2":     true,
+		}
+		if !validTypes[cacheType] {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":     "无效的缓存类型",
+				"message":   "支持的缓存类型: all, memory, l2",
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 获取配置的上游服务器列表
+		upstreamServers := cfg.UpstreamProxyServers
+		if len(upstreamServers) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"message":   "未配置上游服务器",
+				"cleared":   []gin.H{},
+				"failed":    []gin.H{},
+				"total":     0,
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 创建HTTP客户端
+		client := &http.Client{
+			Timeout: 30 * time.Second,
+		}
+
+		// 获取API Key（用于调用上游服务器）
+		apiKey := os.Getenv("API_KEY")
+
+		// 并发清理所有上游服务器的缓存
+		type ClearResult struct {
+			URL     string
+			Success bool
+			Message string
+			Error   string
+		}
+
+		results := make([]ClearResult, 0, len(upstreamServers))
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		for _, serverURL := range upstreamServers {
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+
+				result := ClearResult{
+					URL: url,
+				}
+
+				// 构建清理缓存的URL
+				clearURL := fmt.Sprintf("%s/api/cache/clear?type=%s", url, cacheType)
+				if cacheType == "all" {
+					clearURL += "&confirm=yes"
+				}
+
+				req, err := http.NewRequest("POST", clearURL, nil)
+				if err != nil {
+					result.Success = false
+					result.Error = err.Error()
+					result.Message = "创建请求失败"
+				} else {
+					// 如果设置了API Key，传递给上游服务器
+					if apiKey != "" {
+						req.Header.Set("X-API-Key", apiKey)
+					}
+
+					resp, err := client.Do(req)
+					if err != nil {
+						result.Success = false
+						result.Error = err.Error()
+						result.Message = "请求失败"
+					} else {
+						defer resp.Body.Close()
+
+						if resp.StatusCode == http.StatusOK {
+							var responseData gin.H
+							if err := json.NewDecoder(resp.Body).Decode(&responseData); err == nil {
+								result.Success = true
+								if msg, ok := responseData["message"].(string); ok {
+									result.Message = msg
+								} else {
+									result.Message = "缓存清理成功"
+								}
+							} else {
+								result.Success = true
+								result.Message = "缓存清理成功（无法解析响应）"
+							}
+						} else {
+							result.Success = false
+							result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+							if resp.StatusCode == http.StatusUnauthorized {
+								result.Error = "API Key验证失败，请确保上游服务器配置了相同的API_KEY"
+							} else {
+								body, _ := io.ReadAll(resp.Body)
+								if len(body) > 0 {
+									result.Error = string(body)
+								} else {
+									result.Error = "未知错误"
+								}
+							}
+						}
+					}
+				}
+
+				mu.Lock()
+				results = append(results, result)
+				mu.Unlock()
+			}(serverURL)
+		}
+
+		wg.Wait()
+
+		// 分类结果
+		cleared := make([]gin.H, 0)
+		failed := make([]gin.H, 0)
+
+		for _, result := range results {
+			if result.Success {
+				cleared = append(cleared, gin.H{
+					"url":     result.URL,
+					"message": result.Message,
+				})
+			} else {
+				failed = append(failed, gin.H{
+					"url":     result.URL,
+					"error":   result.Error,
+					"message": result.Message,
+				})
+			}
+		}
+
+		// 记录操作日志
+		logger.Info("上游服务器缓存清理操作完成 - 类型: %s, 成功: %d, 失败: %d",
+			cacheType, len(cleared), len(failed))
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":   fmt.Sprintf("已尝试清理 %d 个上游服务器的缓存", len(upstreamServers)),
+			"cache_type": cacheType,
+			"cleared":    cleared,
+			"failed":     failed,
+			"total":      len(upstreamServers),
+			"success":    len(cleared),
+			"failed_count": len(failed),
+			"timestamp":  time.Now().Format(time.RFC3339),
 		})
 	})
 
@@ -2338,6 +2506,30 @@ func getWebUIHTML() string {
 
                     <el-card>
                         <template #header>
+                            <div class="card-header">🧹 清理上游服务器缓存</div>
+                        </template>
+                        <p>清理所有配置的上游服务器缓存（需要配置UPSTREAM_PROXY_SERVERS环境变量）</p>
+                        <p style="font-size: 12px; color: #666; margin-top: 5px; margin-bottom: 10px;">
+                            ⚠️ 注意：此操作会清理所有配置的上游服务器缓存。确保上游服务器配置了相同的API_KEY。
+                        </p>
+                        <div style="margin-top: 15px;">
+                            <el-button type="danger" @click="clearUpstreamCache('all')" :loading="loading.clearUpstreamCache">
+                                💥 清理所有缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearUpstreamCache('memory')" :loading="loading.clearUpstreamCache">
+                                🧠 清理内存缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearUpstreamCache('l2')" :loading="loading.clearUpstreamCache">
+                                💿 清理L2缓存
+                            </el-button>
+                        </div>
+                        <div v-if="results.clearUpstreamCache" class="result-json">
+                            {{ JSON.stringify(results.clearUpstreamCache, null, 2) }}
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
                             <div class="card-header">🔗 上游服务器状态</div>
                         </template>
                         <p>查看检测到的嵌套代理服务器状态（自动检测，需要上游服务器返回X-TMDB-Proxy响应头）</p>
@@ -2397,6 +2589,7 @@ func getWebUIHTML() string {
                         stats: false,
                         upstream: false,
                         upstreamAggregate: false,
+                        clearUpstreamCache: false,
                         cacheInfo: false,
                         clearCache: false,
                         searchCache: false,
@@ -2408,6 +2601,7 @@ func getWebUIHTML() string {
                         stats: null,
                         upstream: null,
                         upstreamAggregate: null,
+                        clearUpstreamCache: null,
                         cacheInfo: null,
                         clearCache: null,
                         searchCache: null,
