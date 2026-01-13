@@ -2757,6 +2757,56 @@ func getWebUIHTML() string {
                      }
                  },
 
+                 async clearUpstreamCache(type = 'all') {
+                     const confirmMessage = type === 'all' ?
+                         '确定要清理所有上游服务器的缓存吗？这将影响所有上游服务器的性能！' :
+                         '确定要清理所有上游服务器的' + type + '缓存吗？';
+
+                     try {
+                         await ElMessageBox.confirm(confirmMessage, '确认操作', {
+                             confirmButtonText: '确定',
+                             cancelButtonText: '取消',
+                             type: 'warning'
+                         });
+                     } catch {
+                         return; // 用户取消
+                     }
+
+                     this.loading.clearUpstreamCache = true;
+                     try {
+                         const data = await this.apiRequest(
+                             '/upstream/clear-cache?type=' + type,
+                             { method: 'POST' }
+                         );
+                         
+                         this.results.clearUpstreamCache = data;
+                         
+                         // 显示成功/失败统计
+                         const successCount = data.success || 0;
+                         const failedCount = data.failed_count || 0;
+                         
+                         if (failedCount === 0) {
+                             ElMessage.success(`成功清理 ${successCount} 个上游服务器的缓存`);
+                         } else if (successCount > 0) {
+                             ElMessage.warning(`部分成功：${successCount} 个成功，${failedCount} 个失败`);
+                         } else {
+                             ElMessage.error(`清理失败：所有 ${failedCount} 个上游服务器都失败`);
+                         }
+                         
+                         // 清理缓存后，自动刷新汇总信息
+                         setTimeout(() => {
+                             this.getUpstreamAggregate().catch(() => {
+                                 // 忽略错误
+                             });
+                         }, 1000);
+                     } catch (error) {
+                         this.results.clearUpstreamCache = { error: error.message };
+                         ElMessage.error('清理上游服务器缓存失败: ' + error.message);
+                     } finally {
+                         this.loading.clearUpstreamCache = false;
+                     }
+                 },
+
                  async getCacheInfo() {
                      this.loading.cacheInfo = true;
                      try {
