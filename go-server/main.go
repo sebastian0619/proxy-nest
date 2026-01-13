@@ -1024,14 +1024,41 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
 
-		// 获取配置的上游服务器列表
-		upstreamServers := cfg.UpstreamProxyServers
+		// 获取自动检测到的上游服务器
+		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
+		
+		// 获取手动配置的上游服务器列表
+		configuredServers := cfg.UpstreamProxyServers
+		
+		// 合并自动检测和手动配置的服务器（去重）
+		serverMap := make(map[string]bool)
+		upstreamServers := make([]string, 0)
+		
+		// 添加自动检测到的TMDB代理服务器
+		for url, info := range upstreamInfo {
+			if info.IsTMDBProxy && !serverMap[url] {
+				upstreamServers = append(upstreamServers, url)
+				serverMap[url] = true
+			}
+		}
+		
+		// 添加手动配置的服务器（如果不在自动检测列表中）
+		for _, url := range configuredServers {
+			if !serverMap[url] {
+				upstreamServers = append(upstreamServers, url)
+				serverMap[url] = true
+			}
+		}
+		
 		if len(upstreamServers) == 0 {
 			c.JSON(http.StatusOK, gin.H{
-				"message": "未配置上游服务器",
+				"message": "未找到上游服务器（自动检测和手动配置都为空）",
 				"servers": []gin.H{},
 				"total":   0,
+				"auto_detected": len(upstreamInfo),
+				"configured": len(configuredServers),
 				"timestamp": time.Now().Format(time.RFC3339),
+				"note": "提示：系统会自动检测上游TMDB代理服务器，或通过UPSTREAM_PROXY_SERVERS环境变量手动配置",
 			})
 			return
 		}
@@ -1165,15 +1192,42 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			return
 		}
 
-		// 获取配置的上游服务器列表
-		upstreamServers := cfg.UpstreamProxyServers
+		// 获取自动检测到的上游服务器
+		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
+		
+		// 获取手动配置的上游服务器列表
+		configuredServers := cfg.UpstreamProxyServers
+		
+		// 合并自动检测和手动配置的服务器（去重）
+		serverMap := make(map[string]bool)
+		upstreamServers := make([]string, 0)
+		
+		// 添加自动检测到的TMDB代理服务器
+		for url, info := range upstreamInfo {
+			if info.IsTMDBProxy && !serverMap[url] {
+				upstreamServers = append(upstreamServers, url)
+				serverMap[url] = true
+			}
+		}
+		
+		// 添加手动配置的服务器（如果不在自动检测列表中）
+		for _, url := range configuredServers {
+			if !serverMap[url] {
+				upstreamServers = append(upstreamServers, url)
+				serverMap[url] = true
+			}
+		}
+		
 		if len(upstreamServers) == 0 {
 			c.JSON(http.StatusOK, gin.H{
-				"message":   "未配置上游服务器",
+				"message":   "未找到上游服务器（自动检测和手动配置都为空）",
 				"cleared":   []gin.H{},
 				"failed":    []gin.H{},
 				"total":     0,
+				"auto_detected": len(upstreamInfo),
+				"configured": len(configuredServers),
 				"timestamp": time.Now().Format(time.RFC3339),
+				"note": "提示：系统会自动检测上游TMDB代理服务器，或通过UPSTREAM_PROXY_SERVERS环境变量手动配置",
 			})
 			return
 		}
@@ -2786,11 +2840,11 @@ func getWebUIHTML() string {
                          const failedCount = data.failed_count || 0;
                          
                          if (failedCount === 0) {
-                             ElMessage.success(`成功清理 ${successCount} 个上游服务器的缓存`);
+                             ElMessage.success('成功清理 ' + successCount + ' 个上游服务器的缓存');
                          } else if (successCount > 0) {
-                             ElMessage.warning(`部分成功：${successCount} 个成功，${failedCount} 个失败`);
+                             ElMessage.warning('部分成功：' + successCount + ' 个成功，' + failedCount + ' 个失败');
                          } else {
-                             ElMessage.error(`清理失败：所有 ${failedCount} 个上游服务器都失败`);
+                             ElMessage.error('清理失败：所有 ' + failedCount + ' 个上游服务器都失败');
                          }
                          
                          // 清理缓存后，自动刷新汇总信息
