@@ -261,10 +261,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	router.GET("/mapi/api-key-status", func(c *gin.Context) {
 		expectedKey := os.Getenv("API_KEY")
 		hasApiKey := expectedKey != ""
+		var message string
+		if hasApiKey {
+			message = "API Key已从环境变量配置，管理API需要API Key验证"
+		} else {
+			message = "API Key未设置，管理API可直接访问"
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"api_key_required": hasApiKey,
 			"api_key_set":      hasApiKey,
-			"message":          hasApiKey ? "API Key已从环境变量配置，管理API需要API Key验证" : "API Key未设置，管理API可直接访问",
+			"message":          message,
 			"note":             "API Key只能通过环境变量API_KEY配置，无法在UI中设置",
 			"timestamp":        time.Now().Format(time.RFC3339),
 		})
