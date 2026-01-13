@@ -832,6 +832,12 @@ func (pm *ProxyManager) detectUpstreamProxy(resp *http.Response, serverURL strin
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 
+	// 过滤掉TMDB官方API地址，不应该将其记录为上游代理服务器
+	if pm.isTMDBOfficialAPI(serverURL) {
+		logger.Debug("跳过TMDB官方API地址的代理检测: %s", serverURL)
+		return
+	}
+
 	// 检查响应头是否包含TMDB代理标识符
 	proxyHeader := resp.Header.Get("X-TMDB-Proxy")
 	versionHeader := resp.Header.Get("X-TMDB-Proxy-Version")
@@ -857,6 +863,7 @@ func (pm *ProxyManager) detectUpstreamProxy(resp *http.Response, serverURL strin
 		pm.upstreamProxies[serverURL] = info
 	} else {
 		// 如果没有检测到标识符，也记录这个服务器（标记为非代理）
+		// 但只记录非TMDB官方API的服务器
 		if info := pm.upstreamProxies[serverURL]; info == nil {
 			pm.upstreamProxies[serverURL] = &UpstreamProxyInfo{
 				URL:         serverURL,
@@ -865,8 +872,33 @@ func (pm *ProxyManager) detectUpstreamProxy(resp *http.Response, serverURL strin
 				LastChecked: time.Now(),
 				CheckCount:  1,
 			}
+			logger.Debug("记录非TMDB代理的上游服务器: %s", serverURL)
 		}
 	}
+}
+
+// isTMDBOfficialAPI 检查URL是否为TMDB官方API地址
+func (pm *ProxyManager) isTMDBOfficialAPI(serverURL string) bool {
+	// TMDB官方API地址列表
+	officialAPIs := []string{
+		"https://api.themoviedb.org",
+		"http://api.themoviedb.org",
+		"api.themoviedb.org",
+		"https://api.themoviedb.org/",
+		"http://api.themoviedb.org/",
+	}
+
+	// 标准化URL（去除尾部斜杠）
+	normalizedURL := strings.TrimSuffix(serverURL, "/")
+
+	for _, officialAPI := range officialAPIs {
+		normalizedOfficial := strings.TrimSuffix(officialAPI, "/")
+		if normalizedURL == normalizedOfficial || strings.HasPrefix(normalizedURL, normalizedOfficial+"/") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // IsUpstreamTMDBProxy 检查上游服务器是否为TMDB代理
@@ -888,7 +920,10 @@ func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
 
 	result := make(map[string]*UpstreamProxyInfo)
 	for k, v := range pm.upstreamProxies {
-		result[k] = v
+		// 过滤掉TMDB官方API地址
+		if !pm.isTMDBOfficialAPI(k) {
+			result[k] = v
+		}
 	}
 	return result
 }
