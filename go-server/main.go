@@ -165,11 +165,11 @@ func apiKeyAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 白名单端点 - 无需身份验证
 		whitelist := []string{
-			"/health",     // 健康检查
-			"/status",     // 服务器状态
-			"/stats",      // 统计信息
-			"/upstream",   // 上游代理状态
-			"/cache/clear", // 清理缓存（常用操作，不需要API Key）
+			"/health",   // 健康检查
+			"/status",   // 服务器状态
+			"/stats",    // 统计信息
+			"/upstream", // 上游代理状态
+			// 注意：/cache/clear 已移除白名单，现在需要API Key验证
 		}
 
 		// 检查是否在白名单中
@@ -3002,8 +3002,8 @@ func getWebUIHTML() string {
                              queryParams = '?type=' + type;
                          }
                          
-                         // 使用公开端点清理缓存（不需要API Key）
-                         const data = await this.publicApiRequest(
+                         // 使用管理端点清理缓存（需要API Key，如果配置了的话）
+                         const data = await this.apiRequest(
                              '/cache/clear' + queryParams,
                              { method: 'POST' }
                          );
@@ -3061,8 +3061,8 @@ func getWebUIHTML() string {
                  async getSystemConfig() {
                      this.loading.config = true;
                      try {
-                         // 使用公开端点（不需要API Key）
-                         const data = await this.publicApiRequest('/config');
+                         // 使用管理端点（需要API Key，如果配置了的话）
+                         const data = await this.apiRequest('/config');
                          this.results.config = data;
                          ElMessage.success('配置信息获取成功');
                      } catch (error) {
