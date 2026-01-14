@@ -20,11 +20,21 @@ import (
 	"main/proxy"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
 	// 记录启动时间
 	startTime := time.Now()
+
+	// 加载.env文件（如果存在）
+	// 注意：.env文件中的变量会覆盖系统环境变量
+	if err := godotenv.Load(); err != nil {
+		// .env文件不存在不是错误，只是记录日志
+		logger.Debug("未找到.env文件，使用系统环境变量: %v", err)
+	} else {
+		logger.Info("成功加载.env文件")
+	}
 
 	// 加载配置
 	cfg := config.LoadConfig()
@@ -457,7 +467,64 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		c.String(http.StatusOK, html)
 	})
 
-	// 缓存管理端点
+	// 缓存信息端点 - 公开版本（不需要API Key）
+	publicGroup.GET("/cache/info", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		// 获取缓存信息
+		memoryStats := cacheManager.GetMemoryCache().GetStats()
+		l2Stats := cacheManager.GetL2CacheStats()
+		
+		var l2CacheInfo gin.H
+		if cacheManager.GetConfig().UseRedis {
+			l2CacheInfo = gin.H{
+				"type":         "redis",
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"nodes":        cacheManager.GetConfig().RedisClusterNodes,
+				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
+				"current_size": l2Stats.CurrentSize,
+				"total_files":  l2Stats.TotalFiles,
+				"total_size":   l2Stats.TotalSize,
+				"pool_size":    cacheManager.GetConfig().RedisPoolSize,
+			}
+		} else {
+			l2CacheInfo = gin.H{
+				"type":         "disk",
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"cache_dir":    cacheManager.GetConfig().CacheDir,
+				"ttl":          cacheManager.GetConfig().DiskCacheTTL.String(),
+				"max_size":     cacheManager.GetConfig().CacheMaxSize,
+				"current_size": l2Stats.CurrentSize,
+				"total_files":  l2Stats.TotalFiles,
+				"total_size":   l2Stats.TotalSize,
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"cache_enabled": cacheManager.GetConfig().CacheEnabled,
+			"architecture":  "L1 (Memory) + L2 (Redis/Disk)",
+			"memory_cache": gin.H{
+				"enabled":      cacheManager.GetConfig().CacheEnabled,
+				"max_size":     cacheManager.GetConfig().MemoryCacheSize,
+				"ttl":          cacheManager.GetConfig().MemoryCacheTTL.String(),
+				"current_size": memoryStats.CurrentSize,
+				"hits":         memoryStats.Hits,
+				"misses":       memoryStats.Misses,
+				"hit_rate":     memoryStats.HitRate,
+			},
+			"l2_cache": l2CacheInfo,
+			"endpoints": gin.H{
+				"cache_info":   "/api/cache/info",
+				"clear_cache":  "/api/cache/clear",
+				"clear_memory": "/api/cache/clear?type=memory",
+				"clear_l2":     "/api/cache/clear?type=l2",
+				"cache_keys":   "/mapi/cache/keys",
+				"cache_search": "/mapi/cache/search?q=<query>",
+			},
+		})
+	})
+
+	// 缓存管理端点 - 管理版本（需要API Key，保持向后兼容）
 	apiGroup.GET("/cache/info", func(c *gin.Context) {
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
@@ -751,7 +818,35 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 配置信息端点
+	// 配置信息端点 - 公开版本（不需要API Key）
+	publicGroup.GET("/config", func(c *gin.Context) {
+		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
+		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.JSON(http.StatusOK, gin.H{
+			"port": cfg.Port,
+			"cache": gin.H{
+				"enabled":         cfg.Cache.CacheEnabled,
+				"cache_dir":       cfg.Cache.CacheDir,
+				"memory_ttl":      cfg.Cache.MemoryCacheTTL.String(),
+				"disk_ttl":        cfg.Cache.DiskCacheTTL.String(),
+				"memory_max_size": cfg.Cache.MemoryCacheSize,
+				"disk_max_size":   cfg.Cache.CacheMaxSize,
+			},
+			"health_check": gin.H{
+				"interval":      cfg.HealthCheckInterval.String(),
+				"initial_delay": cfg.HealthCheckInitialDelay.String(),
+			},
+			"endpoints": gin.H{
+				"config":     "/api/config",
+				"health":     "/api/health",
+				"status":     "/api/status",
+				"stats":      "/api/stats",
+				"cache_info": "/api/cache/info",
+			},
+		})
+	})
+
+	// 配置信息端点 - 管理版本（需要API Key，保持向后兼容）
 	apiGroup.GET("/config", func(c *gin.Context) {
 		// 返回当前配置信息（不包含敏感信息）
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
@@ -2959,7 +3054,8 @@ func getWebUIHTML() string {
                  async getSystemConfig() {
                      this.loading.config = true;
                      try {
-                         const data = await this.apiRequest('/config');
+                         // 使用公开端点（不需要API Key）
+                         const data = await this.publicApiRequest('/config');
                          this.results.config = data;
                          ElMessage.success('配置信息获取成功');
                      } catch (error) {
