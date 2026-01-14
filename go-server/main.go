@@ -35,12 +35,24 @@ func main() {
 	for _, envFile := range envFiles {
 		if err := godotenv.Load(envFile); err == nil {
 			fmt.Printf("[INFO] 成功加载.env文件: %s\n", envFile)
+			// 验证API_KEY是否被加载
+			if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+				fmt.Printf("[INFO] API_KEY已从.env文件加载（长度: %d字符）\n", len(apiKey))
+			} else {
+				fmt.Printf("[WARN] .env文件已加载，但API_KEY未设置\n")
+			}
 			loaded = true
 			break
 		}
 	}
 	if !loaded {
 		fmt.Printf("[DEBUG] 未找到.env文件，使用系统环境变量\n")
+		// 检查系统环境变量中是否有API_KEY
+		if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+			fmt.Printf("[INFO] API_KEY已从系统环境变量加载（长度: %d字符）\n", len(apiKey))
+		} else {
+			fmt.Printf("[WARN] 未设置API_KEY环境变量，管理API将不受保护\n")
+		}
 	}
 
 	// 加载配置
