@@ -29,11 +29,18 @@ func main() {
 
 	// 加载.env文件（如果存在）
 	// 注意：.env文件中的变量会覆盖系统环境变量
-	if err := godotenv.Load(); err != nil {
-		// .env文件不存在不是错误，只是记录日志
-		logger.Debug("未找到.env文件，使用系统环境变量: %v", err)
-	} else {
-		logger.Info("成功加载.env文件")
+	// 尝试从多个位置加载.env文件
+	envFiles := []string{".env", "go-server/.env", "../.env"}
+	loaded := false
+	for _, envFile := range envFiles {
+		if err := godotenv.Load(envFile); err == nil {
+			fmt.Printf("[INFO] 成功加载.env文件: %s\n", envFile)
+			loaded = true
+			break
+		}
+	}
+	if !loaded {
+		fmt.Printf("[DEBUG] 未找到.env文件，使用系统环境变量\n")
 	}
 
 	// 加载配置
