@@ -922,7 +922,7 @@ func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
 	for k, v := range pm.upstreamProxies {
 		// 过滤掉TMDB官方API地址
 		if !pm.isTMDBOfficialAPI(k) {
-			result[k] = v
+		result[k] = v
 		}
 	}
 	return result

@@ -2827,7 +2827,7 @@ func getWebUIHTML() string {
                              // 如果是401错误，说明需要API Key
                              if (response.status === 401) {
                                  throw new Error(data.message || '需要API Key验证，请设置API_KEY环境变量');
-                             }
+                     }
                              throw new Error(data.message || data.error || '请求失败');
                          }
 
