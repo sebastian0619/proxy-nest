@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -259,6 +258,45 @@ func validateCacheClearRequest(c *gin.Context) bool {
 	}
 
 	return true
+}
+
+// clearLocalCache 执行本地缓存清理，返回结果和 HTTP 状态码
+func clearLocalCache(cacheType string, cacheManager *cache.CacheManager) (gin.H, int) {
+	switch cacheType {
+	case "memory":
+		cacheManager.GetMemoryCache().Clear()
+		return gin.H{"message": "内存缓存已清除", "type": "memory"}, http.StatusOK
+
+	case "l2":
+		backendName := "磁盘"
+		if cacheManager.GetConfig().UseRedis {
+			backendName = "Redis"
+		}
+		if err := cacheManager.ClearL2Cache(); err != nil {
+			return gin.H{"error": fmt.Sprintf("清除%s缓存失败", backendName), "message": err.Error()}, http.StatusInternalServerError
+		}
+		return gin.H{"message": fmt.Sprintf("%s缓存已清除", backendName), "type": "l2", "backend": backendName}, http.StatusOK
+
+	case "disk":
+		if cacheManager.GetConfig().UseRedis {
+			return gin.H{"error": "当前使用Redis缓存，请使用 type=l2"}, http.StatusBadRequest
+		}
+		if err := cacheManager.ClearL2Cache(); err != nil {
+			return gin.H{"error": "清除磁盘缓存失败", "message": err.Error()}, http.StatusInternalServerError
+		}
+		return gin.H{"message": "磁盘缓存已清除", "type": "disk"}, http.StatusOK
+
+	default:
+		cacheManager.GetMemoryCache().Clear()
+		backendName := "磁盘"
+		if cacheManager.GetConfig().UseRedis {
+			backendName = "Redis"
+		}
+		if err := cacheManager.ClearL2Cache(); err != nil {
+			return gin.H{"error": fmt.Sprintf("清除%s缓存失败", backendName), "message": err.Error()}, http.StatusInternalServerError
+		}
+		return gin.H{"message": "所有缓存已清除", "type": "all"}, http.StatusOK
+	}
 }
 
 // setupRoutes 设置路由
@@ -600,121 +638,46 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 清除缓存端点
+	// 清除缓存端点（管理端点，需要 API Key）
+	// 支持 cascade=true 参数，级联清理所有已检测到的上游 proxy-nest 实例
 	apiGroup.POST("/cache/clear", func(c *gin.Context) {
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
 
-		// 🔒 验证请求参数
 		if !validateCacheClearRequest(c) {
 			return
 		}
 
-		// 获取查询参数，决定清除哪种类型的缓存
 		cacheType := c.Query("type")
+		cascade := c.Query("cascade") == "true"
 
-		// 📊 审计日志 - 记录缓存清理操作
-		logger.Info("缓存清理操作 - 类型: %s, IP: %s, User-Agent: %s",
-			cacheType, c.ClientIP(), c.GetHeader("User-Agent"))
+		logger.Info("缓存清理操作 - 类型: %s, 级联: %v, IP: %s", cacheType, cascade, c.ClientIP())
 
-		var result gin.H
-		var status int
+		localResult, status := clearLocalCache(cacheType, cacheManager)
+		localResult["timestamp"] = time.Now().Format(time.RFC3339)
 
-		switch cacheType {
-		case "memory":
-			// 只清除内存缓存
-			cacheManager.GetMemoryCache().Clear()
-			result = gin.H{
-				"message":   "内存缓存已清除",
-				"type":      "memory",
-				"timestamp": time.Now().Format(time.RFC3339),
-			}
-			status = http.StatusOK
-			logger.Info("内存缓存已通过API清除")
-
-
-		case "l2":
-			// 清除L2缓存（Redis或磁盘缓存）
-			if err := cacheManager.ClearL2Cache(); err != nil {
-				cacheType := "磁盘"
-				if cacheManager.GetConfig().UseRedis {
-					cacheType = "Redis"
-				}
-				result = gin.H{
-					"error":     fmt.Sprintf("清除%s缓存失败", cacheType),
-					"message":   err.Error(),
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusInternalServerError
-				logger.Error("API清除%s缓存失败: %v", cacheType, err)
-			} else {
-				cacheType := "磁盘"
-				if cacheManager.GetConfig().UseRedis {
-					cacheType = "Redis"
-				}
-				result = gin.H{
-					"message":   fmt.Sprintf("%s缓存已清除", cacheType),
-					"type":      "l2",
-					"backend":   cacheType,
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusOK
-				logger.Info("%s缓存已通过API清除", cacheType)
-			}
-
-		case "disk":
-			// 兼容性：清除磁盘缓存（如果不是使用Redis的话）
-			if cacheManager.GetConfig().UseRedis {
-				result = gin.H{
-					"error":     "当前使用Redis缓存，请使用 type=l2",
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusBadRequest
-			} else if err := cacheManager.ClearL2Cache(); err != nil {
-				result = gin.H{
-					"error":     "清除磁盘缓存失败",
-					"message":   err.Error(),
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusInternalServerError
-				logger.Error("API清除磁盘缓存失败: %v", err)
-			} else {
-				result = gin.H{
-					"message":   "磁盘缓存已清除",
-					"type":      "disk",
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusOK
-				logger.Info("磁盘缓存已通过API清除")
-			}
-
-		default:
-			// 清除所有缓存
-			cacheManager.GetMemoryCache().Clear()
-			if err := cacheManager.ClearL2Cache(); err != nil {
-				cacheTypeName := "磁盘"
-				if cacheManager.GetConfig().UseRedis {
-					cacheTypeName = "Redis"
-				}
-				result = gin.H{
-					"error":     fmt.Sprintf("清除%s缓存失败", cacheTypeName),
-					"message":   err.Error(),
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusInternalServerError
-				logger.Error("API清除所有缓存失败: %v", err)
-			} else {
-				result = gin.H{
-					"message":   "所有缓存已清除",
-					"type":      "all",
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusOK
-				logger.Info("所有缓存已通过API清除")
-			}
+		if !cascade || status != http.StatusOK {
+			c.JSON(status, localResult)
+			return
 		}
 
-		c.JSON(status, result)
+		// 级联清理上游 proxy-nest 实例
+		upstreamResults := proxyManager.PerformUpstreamCacheClear(cacheType)
+		succeeded := 0
+		for _, r := range upstreamResults {
+			if r.Success {
+				succeeded++
+			}
+		}
+		logger.Info("上游缓存级联清理完成 - 成功: %d/%d", succeeded, len(upstreamResults))
+
+		c.JSON(http.StatusOK, gin.H{
+			"local":            localResult,
+			"upstream":         upstreamResults,
+			"upstream_total":   len(upstreamResults),
+			"upstream_success": succeeded,
+			"timestamp":        time.Now().Format(time.RFC3339),
+		})
 	})
 
 	// 获取缓存键列表端点
@@ -985,112 +948,46 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 清除缓存端点 - 公开版本（不需要API Key）
+	// 清除缓存端点 - 公开版本（不需要 API Key，供跨实例联动使用）
+	// 支持 cascade=true 参数，级联清理所有已检测到的上游 proxy-nest 实例
 	publicGroup.POST("/cache/clear", func(c *gin.Context) {
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
 
-		// 🔒 验证请求参数
 		if !validateCacheClearRequest(c) {
 			return
 		}
 
-		// 获取查询参数，决定清除哪种类型的缓存
 		cacheType := c.Query("type")
+		cascade := c.Query("cascade") == "true"
 
-		// 📊 审计日志 - 记录缓存清理操作
-		logger.Info("缓存清理操作（公开端点）- 类型: %s, IP: %s, User-Agent: %s",
-			cacheType, c.ClientIP(), c.GetHeader("User-Agent"))
+		logger.Info("缓存清理操作（公开端点）- 类型: %s, 级联: %v, IP: %s", cacheType, cascade, c.ClientIP())
 
-		var result gin.H
-		var status int
+		localResult, status := clearLocalCache(cacheType, cacheManager)
+		localResult["timestamp"] = time.Now().Format(time.RFC3339)
 
-		switch cacheType {
-		case "memory":
-			// 只清除内存缓存
-			cacheManager.GetMemoryCache().Clear()
-			result = gin.H{
-				"message":   "内存缓存已清除",
-				"type":      "memory",
-				"timestamp": time.Now().Format(time.RFC3339),
-			}
-			status = http.StatusOK
-			logger.Info("内存缓存已通过API清除（公开端点）")
-
-		case "l2":
-			// 清除L2缓存（Redis或磁盘缓存）
-			if err := cacheManager.ClearL2Cache(); err != nil {
-				cacheTypeName := "磁盘"
-				if cacheManager.GetConfig().UseRedis {
-					cacheTypeName = "Redis"
-				}
-				result = gin.H{
-					"error":     fmt.Sprintf("清除%s缓存失败", cacheTypeName),
-					"message":   err.Error(),
-					"type":      "l2",
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusInternalServerError
-				logger.Error("清除L2缓存失败（公开端点）: %v", err)
-			} else {
-				cacheTypeName := "磁盘"
-				if cacheManager.GetConfig().UseRedis {
-					cacheTypeName = "Redis"
-				}
-				result = gin.H{
-					"message":   fmt.Sprintf("%s缓存已清除", cacheTypeName),
-					"type":      "l2",
-					"backend":   cacheTypeName,
-					"timestamp": time.Now().Format(time.RFC3339),
-				}
-				status = http.StatusOK
-				logger.Info("%s缓存已通过API清除（公开端点）", cacheTypeName)
-			}
-
-		case "all":
-			// 清除所有缓存
-			confirm := c.Query("confirm")
-			if confirm != "yes" {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error":     "清除所有缓存需要确认",
-					"message":   "请在查询参数中添加 confirm=yes 以确认清除所有缓存",
-					"timestamp": time.Now().Format(time.RFC3339),
-				})
-				return
-			}
-
-			// 清除内存缓存
-			cacheManager.GetMemoryCache().Clear()
-			// 清除L2缓存
-			if err := cacheManager.ClearL2Cache(); err != nil {
-				logger.Warn("清除L2缓存时出错（公开端点）: %v", err)
-			}
-
-			result = gin.H{
-				"message":   "所有缓存已清除",
-				"type":      "all",
-				"timestamp": time.Now().Format(time.RFC3339),
-			}
-			status = http.StatusOK
-			logger.Info("所有缓存已通过API清除（公开端点）")
-
-		default:
-			// 默认清除所有缓存
-			cacheManager.GetMemoryCache().Clear()
-			if err := cacheManager.ClearL2Cache(); err != nil {
-				logger.Warn("清除L2缓存时出错（公开端点）: %v", err)
-			}
-
-			result = gin.H{
-				"message":   "所有缓存已清除（默认）",
-				"type":      "all",
-				"timestamp": time.Now().Format(time.RFC3339),
-			}
-			status = http.StatusOK
-			logger.Info("所有缓存已通过API清除（公开端点，默认）")
+		if !cascade || status != http.StatusOK {
+			c.JSON(status, localResult)
+			return
 		}
 
-		c.JSON(status, result)
+		// 级联清理上游 proxy-nest 实例
+		upstreamResults := proxyManager.PerformUpstreamCacheClear(cacheType)
+		succeeded := 0
+		for _, r := range upstreamResults {
+			if r.Success {
+				succeeded++
+			}
+		}
+		logger.Info("上游缓存级联清理完成 - 成功: %d/%d", succeeded, len(upstreamResults))
+
+		c.JSON(http.StatusOK, gin.H{
+			"local":            localResult,
+			"upstream":         upstreamResults,
+			"upstream_total":   len(upstreamResults),
+			"upstream_success": succeeded,
+			"timestamp":        time.Now().Format(time.RFC3339),
+		})
 	})
 
 	// 上游代理检测状态端点 - 管理端点（需要API Key）
@@ -1280,196 +1177,40 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		})
 	})
 
-	// 上游服务器缓存清理端点 - 清理所有配置的上游服务器缓存
+	// 上游服务器缓存清理端点 - 仅清理上游，不清理本机
 	apiGroup.POST("/upstream/clear-cache", func(c *gin.Context) {
 		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
 		c.Header("X-TMDB-Proxy-Version", "1.0")
 
-		// 获取查询参数，决定清除哪种类型的缓存
-		cacheType := c.Query("type")
-		if cacheType == "" {
-			cacheType = "all"
-		}
-
-		// 验证缓存类型
-		validTypes := map[string]bool{
-			"all":    true,
-			"memory": true,
-			"l2":     true,
-		}
+		cacheType := c.DefaultQuery("type", "all")
+		validTypes := map[string]bool{"all": true, "memory": true, "l2": true, "disk": true}
 		if !validTypes[cacheType] {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":     "无效的缓存类型",
-				"message":   "支持的缓存类型: all, memory, l2",
+				"message":   "支持的缓存类型: all, memory, l2, disk",
 				"timestamp": time.Now().Format(time.RFC3339),
 			})
 			return
 		}
 
-		// 获取自动检测到的上游服务器
-		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
-		
-		// 获取手动配置的上游服务器列表
-		configuredServers := cfg.UpstreamProxyServers
-		
-		// 合并自动检测和手动配置的服务器（去重）
-		serverMap := make(map[string]bool)
-		upstreamServers := make([]string, 0)
-		
-		// 添加自动检测到的TMDB代理服务器
-		for url, info := range upstreamInfo {
-			if info.IsTMDBProxy && !serverMap[url] {
-				upstreamServers = append(upstreamServers, url)
-				serverMap[url] = true
-			}
-		}
-		
-		// 添加手动配置的服务器（如果不在自动检测列表中）
-		for _, url := range configuredServers {
-			if !serverMap[url] {
-				upstreamServers = append(upstreamServers, url)
-				serverMap[url] = true
-			}
-		}
-		
-		if len(upstreamServers) == 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"message":   "未找到上游服务器（自动检测和手动配置都为空）",
-				"cleared":   []gin.H{},
-				"failed":    []gin.H{},
-				"total":     0,
-				"auto_detected": len(upstreamInfo),
-				"configured": len(configuredServers),
-				"timestamp": time.Now().Format(time.RFC3339),
-				"note": "提示：系统会自动检测上游TMDB代理服务器，或通过UPSTREAM_PROXY_SERVERS环境变量手动配置",
-			})
-			return
-		}
+		logger.Info("上游缓存清理操作 - 类型: %s, IP: %s", cacheType, c.ClientIP())
 
-		// 创建HTTP客户端
-		client := &http.Client{
-			Timeout: 30 * time.Second,
-		}
-
-		// 获取API Key（用于调用上游服务器）
-		apiKey := os.Getenv("API_KEY")
-
-		// 并发清理所有上游服务器的缓存
-		type ClearResult struct {
-			URL     string
-			Success bool
-			Message string
-			Error   string
-		}
-
-		results := make([]ClearResult, 0, len(upstreamServers))
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-
-		for _, serverURL := range upstreamServers {
-			wg.Add(1)
-			go func(url string) {
-				defer wg.Done()
-
-				result := ClearResult{
-					URL: url,
-				}
-
-				// 构建清理缓存的URL
-				clearURL := fmt.Sprintf("%s/api/cache/clear?type=%s", url, cacheType)
-				if cacheType == "all" {
-					clearURL += "&confirm=yes"
-				}
-
-				req, err := http.NewRequest("POST", clearURL, nil)
-				if err != nil {
-					result.Success = false
-					result.Error = err.Error()
-					result.Message = "创建请求失败"
-				} else {
-					// 如果设置了API Key，传递给上游服务器
-					if apiKey != "" {
-						req.Header.Set("X-API-Key", apiKey)
-					}
-
-					resp, err := client.Do(req)
-					if err != nil {
-						result.Success = false
-						result.Error = err.Error()
-						result.Message = "请求失败"
-					} else {
-						defer resp.Body.Close()
-
-						if resp.StatusCode == http.StatusOK {
-							var responseData gin.H
-							if err := json.NewDecoder(resp.Body).Decode(&responseData); err == nil {
-								result.Success = true
-								if msg, ok := responseData["message"].(string); ok {
-									result.Message = msg
-								} else {
-									result.Message = "缓存清理成功"
-								}
-							} else {
-								result.Success = true
-								result.Message = "缓存清理成功（无法解析响应）"
-							}
-						} else {
-							result.Success = false
-							result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
-							if resp.StatusCode == http.StatusUnauthorized {
-								result.Error = "API Key验证失败，请确保上游服务器配置了相同的API_KEY"
-							} else {
-								body, _ := io.ReadAll(resp.Body)
-								if len(body) > 0 {
-									result.Error = string(body)
-								} else {
-									result.Error = "未知错误"
-								}
-							}
-						}
-					}
-				}
-
-				mu.Lock()
-				results = append(results, result)
-				mu.Unlock()
-			}(serverURL)
-		}
-
-		wg.Wait()
-
-		// 分类结果
-		cleared := make([]gin.H, 0)
-		failed := make([]gin.H, 0)
-
-		for _, result := range results {
-			if result.Success {
-				cleared = append(cleared, gin.H{
-					"url":     result.URL,
-					"message": result.Message,
-				})
-			} else {
-				failed = append(failed, gin.H{
-					"url":     result.URL,
-					"error":   result.Error,
-					"message": result.Message,
-				})
+		results := proxyManager.PerformUpstreamCacheClear(cacheType)
+		succeeded := 0
+		for _, r := range results {
+			if r.Success {
+				succeeded++
 			}
 		}
 
-		// 记录操作日志
-		logger.Info("上游服务器缓存清理操作完成 - 类型: %s, 成功: %d, 失败: %d",
-			cacheType, len(cleared), len(failed))
+		logger.Info("上游缓存清理完成 - 成功: %d/%d", succeeded, len(results))
 
 		c.JSON(http.StatusOK, gin.H{
-			"message":   fmt.Sprintf("已尝试清理 %d 个上游服务器的缓存", len(upstreamServers)),
-			"cache_type": cacheType,
-			"cleared":    cleared,
-			"failed":     failed,
-			"total":      len(upstreamServers),
-			"success":    len(cleared),
-			"failed_count": len(failed),
-			"timestamp":  time.Now().Format(time.RFC3339),
+			"cache_type":       cacheType,
+			"upstream":         results,
+			"upstream_total":   len(results),
+			"upstream_success": succeeded,
+			"timestamp":        time.Now().Format(time.RFC3339),
 		})
 	})
 

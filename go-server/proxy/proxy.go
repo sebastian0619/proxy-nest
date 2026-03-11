@@ -928,58 +928,90 @@ func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
 	return result
 }
 
-// PerformUpstreamCacheClear 执行上游代理缓存清理
-func (pm *ProxyManager) PerformUpstreamCacheClear(cacheType string) {
+// UpstreamClearResult 上游缓存清理结果
+type UpstreamClearResult struct {
+	URL     string `json:"url"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Error   string `json:"error,omitempty"`
+}
+
+// PerformUpstreamCacheClear 执行上游代理缓存清理，返回每个上游的清理结果
+func (pm *ProxyManager) PerformUpstreamCacheClear(cacheType string) []UpstreamClearResult {
 	logger.Info("开始执行上游代理缓存清理联动 (类型: %s)", cacheType)
 
-	upstreamInfo := pm.GetUpstreamProxyInfo()
-	if len(upstreamInfo) == 0 {
-		logger.Info("没有检测到上游代理服务器，跳过联动清理")
-		return
-	}
+	// 合并自动检测到的 TMDB 代理 + 手动配置的上游服务器（去重）
+	serverSet := make(map[string]bool)
+	var targets []string
 
-	for serverURL, info := range upstreamInfo {
-		if !info.IsTMDBProxy {
-			logger.Debug("上游服务器 %s 不是TMDB代理，跳过", serverURL)
-			continue
+	for url, info := range pm.GetUpstreamProxyInfo() {
+		if info.IsTMDBProxy && !serverSet[url] {
+			targets = append(targets, url)
+			serverSet[url] = true
 		}
-
-		// 异步清理每个上游代理的缓存
-		go func(url string, cacheType string) {
-			if err := pm.clearUpstreamCache(url, cacheType); err != nil {
-				logger.Warn("清理上游代理 %s 缓存失败: %v", url, err)
-			} else {
-				logger.Info("成功清理上游代理 %s 的缓存 (类型: %s)", url, cacheType)
-			}
-		}(serverURL, cacheType)
 	}
+	for _, url := range pm.config.UpstreamProxyServers {
+		if !serverSet[url] {
+			targets = append(targets, url)
+			serverSet[url] = true
+		}
+	}
+
+	if len(targets) == 0 {
+		logger.Info("没有检测到上游代理服务器，跳过联动清理")
+		return []UpstreamClearResult{}
+	}
+
+	results := make([]UpstreamClearResult, len(targets))
+	var wg sync.WaitGroup
+	for i, url := range targets {
+		wg.Add(1)
+		go func(idx int, serverURL string) {
+			defer wg.Done()
+			err := pm.clearUpstreamCache(serverURL, cacheType)
+			if err != nil {
+				logger.Warn("清理上游代理 %s 缓存失败: %v", serverURL, err)
+				results[idx] = UpstreamClearResult{URL: serverURL, Success: false, Error: err.Error(), Message: "清理失败"}
+			} else {
+				logger.Info("成功清理上游代理 %s 的缓存 (类型: %s)", serverURL, cacheType)
+				results[idx] = UpstreamClearResult{URL: serverURL, Success: true, Message: "清理成功"}
+			}
+		}(i, url)
+	}
+	wg.Wait()
+
+	return results
 }
 
 // clearUpstreamCache 清理上游代理的缓存
 func (pm *ProxyManager) clearUpstreamCache(serverURL string, cacheType string) error {
-	// 构建上游缓存清理API的URL
-	clearURL := fmt.Sprintf("%s/cache/clear?type=%s", serverURL, cacheType)
+	// 使用公开端点，无需 API Key 即可联动清理
+	clearURL := fmt.Sprintf("%s/api/cache/clear?type=%s", serverURL, cacheType)
+	if cacheType == "all" || cacheType == "" {
+		clearURL += "&confirm=yes"
+	}
 
 	logger.Info("调用上游代理缓存清理API: %s", clearURL)
 
-	// 创建请求
 	req, err := http.NewRequest("POST", clearURL, nil)
 	if err != nil {
 		return fmt.Errorf("创建上游缓存清理请求失败: %v", err)
 	}
 
-	// 设置User-Agent标识这是一个联动清理请求
 	req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (cache-clear-linkage)")
 	req.Header.Set("X-Cache-Clear-Linkage", "true")
 
-	// 发送请求
+	// 若本实例配置了 API Key，尝试传递给上游（上游可能也需要）
+	if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+
 	resp, err := pm.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送上游缓存清理请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// 检查响应状态
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("上游缓存清理请求失败，状态码: %d", resp.StatusCode)
 	}
