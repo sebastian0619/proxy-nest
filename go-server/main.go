@@ -2339,13 +2339,65 @@ func getWebUIHTML() string {
                         <template #header>
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <span>缓存信息</span>
-                                <el-button size="small" @click="loadCacheInfo" :loading="loading.cache">刷新</el-button>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <el-tag v-if="cacheInfo" :type="cacheInfo.cache_enabled ? 'success' : 'info'" size="small">
+                                        {{ cacheInfo.cache_enabled ? '已启用' : '已禁用' }}
+                                    </el-tag>
+                                    <el-button size="small" @click="loadCacheInfo" :loading="loading.cache">刷新</el-button>
+                                </div>
                             </div>
                         </template>
                         <div v-if="cacheInfo && !cacheInfo.error">
-                            <div class="stat-row" v-for="(v, k) in cacheInfo" :key="k">
-                                <span class="stat-label">{{ k }}</span>
-                                <span class="stat-val">{{ typeof v === 'object' ? JSON.stringify(v) : v }}</span>
+                            <div style="font-size:12px; color:#aaa; margin-bottom:10px;">{{ cacheInfo.architecture }}</div>
+
+                            <div style="font-weight:600; font-size:13px; color:#555; margin-bottom:8px;">L1 内存缓存</div>
+                            <div class="stat-row">
+                                <span class="stat-label">命中率</span>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <el-progress :percentage="memHitRate" :stroke-width="8" style="width:100px;" />
+                                    <span style="font-size:12px; min-width:36px; text-align:right;">{{ memHitRate }}%</span>
+                                </div>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">命中 / 未命中</span>
+                                <span class="stat-val">{{ (cacheInfo.memory_cache.hits||0).toLocaleString() }} / {{ (cacheInfo.memory_cache.misses||0).toLocaleString() }}</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">条目数 / 上限</span>
+                                <span class="stat-val">{{ cacheInfo.memory_cache.current_size }} / {{ cacheInfo.memory_cache.max_size }}</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">TTL</span>
+                                <span class="stat-val">{{ cacheInfo.memory_cache.ttl }}</span>
+                            </div>
+
+                            <div style="font-weight:600; font-size:13px; color:#555; margin:14px 0 8px; border-top:1px solid #f0f0f0; padding-top:12px;">
+                                L2 {{ cacheInfo.l2_cache.type === 'redis' ? 'Redis' : '磁盘' }}缓存
+                                <el-tag size="small" style="margin-left:6px;">{{ cacheInfo.l2_cache.type }}</el-tag>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">文件 / 条目数</span>
+                                <span class="stat-val">{{ (cacheInfo.l2_cache.total_files||0).toLocaleString() }}</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">占用空间</span>
+                                <span class="stat-val">{{ formatBytes(cacheInfo.l2_cache.total_size) }}</span>
+                            </div>
+                            <div class="stat-row" v-if="cacheInfo.l2_cache.max_size">
+                                <span class="stat-label">最大条目数</span>
+                                <span class="stat-val">{{ cacheInfo.l2_cache.max_size.toLocaleString() }}</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">TTL</span>
+                                <span class="stat-val">{{ cacheInfo.l2_cache.ttl }}</span>
+                            </div>
+                            <div class="stat-row" v-if="cacheInfo.l2_cache.cache_dir">
+                                <span class="stat-label">目录</span>
+                                <span class="stat-val" style="font-family:monospace; font-size:11px;">{{ cacheInfo.l2_cache.cache_dir }}</span>
+                            </div>
+                            <div class="stat-row" v-if="cacheInfo.l2_cache.nodes">
+                                <span class="stat-label">节点</span>
+                                <span class="stat-val" style="font-size:11px;">{{ cacheInfo.l2_cache.nodes }}</span>
                             </div>
                         </div>
                         <div v-else-if="cacheInfo && cacheInfo.error" style="color:#f56c6c; font-size:13px;">{{ cacheInfo.error }}</div>
@@ -2418,12 +2470,17 @@ func getWebUIHTML() string {
             computed: {
                 healthDisplay() {
                     if (!this.health) return {};
-                    const skip = ['servers', 'upstream_servers'];
+                    const skip = ['servers', 'upstream_servers', 'endpoints'];
                     const out = {};
                     for (const k in this.health) {
                         if (skip.indexOf(k) === -1) out[k] = this.health[k];
                     }
                     return out;
+                },
+                memHitRate() {
+                    if (!this.cacheInfo || !this.cacheInfo.memory_cache) return 0;
+                    const r = this.cacheInfo.memory_cache.hit_rate;
+                    return Math.round((typeof r === 'number' ? r : parseFloat(r) / 100) * 100);
                 }
             },
             watch: {
@@ -2527,6 +2584,12 @@ func getWebUIHTML() string {
                     } catch(e) {
                         this.systemConfig = { error: e.message };
                     } finally { this.loading.config = false; }
+                },
+                formatBytes(bytes) {
+                    if (!bytes || bytes === 0) return '0 B';
+                    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+                    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
                 }
             },
             mounted() {
