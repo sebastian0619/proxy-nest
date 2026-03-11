@@ -72,6 +72,8 @@ type Config struct {
 	AlphaInitial            float64
 	AlphaAdjustmentStep     float64
 	MaxServerSwitches       int
+	EWMABeta                float64 // EWMA 衰减系数，越大越保守(慢)，越小响应越快，默认 0.2
+	MaxRetries              int     // 单次请求最大重试次数（不含首次），默认 3
 
 	// 代理配置
 	HTTPProxy  string
@@ -122,6 +124,8 @@ func LoadConfig() *Config {
 		AlphaInitial:            getEnvAsFloat("ALPHA_INITIAL", 0.5),
 		AlphaAdjustmentStep:     getEnvAsFloat("ALPHA_ADJUSTMENT_STEP", 0.05),
 		MaxServerSwitches:       getEnvAsInt("MAX_SERVER_SWITCHES", 3),
+		EWMABeta:                getEnvAsFloat("EWMA_BETA", 0.2),
+		MaxRetries:              getEnvAsInt("MAX_RETRIES", 3),
 
 		// 代理配置
 		HTTPProxy:  getEnv("HTTP_PROXY", ""),

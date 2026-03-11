@@ -977,11 +977,14 @@ func (hm *HealthManager) updateServerState(server *Server, checkResult *CheckRes
 			avgResponseTime = float64(checkResult.ResponseTime)
 		}
 
-		// 计算EWMA
+		// 计算EWMA（beta 越小响应越快，越大越平稳，由 EWMA_BETA 环境变量配置）
 		if server.LastEWMA == 0 {
 			newEWMA = avgResponseTime
 		} else {
-			const beta = 0.2
+			beta := hm.config.EWMABeta
+			if beta <= 0 || beta >= 1 {
+				beta = 0.2
+			}
 			newEWMA = beta*avgResponseTime + (1-beta)*server.LastEWMA
 		}
 
@@ -1147,11 +1150,14 @@ func (hm *HealthManager) UpdateDynamicWeight(serverURL string, responseTime int6
 		server.ResponseTimes = server.ResponseTimes[1:]
 	}
 
-	// 更新动态EWMA
+	// 更新动态EWMA（与健康检查使用相同的 EWMA_BETA 配置）
 	if server.LastEWMA == 0 {
 		server.LastEWMA = float64(responseTime)
 	} else {
-		const beta = 0.2 // 与健康检查使用相同的衰减因子
+		beta := hm.config.EWMABeta
+		if beta <= 0 || beta >= 1 {
+			beta = 0.2
+		}
 		server.LastEWMA = beta*float64(responseTime) + (1-beta)*server.LastEWMA
 	}
 

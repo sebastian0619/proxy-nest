@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"main/config"
@@ -51,7 +52,9 @@ type DiskCache struct {
 
 // MemoryCache 内存缓存
 type MemoryCache struct {
-	cache *lru.Cache[string, *CacheItem]
+	cache  *lru.Cache[string, *CacheItem]
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 // GetStats 获取内存缓存统计信息
@@ -59,17 +62,19 @@ func (mc *MemoryCache) GetStats() *CacheStats {
 	if mc.cache == nil {
 		return &CacheStats{}
 	}
-
-	// 获取LRU缓存的统计信息
-	stats := &CacheStats{}
-	stats.CurrentSize = mc.cache.Len()
-
-	// 注意：LRU缓存库可能不提供hits/misses统计，这里返回默认值
-	stats.Hits = 0
-	stats.Misses = 0
-	stats.HitRate = 0.0
-
-	return stats
+	hits := mc.hits.Load()
+	misses := mc.misses.Load()
+	total := hits + misses
+	hitRate := 0.0
+	if total > 0 {
+		hitRate = float64(hits) / float64(total)
+	}
+	return &CacheStats{
+		CurrentSize: mc.cache.Len(),
+		Hits:        hits,
+		Misses:      misses,
+		HitRate:     hitRate,
+	}
 }
 
 // Clear 清空内存缓存
@@ -468,7 +473,13 @@ func NewMemoryCache(cfg *config.CacheConfig) (*MemoryCache, error) {
 
 // Get 获取内存缓存
 func (mc *MemoryCache) Get(key string) (*CacheItem, bool) {
-	return mc.cache.Get(key)
+	item, ok := mc.cache.Get(key)
+	if ok {
+		mc.hits.Add(1)
+	} else {
+		mc.misses.Add(1)
+	}
+	return item, ok
 }
 
 // Set 设置内存缓存

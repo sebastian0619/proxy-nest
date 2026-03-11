@@ -746,72 +746,75 @@ func (pm *ProxyManager) makeRequestWithTimeoutRetry(url string, headers http.Hea
 	return resp, nil
 }
 
-// retryWithOtherHealthyServer 使用其他健康上游重试
+// retryWithOtherHealthyServer 使用其他健康上游重试，支持多次重试（MAX_RETRIES 配置）
 func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers http.Header, excludeServer *health.Server) (*http.Response, error) {
-	// 获取其他健康的服务器
-	healthyServers := pm.healthManager.GetHealthyServers()
-	var availableServers []*health.Server
-
-	for _, server := range healthyServers {
-		if server.URL != excludeServer.URL {
-			availableServers = append(availableServers, server)
-		}
+	maxRetries := pm.config.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
 	}
 
-	if len(availableServers) == 0 {
-		logger.Error("没有其他健康的服务器可用")
-		return nil, fmt.Errorf("没有其他健康的服务器可用")
-	}
-
-	logger.Info("找到 %d 个其他健康的服务器，开始重试", len(availableServers))
-
-	// 按优先级选择重试服务器
-	selectedServer := pm.selectServerByPriority(availableServers)
-	if selectedServer == nil {
-		// 如果优先级选择失败，使用第一个可用服务器
-		selectedServer = availableServers[0]
-	}
-
-	// 构建新的请求URL
+	// 提取请求路径（后续所有重试复用同一路径）
 	path := strings.TrimPrefix(originalURL, excludeServer.URL)
-	retryURL := fmt.Sprintf("%s%s", selectedServer.URL, path)
 
-	logger.Info("重试请求: %s (服务器: %s)", retryURL, selectedServer.URL)
+	// 记录已排除的服务器（首次失败的 + 每次重试失败的）
+	excluded := map[string]bool{excludeServer.URL: true}
 
-	// 发送重试请求
-	req, err := http.NewRequest("GET", retryURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建重试请求失败: %v", err)
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		healthyServers := pm.healthManager.GetHealthyServers()
+		var available []*health.Server
+		for _, s := range healthyServers {
+			if !excluded[s.URL] {
+				available = append(available, s)
+			}
+		}
+
+		if len(available) == 0 {
+			logger.Error("已无可用服务器，放弃重试（已尝试 %d 次）", attempt-1)
+			return nil, fmt.Errorf("已无可用服务器（已尝试 %d 次重试）", attempt-1)
+		}
+
+		selected := pm.selectServerByPriority(available)
+		if selected == nil {
+			selected = available[0]
+		}
+
+		retryURL := selected.URL + path
+		logger.Info("重试 %d/%d: %s (服务器: %s)", attempt, maxRetries, retryURL, selected.URL)
+
+		req, err := http.NewRequest("GET", retryURL, nil)
+		if err != nil {
+			excluded[selected.URL] = true
+			continue
+		}
+		if auth := headers.Get("Authorization"); auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		if contentType := headers.Get("Content-Type"); contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if accept := headers.Get("Accept"); accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		if userAgent := headers.Get("User-Agent"); userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+
+		startTime := time.Now()
+		resp, err := pm.client.Do(req)
+		responseTime := time.Since(startTime)
+
+		if err != nil {
+			logger.Warn("重试 %d/%d 失败: %s - %v", attempt, maxRetries, retryURL, err)
+			excluded[selected.URL] = true
+			continue
+		}
+
+		pm.updateServerPerformance(selected.URL, responseTime)
+		logger.Success("重试 %d/%d 成功: %s (响应时间: %v)", attempt, maxRetries, retryURL, responseTime)
+		return resp, nil
 	}
 
-	// 转发请求头
-	if auth := headers.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	if contentType := headers.Get("Content-Type"); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if accept := headers.Get("Accept"); accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-	if userAgent := headers.Get("User-Agent"); userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
-	}
-
-	// 发送重试请求
-	startTime := time.Now()
-	resp, err := pm.client.Do(req)
-	responseTime := time.Since(startTime)
-
-	if err != nil {
-		return nil, fmt.Errorf("重试请求失败: %v", err)
-	}
-
-	// 重试成功，更新服务器性能指标
-	pm.updateServerPerformance(selectedServer.URL, responseTime)
-
-	logger.Success("重试请求成功: %s (响应时间: %v)", retryURL, responseTime)
-	return resp, nil
+	return nil, fmt.Errorf("重试 %d 次后仍然失败", maxRetries)
 }
 
 // updateServerPerformance 更新服务器性能指标

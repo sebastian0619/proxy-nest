@@ -2275,7 +2275,31 @@ func getWebUIHTML() string {
                     <el-card>
                         <template #header>
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <span>检测到的上游 Proxy-Nest 节点</span>
+                                <span>上游服务器健康状态</span>
+                                <el-button size="small" @click="loadServers" :loading="loading.servers">刷新</el-button>
+                            </div>
+                        </template>
+                        <div v-if="serverList.length === 0" style="color:#ccc; text-align:center; padding:20px; font-size:13px;">加载中...</div>
+                        <div v-else>
+                            <div style="display:flex; gap:16px; margin-bottom:12px; font-size:13px;">
+                                <span>共 <b>{{ serverList.length }}</b> 台</span>
+                                <span style="color:#67c23a;">健康 <b>{{ serverList.filter(function(s){ return s.status==='healthy'; }).length }}</b></span>
+                                <span style="color:#f56c6c;">异常 <b>{{ serverList.filter(function(s){ return s.status!=='healthy'; }).length }}</b></span>
+                            </div>
+                            <div v-for="s in serverList" :key="s.url" class="proxy-item">
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <el-tag :type="s.status === 'healthy' ? 'success' : 'danger'" size="small">{{ s.status }}</el-tag>
+                                    <span style="font-family:monospace; font-size:12px; flex:1;">{{ s.url }}</span>
+                                    <span style="color:#aaa; font-size:11px; white-space:nowrap;">P{{ s.priority }} | {{ s.connection_rate }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </el-card>
+
+                    <el-card>
+                        <template #header>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>检测到的 Proxy-Nest 节点</span>
                                 <el-button size="small" @click="loadUpstreamProxies">刷新</el-button>
                             </div>
                         </template>
@@ -2595,6 +2619,7 @@ func getWebUIHTML() string {
             mounted() {
                 this.loadHealth();
                 this.loadUpstreamProxies();
+                this.loadServers();
             },
             beforeUnmount() {
                 this.toggleAutoRefresh(false);
