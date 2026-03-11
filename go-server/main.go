@@ -2213,274 +2213,181 @@ func getWebUIHTML() string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TMDB Go Proxy - 管理界面</title>
+    <title>TMDB Proxy 管理控制台</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus@2.4.4/dist/index.full.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/element-plus@2.4.4/dist/index.css">
     <style>
-        .app-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
+        body { margin: 0; background: #f0f2f5; }
+        .app-container { max-width: 1300px; margin: 0 auto; padding: 20px; }
         .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
+            text-align: center; margin-bottom: 20px; padding: 18px 20px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-radius: 10px;
+            color: white; border-radius: 10px;
         }
-        .card-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .result-json {
-            background: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 4px;
-            padding: 15px;
-            margin-top: 10px;
-            font-family: monospace;
-            white-space: pre-wrap;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-        .status-healthy { background: #67c23a; }
-        .status-unhealthy { background: #f56c6c; }
-        .status-unknown { background: #e6a23c; }
+        .header h1 { margin: 0 0 6px; font-size: 22px; }
+        .header p { margin: 0; opacity: 0.85; font-size: 13px; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+        .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: #888; flex-shrink: 0; margin-right: 12px; }
+        .stat-val { font-family: monospace; word-break: break-all; text-align: right; }
+        .result-json { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px; margin-top: 10px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
+        .refresh-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+        .hint { font-size: 12px; color: #aaa; }
+        .proxy-item { padding: 7px 0; border-bottom: 1px solid #f5f5f5; font-size: 13px; }
+        .proxy-item:last-child { border-bottom: none; }
     </style>
 </head>
 <body>
     <div id="app" class="app-container">
-         <div class="header">
-             <h1>🎬 TMDB Go Proxy 管理控制台</h1>
-             <p style="margin-top: 10px; color: rgba(255,255,255,0.9);">
-                 <span v-if="apiKeyRequired">🔒 API Key已从环境变量配置（管理API需要API Key验证）</span>
-                 <span v-else>ℹ️ API Key未设置（管理API可直接访问）</span>
-             </p>
-             <p v-if="apiKeyRequired" style="margin-top: 5px; color: rgba(255,255,255,0.8); font-size: 12px;">
-                 ⚠️ 注意：API Key只能通过环境变量API_KEY配置，无法在UI中设置。如果管理API调用失败，请检查后端是否设置了API_KEY环境变量。
-             </p>
-         </div>
+        <div class="header">
+            <h1>TMDB Proxy 管理控制台</h1>
+            <p v-if="health">
+                状态:
+                <el-tag :type="health.status === 'healthy' ? 'success' : 'danger'" size="small" style="margin: 0 6px;">{{ health.status }}</el-tag>
+                版本: {{ health.version || '-' }}
+            </p>
+            <p v-else>加载中...</p>
+        </div>
 
-        <el-tabs v-model="activeTab" @tab-click="handleTabClick">
-            <!-- 概览标签页 -->
-            <el-tab-pane label="📊 概览" name="overview">
+        <el-tabs v-model="activeTab">
+            <!-- 概览 -->
+            <el-tab-pane label="概览" name="overview">
                 <div class="card-grid">
                     <el-card>
                         <template #header>
-                            <div class="card-header">
-                                <span class="status-indicator status-unknown" :class="healthStatusClass"></span>
-                                系统健康状态
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>系统状态</span>
+                                <el-button size="small" @click="loadHealth" :loading="loading.health">刷新</el-button>
                             </div>
                         </template>
-                        <p>查看系统运行状态和基本信息</p>
-                        <el-button type="primary" @click="checkHealth" :loading="loading.health">
-                            🔍 检查健康状态
-                        </el-button>
-                        <div v-if="results.health" class="result-json">
-                            {{ JSON.stringify(results.health, null, 2) }}
+                        <div v-if="health && !health.error">
+                            <div class="stat-row" v-for="(v, k) in healthDisplay" :key="k">
+                                <span class="stat-label">{{ k }}</span>
+                                <span class="stat-val">{{ v }}</span>
+                            </div>
                         </div>
+                        <div v-else-if="health && health.error" style="color:#f56c6c; font-size:13px;">{{ health.error }}</div>
+                        <div v-else style="color:#ccc; text-align:center; padding:20px;">加载中...</div>
                     </el-card>
 
                     <el-card>
                         <template #header>
-                            <div class="card-header">📈 服务器统计</div>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>检测到的上游 Proxy-Nest 节点</span>
+                                <el-button size="small" @click="loadUpstreamProxies">刷新</el-button>
+                            </div>
                         </template>
-                        <p>查看上游服务器的连接统计和性能指标</p>
-                        <el-button type="primary" @click="getStats" :loading="loading.stats">
-                            📊 获取统计信息
-                        </el-button>
-                        <div v-if="results.stats" class="result-json">
-                            {{ JSON.stringify(results.stats, null, 2) }}
+                        <div v-if="upstreamProxies.length === 0" style="color:#ccc; text-align:center; padding:20px; font-size:13px;">
+                            暂未检测到 proxy-nest 节点
                         </div>
-                    </el-card>
-
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">🔗 上游代理状态</div>
-                        </template>
-                        <p>查看检测到的嵌套代理服务器状态</p>
-                        <el-button type="primary" @click="getUpstreamStatus" :loading="loading.upstream">
-                            🔍 检查上游代理
-                        </el-button>
-                        <div v-if="results.upstream" class="result-json">
-                            {{ JSON.stringify(results.upstream, null, 2) }}
+                        <div v-for="p in upstreamProxies" :key="p.url" class="proxy-item">
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:3px;">
+                                <el-tag :type="p.is_tmdb_proxy ? 'success' : 'info'" size="small">
+                                    {{ p.is_tmdb_proxy ? 'proxy-nest' : '普通上游' }}
+                                </el-tag>
+                                <span style="font-family:monospace; font-size:12px;">{{ p.url }}</span>
+                                <span v-if="p.version" style="color:#aaa; font-size:11px;">v{{ p.version }}</span>
+                            </div>
+                            <div style="color:#bbb; font-size:11px;">
+                                最后检测: {{ p.last_checked ? new Date(p.last_checked).toLocaleString('zh-CN') : '-' }}
+                                &nbsp;|&nbsp; 来源: {{ p.source }}
+                            </div>
                         </div>
                     </el-card>
                 </div>
             </el-tab-pane>
 
-            <!-- 缓存管理标签页 -->
-            <el-tab-pane label="💾 缓存管理" name="cache">
+            <!-- 服务器状态 -->
+            <el-tab-pane label="服务器状态" name="servers">
+                <el-card>
+                    <div class="refresh-bar">
+                        <el-button type="primary" size="small" @click="loadServers" :loading="loading.servers">刷新</el-button>
+                        <el-switch v-model="autoRefresh" @change="toggleAutoRefresh" active-text="自动刷新 30s"></el-switch>
+                        <span v-if="autoRefresh" class="hint">下次刷新: {{ refreshCountdown }}s</span>
+                        <span v-if="lastUpdated !== '-'" class="hint">更新于: {{ lastUpdated }}</span>
+                    </div>
+                    <el-table :data="serverList" size="small" stripe border style="width:100%;">
+                        <el-table-column label="服务器" min-width="200">
+                            <template #default="{ row }">
+                                <span style="font-family:monospace; font-size:12px;">{{ row.url }}</span>
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="状态" width="90" align="center">
+                            <template #default="{ row }">
+                                <el-tag :type="row.status === 'healthy' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="priority" label="优先级" width="70" align="center"></el-table-column>
+                        <el-table-column prop="connection_rate" label="连接率" width="90" align="right"></el-table-column>
+                        <el-table-column label="响应(ms)" width="100" align="right">
+                            <template #default="{ row }">
+                                {{ row.last_ewma > 0 ? Math.round(row.last_ewma) : '-' }}
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="combined_weight" label="权重" width="70" align="center"></el-table-column>
+                        <el-table-column prop="sample_progress" label="样本进度" width="140" align="center"></el-table-column>
+                    </el-table>
+                </el-card>
+            </el-tab-pane>
+
+            <!-- 缓存管理 -->
+            <el-tab-pane label="缓存管理" name="cache">
                 <div class="card-grid">
                     <el-card>
                         <template #header>
-                            <div class="card-header">📊 缓存信息</div>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span>缓存信息</span>
+                                <el-button size="small" @click="loadCacheInfo" :loading="loading.cache">刷新</el-button>
+                            </div>
                         </template>
-                        <p>查看缓存使用情况和统计信息</p>
-                        <el-button type="primary" @click="getCacheInfo" :loading="loading.cacheInfo">
-                            📈 查看缓存信息
-                        </el-button>
-                        <div v-if="results.cacheInfo" class="result-json">
-                            {{ JSON.stringify(results.cacheInfo, null, 2) }}
+                        <div v-if="cacheInfo && !cacheInfo.error">
+                            <div class="stat-row" v-for="(v, k) in cacheInfo" :key="k">
+                                <span class="stat-label">{{ k }}</span>
+                                <span class="stat-val">{{ typeof v === 'object' ? JSON.stringify(v) : v }}</span>
+                            </div>
                         </div>
+                        <div v-else-if="cacheInfo && cacheInfo.error" style="color:#f56c6c; font-size:13px;">{{ cacheInfo.error }}</div>
+                        <div v-else style="color:#ccc; text-align:center; padding:20px;">加载中...</div>
                     </el-card>
 
                     <el-card>
-                        <template #header>
-                            <div class="card-header">🗑️ 清除缓存</div>
-                        </template>
-                        <p>清除不同类型的缓存数据</p>
-                        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">仅本机</p>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <el-button type="danger" @click="clearCache('all')" :loading="loading.clearCache">
-                                💥 清除所有缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearCache('memory')" :loading="loading.clearCache">
-                                🧠 清除内存缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearCache('l2')" :loading="loading.clearCache">
-                                💿 清除磁盘缓存
-                            </el-button>
+                        <template #header>清除缓存</template>
+                        <p style="font-size:12px; color:#888; margin:0 0 8px;">仅本机</p>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <el-button type="danger" size="small" @click="clearCache('all', false)" :loading="loading.clearCache">清除全部</el-button>
+                            <el-button type="warning" size="small" @click="clearCache('memory', false)" :loading="loading.clearCache">内存</el-button>
+                            <el-button type="warning" size="small" @click="clearCache('l2', false)" :loading="loading.clearCache">磁盘</el-button>
                         </div>
-                        <p style="font-size: 12px; color: #666; margin-top: 14px; margin-bottom: 8px;">本机 + 级联上游</p>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <el-button type="danger" @click="clearCache('all', true)" :loading="loading.clearCache">
-                                💥 清除所有缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearCache('memory', true)" :loading="loading.clearCache">
-                                🧠 清除内存缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearCache('l2', true)" :loading="loading.clearCache">
-                                💿 清除磁盘缓存
-                            </el-button>
+                        <p style="font-size:12px; color:#888; margin:14px 0 8px;">本机 + 级联上游</p>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <el-button type="danger" size="small" @click="clearCache('all', true)" :loading="loading.clearCache">清除全部</el-button>
+                            <el-button type="warning" size="small" @click="clearCache('memory', true)" :loading="loading.clearCache">内存</el-button>
+                            <el-button type="warning" size="small" @click="clearCache('l2', true)" :loading="loading.clearCache">磁盘</el-button>
                         </div>
-                        <div v-if="results.clearCache" class="result-json">
-                            {{ JSON.stringify(results.clearCache, null, 2) }}
-                        </div>
-                    </el-card>
-
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">🔍 缓存搜索</div>
-                        </template>
-                        <p>按关键词搜索缓存中的内容</p>
-                        <el-input
-                            v-model="searchQuery"
-                            placeholder="输入搜索关键词"
-                            style="margin-bottom: 10px;"
-                        ></el-input>
-                        <el-button type="primary" @click="searchCache" :loading="loading.searchCache">
-                            🔍 搜索缓存
-                        </el-button>
-                        <div v-if="results.searchCache" class="result-json">
-                            {{ JSON.stringify(results.searchCache, null, 2) }}
-                        </div>
-                    </el-card>
-
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">📋 缓存键列表</div>
-                        </template>
-                        <p>查看缓存中的所有键</p>
-                        <el-input-number
-                            v-model="keysLimit"
-                            :min="1"
-                            :max="1000"
-                            style="margin-bottom: 10px;"
-                        ></el-input-number>
-                        <el-button type="primary" @click="getCacheKeys" :loading="loading.cacheKeys">
-                            📋 获取缓存键
-                        </el-button>
-                        <div v-if="results.cacheKeys" class="result-json">
-                            {{ JSON.stringify(results.cacheKeys, null, 2) }}
-                        </div>
+                        <div v-if="clearCacheResult" class="result-json">{{ JSON.stringify(clearCacheResult, null, 2) }}</div>
                     </el-card>
                 </div>
             </el-tab-pane>
 
-            <!-- 上游服务器管理标签页 -->
-            <el-tab-pane label="🌐 上游服务器" name="upstream">
-                <div class="card-grid">
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">📊 上游服务器汇总</div>
-                        </template>
-                        <p>汇总所有上游服务器的状态和缓存信息</p>
-                        <el-button type="primary" @click="getUpstreamAggregate" :loading="loading.upstreamAggregate">
-                            📈 获取汇总信息
-                        </el-button>
-                        <div v-if="results.upstreamAggregate" class="result-json">
-                            {{ JSON.stringify(results.upstreamAggregate, null, 2) }}
-                        </div>
-                    </el-card>
-
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">🧹 清理上游服务器缓存</div>
-                        </template>
-                        <p>清理所有配置的上游服务器缓存（需要配置UPSTREAM_PROXY_SERVERS环境变量）</p>
-                        <p style="font-size: 12px; color: #666; margin-top: 5px; margin-bottom: 10px;">
-                            ⚠️ 注意：此操作会清理所有配置的上游服务器缓存。确保上游服务器配置了相同的API_KEY。
-                        </p>
-                        <div style="margin-top: 15px;">
-                            <el-button type="danger" @click="clearUpstreamCache('all')" :loading="loading.clearUpstreamCache">
-                                💥 清理所有缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearUpstreamCache('memory')" :loading="loading.clearUpstreamCache">
-                                🧠 清理内存缓存
-                            </el-button>
-                            <el-button type="warning" @click="clearUpstreamCache('l2')" :loading="loading.clearUpstreamCache">
-                                💿 清理L2缓存
-                            </el-button>
-                        </div>
-                        <div v-if="results.clearUpstreamCache" class="result-json">
-                            {{ JSON.stringify(results.clearUpstreamCache, null, 2) }}
-                        </div>
-                    </el-card>
-
-                    <el-card>
-                        <template #header>
-                            <div class="card-header">🔗 上游服务器状态</div>
-                        </template>
-                        <p>查看检测到的嵌套代理服务器状态（自动检测，需要上游服务器返回X-TMDB-Proxy响应头）</p>
-                        <p style="font-size: 12px; color: #666; margin-top: 5px; margin-bottom: 10px;">
-                            💡 提示：此功能自动检测上游代理服务器。如需手动配置上游服务器列表用于聚合API，请设置UPSTREAM_PROXY_SERVERS环境变量。
-                        </p>
-                        <el-button type="primary" @click="getUpstreamStatus" :loading="loading.upstream">
-                            🔍 检查上游代理
-                        </el-button>
-                        <div v-if="results.upstream" class="result-json">
-                            {{ JSON.stringify(results.upstream, null, 2) }}
-                        </div>
-                    </el-card>
-                </div>
-            </el-tab-pane>
-
-            <!-- 系统配置标签页 -->
-            <el-tab-pane label="⚙️ 系统配置" name="config">
+            <!-- 系统配置 -->
+            <el-tab-pane label="系统配置" name="config">
                 <el-card>
                     <template #header>
-                        <div class="card-header">🔧 配置信息</div>
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>配置参数</span>
+                            <el-button size="small" @click="loadSystemConfig" :loading="loading.config">刷新</el-button>
+                        </div>
                     </template>
-                    <p>查看当前系统配置参数</p>
-                    <el-button type="primary" @click="getSystemConfig" :loading="loading.config">
-                        ⚙️ 获取配置信息
-                    </el-button>
-                    <div v-if="results.config" class="result-json">
-                        {{ JSON.stringify(results.config, null, 2) }}
+                    <div v-if="systemConfig && !systemConfig.error">
+                        <div class="stat-row" v-for="(v, k) in systemConfig" :key="k">
+                            <span class="stat-label">{{ k }}</span>
+                            <span class="stat-val">{{ typeof v === 'object' ? JSON.stringify(v) : v }}</span>
+                        </div>
                     </div>
+                    <div v-else-if="systemConfig && systemConfig.error" style="color:#f56c6c; font-size:13px;">{{ systemConfig.error }}</div>
+                    <div v-else style="color:#ccc; text-align:center; padding:20px;">点击刷新加载配置</div>
                 </el-card>
             </el-tab-pane>
         </el-tabs>
@@ -2488,371 +2395,147 @@ func getWebUIHTML() string {
 
     <script>
         const { createApp } = Vue;
-        const { ElButton, ElCard, ElTabs, ElTabPane, ElInput, ElInputNumber, ElMessage, ElMessageBox } = ElementPlus;
+        const { ElMessage, ElMessageBox } = ElementPlus;
 
         createApp({
-            components: {
-                ElButton,
-                ElCard,
-                ElTabs,
-                ElTabPane,
-                ElInput,
-                ElInputNumber
-            },
             data() {
                 return {
                     activeTab: 'overview',
-                    apiKey: '', // 从环境变量API_KEY读取，如果设置了会自动使用
-                    apiKeyRequired: false, // 是否要求API Key
-                    searchQuery: '',
-                    keysLimit: 50,
-                    loading: {
-                        health: false,
-                        stats: false,
-                        upstream: false,
-                        upstreamAggregate: false,
-                        clearUpstreamCache: false,
-                        cacheInfo: false,
-                        clearCache: false,
-                        searchCache: false,
-                        cacheKeys: false,
-                        config: false
-                    },
-                    results: {
-                        health: null,
-                        stats: null,
-                        upstream: null,
-                        upstreamAggregate: null,
-                        clearUpstreamCache: null,
-                        cacheInfo: null,
-                        clearCache: null,
-                        searchCache: null,
-                        cacheKeys: null,
-                        config: null
-                    }
-                }
+                    autoRefresh: false,
+                    refreshCountdown: 0,
+                    refreshTimer: null,
+                    countdownTimer: null,
+                    lastUpdated: '-',
+                    serverList: [],
+                    upstreamProxies: [],
+                    health: null,
+                    cacheInfo: null,
+                    systemConfig: null,
+                    clearCacheResult: null,
+                    loading: { health: false, servers: false, cache: false, clearCache: false, config: false }
+                };
             },
             computed: {
-                healthStatusClass() {
-                    if (!this.results.health) return 'status-unknown';
-                    return this.results.health.status === 'healthy' ? 'status-healthy' : 'status-unhealthy';
+                healthDisplay() {
+                    if (!this.health) return {};
+                    const skip = ['servers', 'upstream_servers'];
+                    const out = {};
+                    for (const k in this.health) {
+                        if (skip.indexOf(k) === -1) out[k] = this.health[k];
+                    }
+                    return out;
+                }
+            },
+            watch: {
+                activeTab(val) {
+                    if (val === 'servers') this.loadServers();
+                    else if (val === 'cache') this.loadCacheInfo();
+                    else if (val === 'config') this.loadSystemConfig();
                 }
             },
             methods: {
-                 // 检查API Key状态（从后端获取）
-                 async checkApiKeyStatus() {
-                     try {
-                         const response = await fetch('/mapi/api-key-status', {
-                             method: 'GET',
-                             headers: { 'Content-Type': 'application/json' }
-                         });
-                         
-                         if (response.ok) {
-                             const data = await response.json();
-                             this.apiKeyRequired = data.api_key_required || false;
-                             // 如果环境变量设置了API_KEY，需要提示用户
-                             if (this.apiKeyRequired) {
-                                 console.log('API Key已从环境变量配置，管理API需要API Key验证');
-                             }
-                         }
-                     } catch (error) {
-                         // 忽略错误，可能是网络问题
-                         console.log('检查API Key状态失败:', error);
-                     }
-                 },
-
-                 async apiRequest(endpoint, options = {}) {
-                     const url = '/mapi' + endpoint;
-                     const defaultOptions = {
-                         headers: {
-                             'Content-Type': 'application/json'
-                         }
-                     };
-
-                     // 注意：API Key只能通过环境变量API_KEY配置，前端无法设置
-                     // 如果后端设置了API_KEY，前端请求会失败，需要用户在后端配置
-                     const finalOptions = { ...defaultOptions, ...options };
-
-                     try {
-                         const response = await fetch(url, finalOptions);
-                         const data = await response.json();
-
-                         if (!response.ok) {
-                             // 如果是401错误，说明需要API Key
-                             if (response.status === 401) {
-                                 throw new Error(data.message || '需要API Key验证，请设置API_KEY环境变量');
-                     }
-                             throw new Error(data.message || data.error || '请求失败');
-                         }
-
-                         return data;
-                     } catch (error) {
-                         // 如果是网络错误，提供更友好的错误信息
-                         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                             throw new Error('网络请求失败，请检查服务器是否运行');
-                         }
-                         throw error;
-                     }
-                 },
-
-                 // 公开API请求（不需要API Key）
-                 async publicApiRequest(endpoint, options = {}) {
-                     const url = '/api' + endpoint;
-                     const defaultOptions = {
-                         headers: {
-                             'Content-Type': 'application/json'
-                         }
-                     };
-
-                     const finalOptions = { ...defaultOptions, ...options };
-
-                     try {
-                     const response = await fetch(url, finalOptions);
-                     const data = await response.json();
-
-                     if (!response.ok) {
-                         throw new Error(data.message || data.error || '请求失败');
-                     }
-
-                     return data;
-                     } catch (error) {
-                         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                             throw new Error('网络请求失败，请检查服务器是否运行');
-                         }
-                         throw error;
-                     }
-                 },
-
-                 async checkHealth() {
-                     this.loading.health = true;
-                     try {
-                         const data = await this.publicApiRequest('/health');
-                         this.results.health = data;
-                         ElMessage.success('健康检查成功');
-                     } catch (error) {
-                         this.results.health = { error: error.message };
-                         ElMessage.error('健康检查失败: ' + error.message);
-                     } finally {
-                         this.loading.health = false;
-                     }
-                 },
-
-                 async getStats() {
-                     this.loading.stats = true;
-                     try {
-                         const data = await this.publicApiRequest('/stats');
-                         this.results.stats = data;
-                         ElMessage.success('统计信息获取成功');
-                     } catch (error) {
-                         this.results.stats = { error: error.message };
-                         ElMessage.error('获取统计信息失败: ' + error.message);
-                     } finally {
-                         this.loading.stats = false;
-                     }
-                 },
-
-                 async getUpstreamStatus() {
-                     this.loading.upstream = true;
-                     try {
-                         const data = await this.publicApiRequest('/upstream');
-                         this.results.upstream = data;
-                         ElMessage.success('上游代理状态获取成功');
-                     } catch (error) {
-                         this.results.upstream = { error: error.message };
-                         ElMessage.error('获取上游代理状态失败: ' + error.message);
-                     } finally {
-                         this.loading.upstream = false;
-                     }
-                 },
-
-                 async getUpstreamAggregate() {
-                     this.loading.upstreamAggregate = true;
-                     try {
-                         const data = await this.apiRequest('/upstream/aggregate');
-                         this.results.upstreamAggregate = data;
-                         ElMessage.success('上游服务器汇总信息获取成功');
-                     } catch (error) {
-                         this.results.upstreamAggregate = { error: error.message };
-                         ElMessage.error('获取上游服务器汇总信息失败: ' + error.message);
-                     } finally {
-                         this.loading.upstreamAggregate = false;
-                     }
-                 },
-
-                 async clearUpstreamCache(type = 'all') {
-                     const confirmMessage = type === 'all' ?
-                         '确定要清理所有上游服务器的缓存吗？这将影响所有上游服务器的性能！' :
-                         '确定要清理所有上游服务器的' + type + '缓存吗？';
-
-                     try {
-                         await ElMessageBox.confirm(confirmMessage, '确认操作', {
-                             confirmButtonText: '确定',
-                             cancelButtonText: '取消',
-                             type: 'warning'
-                         });
-                     } catch {
-                         return; // 用户取消
-                     }
-
-                     this.loading.clearUpstreamCache = true;
-                     try {
-                         const data = await this.apiRequest(
-                             '/upstream/clear-cache?type=' + type,
-                             { method: 'POST' }
-                         );
-                         
-                         this.results.clearUpstreamCache = data;
-                         
-                         // 显示成功/失败统计
-                         const successCount = data.success || 0;
-                         const failedCount = data.failed_count || 0;
-                         
-                         if (failedCount === 0) {
-                             ElMessage.success('成功清理 ' + successCount + ' 个上游服务器的缓存');
-                         } else if (successCount > 0) {
-                             ElMessage.warning('部分成功：' + successCount + ' 个成功，' + failedCount + ' 个失败');
-                         } else {
-                             ElMessage.error('清理失败：所有 ' + failedCount + ' 个上游服务器都失败');
-                         }
-                         
-                         // 清理缓存后，自动刷新汇总信息
-                         setTimeout(() => {
-                             this.getUpstreamAggregate().catch(() => {
-                                 // 忽略错误
-                             });
-                         }, 1000);
-                     } catch (error) {
-                         this.results.clearUpstreamCache = { error: error.message };
-                         ElMessage.error('清理上游服务器缓存失败: ' + error.message);
-                     } finally {
-                         this.loading.clearUpstreamCache = false;
-                     }
-                 },
-
-                 async getCacheInfo() {
-                     this.loading.cacheInfo = true;
-                     try {
-                         const data = await this.apiRequest('/cache/info');
-                         this.results.cacheInfo = data;
-                         ElMessage.success('缓存信息获取成功');
-                     } catch (error) {
-                         this.results.cacheInfo = { error: error.message };
-                         ElMessage.error('获取缓存信息失败: ' + error.message);
-                     } finally {
-                         this.loading.cacheInfo = false;
-                     }
-                 },
-
-                 async clearCache(type = 'all', cascade = false) {
-                     const scope = cascade ? '本机及所有上游' : '本机';
-                     const confirmMessage = type === 'all' ?
-                         ('确定要清除' + scope + '的所有缓存吗?') :
-                         ('确定要清除' + scope + '的 ' + type + ' 缓存吗?');
-
-                     try {
-                         await ElMessageBox.confirm(confirmMessage, '确认操作', {
-                             confirmButtonText: '确定',
-                             cancelButtonText: '取消',
-                             type: 'warning'
-                         });
-                     } catch {
-                         return;
-                     }
-
-                     this.loading.clearCache = true;
-                     try {
-                         let queryParams = type === 'all' ? '?type=all&confirm=yes' : '?type=' + type;
-                         if (cascade) queryParams += '&cascade=true';
-
-                         const data = await this.apiRequest(
-                             '/cache/clear' + queryParams,
-                             { method: 'POST' }
-                         );
-
-                         this.results.clearCache = data;
-
-                         if (cascade && data.upstream !== undefined) {
-                             const s = data.upstream_success || 0;
-                             const t = data.upstream_total || 0;
-                             ElMessage.success('本机清除成功，上游 ' + s + '/' + t + ' 成功');
-                         } else {
-                             ElMessage.success('缓存清除成功: ' + (data.message || '操作完成'));
-                         }
-
-                         setTimeout(() => {
-                             this.getCacheInfo().catch(() => {});
-                         }, 500);
-                     } catch (error) {
-                         this.results.clearCache = { error: error.message };
-                         ElMessage.error('缓存清除失败: ' + error.message);
-                     } finally {
-                         this.loading.clearCache = false;
-                     }
-                 },
-
-                 async searchCache() {
-                     if (!this.searchQuery.trim()) {
-                         ElMessage.warning('请输入搜索关键词');
-                         return;
-                     }
-
-                     this.loading.searchCache = true;
-                     try {
-                         const data = await this.apiRequest('/cache/search?q=' + encodeURIComponent(this.searchQuery));
-                         this.results.searchCache = data;
-                         ElMessage.success('缓存搜索成功');
-                     } catch (error) {
-                         this.results.searchCache = { error: error.message };
-                         ElMessage.error('缓存搜索失败: ' + error.message);
-                     } finally {
-                         this.loading.searchCache = false;
-                     }
-                 },
-
-                 async getCacheKeys() {
-                     this.loading.cacheKeys = true;
-                     try {
-                         const data = await this.apiRequest('/cache/keys?limit=' + this.keysLimit);
-                         this.results.cacheKeys = data;
-                         ElMessage.success('缓存键列表获取成功');
-                     } catch (error) {
-                         this.results.cacheKeys = { error: error.message };
-                         ElMessage.error('获取缓存键列表失败: ' + error.message);
-                     } finally {
-                         this.loading.cacheKeys = false;
-                     }
-                 },
-
-                 async getSystemConfig() {
-                     this.loading.config = true;
-                     try {
-                         // 使用管理端点（需要API Key，如果配置了的话）
-                         const data = await this.apiRequest('/config');
-                         this.results.config = data;
-                         ElMessage.success('配置信息获取成功');
-                     } catch (error) {
-                         this.results.config = { error: error.message };
-                         ElMessage.error('获取配置信息失败: ' + error.message);
-                     } finally {
-                         this.loading.config = false;
-                     }
-                 },
-
-                handleTabClick(tab) {
-                    // 可以在这里添加标签切换时的逻辑
+                async apiRequest(path, opts) {
+                    const res = await fetch('/mapi' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.message || data.error || '请求失败');
+                    return data;
+                },
+                async publicRequest(path, opts) {
+                    const res = await fetch('/api' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.message || data.error || '请求失败');
+                    return data;
+                },
+                async loadHealth() {
+                    this.loading.health = true;
+                    try {
+                        this.health = await this.publicRequest('/health');
+                    } catch(e) {
+                        this.health = { status: 'error', error: e.message };
+                    } finally { this.loading.health = false; }
+                },
+                async loadServers() {
+                    this.loading.servers = true;
+                    try {
+                        const data = await this.publicRequest('/stats');
+                        this.serverList = Object.values(data.servers || {});
+                        this.lastUpdated = new Date().toLocaleTimeString('zh-CN');
+                    } catch(e) {
+                        ElMessage.error('获取服务器状态失败: ' + e.message);
+                    } finally { this.loading.servers = false; }
+                },
+                async loadUpstreamProxies() {
+                    try {
+                        const data = await this.publicRequest('/upstream');
+                        this.upstreamProxies = data.upstream_servers || [];
+                    } catch(e) {}
+                },
+                toggleAutoRefresh(val) {
+                    if (val) {
+                        this.refreshCountdown = 30;
+                        this.refreshTimer = setInterval(() => {
+                            this.loadServers();
+                            this.refreshCountdown = 30;
+                        }, 30000);
+                        this.countdownTimer = setInterval(() => {
+                            if (this.refreshCountdown > 0) this.refreshCountdown--;
+                        }, 1000);
+                    } else {
+                        clearInterval(this.refreshTimer);
+                        clearInterval(this.countdownTimer);
+                        this.refreshTimer = null;
+                        this.countdownTimer = null;
+                    }
+                },
+                async loadCacheInfo() {
+                    this.loading.cache = true;
+                    try {
+                        this.cacheInfo = await this.apiRequest('/cache/info');
+                    } catch(e) {
+                        this.cacheInfo = { error: e.message };
+                    } finally { this.loading.cache = false; }
+                },
+                async clearCache(type, cascade) {
+                    const scope = cascade ? '本机及所有上游' : '本机';
+                    const msg = type === 'all'
+                        ? ('确定要清除' + scope + '的所有缓存吗?')
+                        : ('确定要清除' + scope + '的 ' + type + ' 缓存吗?');
+                    try {
+                        await ElMessageBox.confirm(msg, '确认', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' });
+                    } catch { return; }
+                    this.loading.clearCache = true;
+                    try {
+                        let q = type === 'all' ? '?type=all&confirm=yes' : '?type=' + type;
+                        if (cascade) q += '&cascade=true';
+                        const data = await this.apiRequest('/cache/clear' + q, { method: 'POST' });
+                        this.clearCacheResult = data;
+                        if (cascade && data.upstream !== undefined) {
+                            ElMessage.success('本机清除成功，上游 ' + (data.upstream_success || 0) + '/' + (data.upstream_total || 0) + ' 成功');
+                        } else {
+                            ElMessage.success('缓存清除成功');
+                        }
+                        setTimeout(() => { this.loadCacheInfo().catch(function() {}); }, 500);
+                    } catch(e) {
+                        this.clearCacheResult = { error: e.message };
+                        ElMessage.error('清除失败: ' + e.message);
+                    } finally { this.loading.clearCache = false; }
+                },
+                async loadSystemConfig() {
+                    this.loading.config = true;
+                    try {
+                        this.systemConfig = await this.apiRequest('/config');
+                    } catch(e) {
+                        this.systemConfig = { error: e.message };
+                    } finally { this.loading.config = false; }
                 }
             },
-
-             mounted() {
-                 // API Key从环境变量API_KEY读取，不需要在UI中配置
-                 // 检查API Key状态
-                 this.checkApiKeyStatus();
-                 
-                 // 页面加载时自动检查健康状态
-                     setTimeout(() => {
-                         this.checkHealth();
-                     }, 1000);
-             }
+            mounted() {
+                this.loadHealth();
+                this.loadUpstreamProxies();
+            },
+            beforeUnmount() {
+                this.toggleAutoRefresh(false);
+            }
         }).use(ElementPlus).mount('#app');
     </script>
 </body>
