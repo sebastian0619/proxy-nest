@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1021,4 +1022,73 @@ func (pm *ProxyManager) clearUpstreamCache(serverURL string, cacheType string) e
 
 	logger.Info("上游代理 %s 缓存清理完成", serverURL)
 	return nil
+}
+
+// StartUpstreamProxyProbing 启动主动探测上游代理，启动时立即执行一次，之后每隔 interval 执行一次
+func (pm *ProxyManager) StartUpstreamProxyProbing(interval time.Duration) {
+	pm.probeAllUpstreamProxies()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			pm.probeAllUpstreamProxies()
+		}
+	}()
+}
+
+// probeAllUpstreamProxies 主动探测所有已注册上游服务器，检测是否为 proxy-nest 节点
+func (pm *ProxyManager) probeAllUpstreamProxies() {
+	allServers := pm.healthManager.GetAllServers()
+	if len(allServers) == 0 {
+		return
+	}
+	logger.Info("主动探测 %d 个上游服务器的 proxy-nest 标识...", len(allServers))
+	var wg sync.WaitGroup
+	for _, server := range allServers {
+		if pm.isTMDBOfficialAPI(server.URL) {
+			continue
+		}
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+			pm.probeServerForProxy(url)
+		}(server.URL)
+	}
+	wg.Wait()
+	// 汇报检测结果
+	pm.mutex.RLock()
+	detected := 0
+	for _, info := range pm.upstreamProxies {
+		if info.IsTMDBProxy {
+			detected++
+		}
+	}
+	pm.mutex.RUnlock()
+	logger.Info("主动探测完成，共发现 %d 个 proxy-nest 节点", detected)
+}
+
+// probeServerForProxy 向单个服务器发探测请求，检测 X-TMDB-Proxy 响应头
+func (pm *ProxyManager) probeServerForProxy(serverURL string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 先尝试 /health，再尝试 /status（轻量端点，避免产生实际代理流量）
+	for _, path := range []string{"/health", "/status"} {
+		probeURL := strings.TrimSuffix(serverURL, "/") + path
+		req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (upstream-probe)")
+
+		resp, err := pm.client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+
+		// 只要能拿到响应就做检测，然后返回
+		pm.detectUpstreamProxy(resp, serverURL)
+		return
+	}
 }

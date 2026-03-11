@@ -85,6 +85,10 @@ func main() {
 	// 初始化代理管理器
 	proxyManager := proxy.NewProxyManager(cfg, cacheManager, healthManager)
 
+	// 启动主动探测：识别所有上游服务器中的 proxy-nest 节点
+	// 启动时立即探测一次，之后每隔健康检查间隔探测一次
+	proxyManager.StartUpstreamProxyProbing(cfg.HealthCheckInterval)
+
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
 

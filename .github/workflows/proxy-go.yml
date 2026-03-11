@@ -2,9 +2,11 @@ name: Build and Push TMDB Proxy Go (Multi-Arch)
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - 'go-server/**'
+      - '.github/workflows/proxy-go.yml'
   workflow_dispatch:
 
 env:
@@ -43,25 +45,22 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # 普通push时打test标签（用于测试，永远指向最新版本）
-            type=raw,value=test,enable=${{ github.event_name == 'push' }}
-            # 其他标签（分支名、SHA等）
-            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=short
+            type=raw,value={{date 'YYYYMMDD'}}
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./go-server
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
+
       - name: Show image info
-        if: github.event_name != 'pull_request'
         run: |
-          echo "Built images:"
-          docker images ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+          echo "Built and pushed:"
+          echo "${{ steps.meta.outputs.tags }}"
