@@ -821,7 +821,7 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 // updateServerPerformance 更新服务器性能指标
 func (pm *ProxyManager) updateServerPerformance(serverURL string, responseTime time.Duration) {
 	// 更新动态权重
-	pm.healthManager.UpdateDynamicWeight(serverURL, int64(responseTime))
+	pm.healthManager.UpdateDynamicWeight(serverURL, responseTime.Milliseconds())
 
 	// 更新连接率（成功）
 	// 获取服务器对象并更新连接率
