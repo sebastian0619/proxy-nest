@@ -2342,6 +2342,7 @@ func getWebUIHTML() string {
                             <div class="card-header">🗑️ 清除缓存</div>
                         </template>
                         <p>清除不同类型的缓存数据</p>
+                        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">仅本机</p>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                             <el-button type="danger" @click="clearCache('all')" :loading="loading.clearCache">
                                 💥 清除所有缓存
@@ -2350,6 +2351,18 @@ func getWebUIHTML() string {
                                 🧠 清除内存缓存
                             </el-button>
                             <el-button type="warning" @click="clearCache('l2')" :loading="loading.clearCache">
+                                💿 清除磁盘缓存
+                            </el-button>
+                        </div>
+                        <p style="font-size: 12px; color: #666; margin-top: 14px; margin-bottom: 8px;">本机 + 级联上游</p>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <el-button type="danger" @click="clearCache('all', true)" :loading="loading.clearCache">
+                                💥 清除所有缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearCache('memory', true)" :loading="loading.clearCache">
+                                🧠 清除内存缓存
+                            </el-button>
+                            <el-button type="warning" @click="clearCache('l2', true)" :loading="loading.clearCache">
                                 💿 清除磁盘缓存
                             </el-button>
                         </div>
@@ -2730,10 +2743,11 @@ func getWebUIHTML() string {
                      }
                  },
 
-                 async clearCache(type = 'all') {
+                 async clearCache(type = 'all', cascade = false) {
+                     const scope = cascade ? '本机及所有上游' : '本机';
                      const confirmMessage = type === 'all' ?
-                         '确定要清除所有缓存吗？这将影响系统性能！' :
-                         '确定要清除' + type + '缓存吗？';
+                         ('确定要清除' + scope + '的所有缓存吗?') :
+                         ('确定要清除' + scope + '的 ' + type + ' 缓存吗?');
 
                      try {
                          await ElMessageBox.confirm(confirmMessage, '确认操作', {
@@ -2742,33 +2756,31 @@ func getWebUIHTML() string {
                              type: 'warning'
                          });
                      } catch {
-                         return; // 用户取消
+                         return;
                      }
 
                      this.loading.clearCache = true;
                      try {
-                         // 构建查询参数 - 修复：确保type参数正确传递
-                         let queryParams = '';
-                         if (type === 'all') {
-                             queryParams = '?type=all&confirm=yes';
-                         } else {
-                             queryParams = '?type=' + type;
-                         }
-                         
-                         // 使用管理端点清理缓存（需要API Key，如果配置了的话）
+                         let queryParams = type === 'all' ? '?type=all&confirm=yes' : '?type=' + type;
+                         if (cascade) queryParams += '&cascade=true';
+
                          const data = await this.apiRequest(
                              '/cache/clear' + queryParams,
                              { method: 'POST' }
                          );
-                         
+
                          this.results.clearCache = data;
-                         ElMessage.success('缓存清除成功: ' + (data.message || '操作完成'));
-                         
-                         // 清除缓存后，自动刷新缓存信息（不依赖API Key）
+
+                         if (cascade && data.upstream !== undefined) {
+                             const s = data.upstream_success || 0;
+                             const t = data.upstream_total || 0;
+                             ElMessage.success('本机清除成功，上游 ' + s + '/' + t + ' 成功');
+                         } else {
+                             ElMessage.success('缓存清除成功: ' + (data.message || '操作完成'));
+                         }
+
                          setTimeout(() => {
-                             this.getCacheInfo().catch(() => {
-                                 // 忽略错误，可能API Key未设置
-                             });
+                             this.getCacheInfo().catch(() => {});
                          }, 500);
                      } catch (error) {
                          this.results.clearCache = { error: error.message };
