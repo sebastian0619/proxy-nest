@@ -780,18 +780,22 @@ func (dc *DiskCache) GetStats() *CacheStats {
 
 // Clear 清空磁盘缓存
 func (dc *DiskCache) Clear() error {
+	// 锁内只收集文件路径并清空 index，不调任何会再次加锁的方法（避免死锁）
 	dc.indexMutex.Lock()
-	defer dc.indexMutex.Unlock()
+	filePaths := make([]string, 0, len(dc.index))
+	for key, meta := range dc.index {
+		filePaths = append(filePaths, meta.FilePath)
+		filePaths = append(filePaths, filepath.Join(dc.cacheDir, key+".img"))
+	}
+	dc.index = make(map[string]*CacheMeta)
+	dc.indexMutex.Unlock()
 
-	// 删除所有缓存文件
-	for key := range dc.index {
-		if err := dc.Delete(key); err != nil {
-			logger.Error("删除缓存文件失败: %s -> %v", key, err)
+	// 锁外删除文件
+	for _, p := range filePaths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			logger.Error("删除缓存文件失败: %v", err)
 		}
 	}
-
-	// 清空索引
-	dc.index = make(map[string]*CacheMeta)
 
 	logger.Info("磁盘缓存已清空")
 	return nil
