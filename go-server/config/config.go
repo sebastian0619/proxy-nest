@@ -8,33 +8,36 @@ import (
 	"time"
 )
 
+const ProxyVersion = "1.1.0"
+const ProxyIdentifier = "tmdb-go-proxy/" + ProxyVersion
+
 // CacheConfig 缓存配置
 type CacheConfig struct {
 	CacheEnabled               bool
-	CacheDir                   string  // 保留，用于向后兼容
-	CacheIndexFile             string  // 保留，用于向后兼容
-	DiskCacheTTL               time.Duration  // 保留，用于向后兼容
+	CacheDir                   string        // 保留，用于向后兼容
+	CacheIndexFile             string        // 保留，用于向后兼容
+	DiskCacheTTL               time.Duration // 保留，用于向后兼容
 	MemoryCacheTTL             time.Duration
 	MemoryCacheSize            int
 	CacheMaxSize               int
-	DiskCacheCleanupInterval   time.Duration  // 保留，用于向后兼容
+	DiskCacheCleanupInterval   time.Duration // 保留，用于向后兼容
 	MemoryCacheCleanupInterval time.Duration
 	ContentTypeConfig          map[string]ContentTypeConfig
-	CacheFileExt               string  // 保留，用于向后兼容
-	
+	CacheFileExt               string // 保留，用于向后兼容
+
 	// Redis配置
-	UseRedis                   bool
-	RedisClusterNodes          []string
-	RedisPassword              string
-	RedisDB                    int
-	RedisPoolSize              int
-	RedisMinIdleConns          int
-	RedisConnectTimeout        time.Duration
-	RedisReadTimeout           time.Duration
-	RedisWriteTimeout          time.Duration
-	RedisIdleTimeout           time.Duration
-	RedisMaxRetries            int
-	RedisRetryDelay            time.Duration
+	UseRedis            bool
+	RedisClusterNodes   []string
+	RedisPassword       string
+	RedisDB             int
+	RedisPoolSize       int
+	RedisMinIdleConns   int
+	RedisConnectTimeout time.Duration
+	RedisReadTimeout    time.Duration
+	RedisWriteTimeout   time.Duration
+	RedisIdleTimeout    time.Duration
+	RedisMaxRetries     int
+	RedisRetryDelay     time.Duration
 }
 
 // ContentTypeConfig 内容类型配置
@@ -53,8 +56,8 @@ type Config struct {
 	MaxErrorsBeforeUnhealthy int
 
 	// 健康检查配置
-	HealthCheckInterval      time.Duration
-	HealthCheckInitialDelay  time.Duration
+	HealthCheckInterval     time.Duration
+	HealthCheckInitialDelay time.Duration
 
 	// 请求超时配置
 	InitialTimeout  time.Duration
@@ -105,8 +108,8 @@ func LoadConfig() *Config {
 		MaxErrorsBeforeUnhealthy: getEnvAsInt("MAX_ERRORS_BEFORE_UNHEALTHY", 3),
 
 		// 健康检查配置
-		HealthCheckInterval:      time.Duration(getEnvAsInt("HEALTH_CHECK_INTERVAL", 30)) * time.Second,
-		HealthCheckInitialDelay:  time.Duration(getEnvAsInt("HEALTH_CHECK_INITIAL_DELAY", 10)) * time.Second,
+		HealthCheckInterval:     time.Duration(getEnvAsInt("HEALTH_CHECK_INTERVAL", 30)) * time.Second,
+		HealthCheckInitialDelay: time.Duration(getEnvAsInt("HEALTH_CHECK_INITIAL_DELAY", 10)) * time.Second,
 
 		// 请求超时配置
 		InitialTimeout:  time.Duration(getEnvAsInt("INITIAL_TIMEOUT", 8)) * time.Second,
@@ -140,10 +143,10 @@ func LoadConfig() *Config {
 		// 缓存配置
 		Cache: CacheConfig{
 			CacheEnabled:               getEnvAsBool("CACHE_ENABLED", true),
-			CacheDir:                   getEnv("CACHE_DIR", "cache"),  // 保留向后兼容
-			CacheIndexFile:             "cache_index.json",  // 保留向后兼容
+			CacheDir:                   getEnv("CACHE_DIR", "cache"),                                     // 保留向后兼容
+			CacheIndexFile:             "cache_index.json",                                               // 保留向后兼容
 			DiskCacheTTL:               time.Duration(getEnvAsInt("DISK_CACHE_TTL", 360)) * time.Minute,  // 降到6小时
-			MemoryCacheTTL:             time.Duration(getEnvAsInt("MEMORY_CACHE_TTL", 15)) * time.Minute,  // 降到15分钟
+			MemoryCacheTTL:             time.Duration(getEnvAsInt("MEMORY_CACHE_TTL", 15)) * time.Minute, // 降到15分钟
 			MemoryCacheSize:            getEnvAsInt("MEMORY_CACHE_SIZE", 100),
 			CacheMaxSize:               getEnvAsInt("CACHE_MAX_SIZE", 1000),
 			DiskCacheCleanupInterval:   time.Duration(getEnvAsInt("DISK_CACHE_CLEANUP_INTERVAL", 5)) * time.Minute,
@@ -151,30 +154,30 @@ func LoadConfig() *Config {
 			ContentTypeConfig: map[string]ContentTypeConfig{
 				"image": {
 					MemoryTTL:  time.Duration(getEnvAsInt("IMAGE_MEMORY_TTL", 30)) * time.Minute,  // 提升到30分钟
-					DiskTTL:    time.Duration(getEnvAsInt("IMAGE_DISK_TTL", 10080)) * time.Minute,  // 提升到7天
+					DiskTTL:    time.Duration(getEnvAsInt("IMAGE_DISK_TTL", 10080)) * time.Minute, // 提升到7天
 					SkipMemory: getEnvAsBool("IMAGE_SKIP_MEMORY", false),
 				},
 				"json": {
-					MemoryTTL:  time.Duration(getEnvAsInt("JSON_MEMORY_TTL", 15)) * time.Minute,  // 降到15分钟
+					MemoryTTL:  time.Duration(getEnvAsInt("JSON_MEMORY_TTL", 15)) * time.Minute, // 降到15分钟
 					DiskTTL:    time.Duration(getEnvAsInt("JSON_DISK_TTL", 360)) * time.Minute,  // 降到6小时
 					SkipMemory: false,
 				},
 			},
 			CacheFileExt: ".cache",
-			
+
 			// Redis配置
-			UseRedis:           getEnvAsBool("USE_REDIS", false),
-			RedisClusterNodes:  getEnvAsStringSlice("REDIS_CLUSTER_NODES", []string{"localhost:6379"}),
-			RedisPassword:      getEnv("REDIS_PASSWORD", ""),
-			RedisDB:            getEnvAsInt("REDIS_DB", 0),
-			RedisPoolSize:      getEnvAsInt("REDIS_POOL_SIZE", 10),
-			RedisMinIdleConns:  getEnvAsInt("REDIS_MIN_IDLE_CONNS", 2),
+			UseRedis:            getEnvAsBool("USE_REDIS", false),
+			RedisClusterNodes:   getEnvAsStringSlice("REDIS_CLUSTER_NODES", []string{"localhost:6379"}),
+			RedisPassword:       getEnv("REDIS_PASSWORD", ""),
+			RedisDB:             getEnvAsInt("REDIS_DB", 0),
+			RedisPoolSize:       getEnvAsInt("REDIS_POOL_SIZE", 10),
+			RedisMinIdleConns:   getEnvAsInt("REDIS_MIN_IDLE_CONNS", 2),
 			RedisConnectTimeout: time.Duration(getEnvAsInt("REDIS_CONNECT_TIMEOUT", 5)) * time.Second,
-			RedisReadTimeout:   time.Duration(getEnvAsInt("REDIS_READ_TIMEOUT", 3)) * time.Second,
-			RedisWriteTimeout:  time.Duration(getEnvAsInt("REDIS_WRITE_TIMEOUT", 3)) * time.Second,
-			RedisIdleTimeout:   time.Duration(getEnvAsInt("REDIS_IDLE_TIMEOUT", 300)) * time.Second,
-			RedisMaxRetries:    getEnvAsInt("REDIS_MAX_RETRIES", 3),
-			RedisRetryDelay:    time.Duration(getEnvAsInt("REDIS_RETRY_DELAY", 500)) * time.Millisecond,
+			RedisReadTimeout:    time.Duration(getEnvAsInt("REDIS_READ_TIMEOUT", 3)) * time.Second,
+			RedisWriteTimeout:   time.Duration(getEnvAsInt("REDIS_WRITE_TIMEOUT", 3)) * time.Second,
+			RedisIdleTimeout:    time.Duration(getEnvAsInt("REDIS_IDLE_TIMEOUT", 300)) * time.Second,
+			RedisMaxRetries:     getEnvAsInt("REDIS_MAX_RETRIES", 3),
+			RedisRetryDelay:     time.Duration(getEnvAsInt("REDIS_RETRY_DELAY", 500)) * time.Millisecond,
 		},
 	}
 

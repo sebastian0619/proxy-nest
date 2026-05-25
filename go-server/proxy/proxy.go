@@ -176,7 +176,7 @@ func (pm *ProxyManager) buildUpstreamRequest(rawURL string, headers http.Header)
 		}
 	}
 	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0")
+		req.Header.Set("User-Agent", config.ProxyIdentifier)
 	}
 
 	return req, finalURL, nil
@@ -1084,7 +1084,7 @@ func (pm *ProxyManager) clearUpstreamCache(serverURL string, cacheType string) e
 			continue
 		}
 
-		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (cache-clear-linkage)")
+		req.Header.Set("User-Agent", config.ProxyIdentifier+" (cache-clear-linkage)")
 		req.Header.Set("X-Cache-Clear-Linkage", "true")
 
 		if apiKey := os.Getenv("API_KEY"); apiKey != "" {
@@ -1166,7 +1166,7 @@ func (pm *ProxyManager) probeServerForProxy(serverURL string) {
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (upstream-probe)")
+		req.Header.Set("User-Agent", config.ProxyIdentifier+" (upstream-probe)")
 
 		resp, err := pm.client.Do(req)
 		if err != nil {

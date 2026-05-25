@@ -367,8 +367,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 健康检查端点 - 公开端点，不需要API Key
 	publicGroup.GET("/health", func(c *gin.Context) {
 		logger.Info("Health check endpoint called")
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -378,8 +378,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 健康检查端点 - 管理端点（需要API Key）
 	apiGroup.GET("/health", func(c *gin.Context) {
 		logger.Info("Health check endpoint called")
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -546,8 +546,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 缓存信息端点 - 公开版本（不需要API Key）
 	publicGroup.GET("/cache/info", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		// 获取缓存信息
 		memoryStats := cacheManager.GetMemoryCache().GetStats()
 		l2Stats := cacheManager.GetL2CacheStats()
@@ -603,8 +603,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 缓存管理端点 - 管理版本（需要API Key，保持向后兼容）
 	apiGroup.GET("/cache/info", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		// 获取缓存信息
 		memoryStats := cacheManager.GetMemoryCache().GetStats()
 		l2Stats := cacheManager.GetL2CacheStats()
@@ -661,8 +661,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 清除缓存端点（管理端点，需要 API Key）
 	// 支持 cascade=true 参数，级联清理所有已检测到的上游 proxy-nest 实例
 	apiGroup.POST("/cache/clear", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		if !validateCacheClearRequest(c) {
 			return
@@ -702,8 +702,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 获取缓存键列表端点
 	apiGroup.GET("/cache/keys", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		// 获取查询参数
 		limit := c.DefaultQuery("limit", "100")
 		offset := c.DefaultQuery("offset", "0")
@@ -739,8 +739,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 搜索缓存端点
 	apiGroup.GET("/cache/search", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		query := c.Query("q")
 		if query == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -786,7 +786,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"uptime":     uptime.String(),
 			"start_time": startTime.Format(time.RFC3339),
 			"timestamp":  time.Now().Format(time.RFC3339),
-			"version":    "tmdb-go-proxy/1.0",
+			"version":    config.ProxyIdentifier,
 			"endpoints": gin.H{
 				"health":      "/api/health",
 				"status":      "/api/status",
@@ -808,7 +808,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"uptime":     uptime.String(),
 			"start_time": startTime.Format(time.RFC3339),
 			"timestamp":  time.Now().Format(time.RFC3339),
-			"version":    "tmdb-go-proxy/1.0",
+			"version":    config.ProxyIdentifier,
 			"endpoints": gin.H{
 				"health":      "/mapi/health",
 				"status":      "/mapi/status",
@@ -879,8 +879,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 上游代理检测状态端点 - 公开端点，不需要API Key
 	publicGroup.GET("/upstream", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		// 获取自动检测到的上游服务器
 		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
@@ -971,8 +971,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	// 清除缓存端点 - 公开版本（不需要 API Key，供跨实例联动使用）
 	// 支持 cascade=true 参数，级联清理所有已检测到的上游 proxy-nest 实例
 	publicGroup.POST("/cache/clear", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		if !validateCacheClearRequest(c) {
 			return
@@ -1012,8 +1012,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 上游代理检测状态端点 - 管理端点（需要API Key）
 	apiGroup.GET("/upstream", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
 
@@ -1052,8 +1052,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 上游服务器聚合API端点 - 汇总所有上游服务器的状态和缓存信息
 	apiGroup.GET("/upstream/aggregate", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		// 获取自动检测到的上游服务器
 		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
@@ -1199,8 +1199,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 上游服务器缓存清理端点 - 仅清理上游，不清理本机
 	apiGroup.POST("/upstream/clear-cache", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		cacheType := c.DefaultQuery("type", "all")
 		validTypes := map[string]bool{"all": true, "memory": true, "l2": true, "disk": true}
@@ -1243,8 +1243,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 健康检查兼容路由
 	compatGroup.GET("/health", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -1256,14 +1256,14 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 	compatGroup.GET("/status", func(c *gin.Context) {
 		uptime := time.Since(startTime)
 
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		c.JSON(http.StatusOK, gin.H{
 			"status":     "running",
 			"uptime":     uptime.String(),
 			"start_time": startTime.Format(time.RFC3339),
 			"timestamp":  time.Now().Format(time.RFC3339),
-			"version":    "tmdb-go-proxy/1.0",
+			"version":    config.ProxyIdentifier,
 			"note":       "This is a compatibility endpoint. Please use /mapi/status for new integrations.",
 			"endpoints": gin.H{
 				"health":      "/mapi/health",
@@ -1278,8 +1278,8 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 	// 配置信息兼容路由
 	compatGroup.GET("/config", func(c *gin.Context) {
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 		c.JSON(http.StatusOK, gin.H{
 			"port": cfg.Port,
 			"cache": gin.H{
@@ -1356,8 +1356,8 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 
 		// 设置响应头
 		c.Header("Content-Type", response.ContentType)
-		c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-		c.Header("X-TMDB-Proxy-Version", "1.0")
+		c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+		c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 		// 发送响应
 		if response.IsImage {
@@ -1549,8 +1549,8 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 	logger.Info("响应头设置完成，Content-Type: %s", response.ContentType)
 
 	// 添加程序标识符到代理响应
-	c.Header("X-TMDB-Proxy", "tmdb-go-proxy/1.0")
-	c.Header("X-TMDB-Proxy-Version", "1.0")
+	c.Header("X-TMDB-Proxy", config.ProxyIdentifier)
+	c.Header("X-TMDB-Proxy-Version", config.ProxyVersion)
 
 	// 发送响应
 	if response.IsImage {
