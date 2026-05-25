@@ -25,6 +25,7 @@ services:
       - JSON_DISK_TTL=360
       - IMAGE_MEMORY_TTL=30
       - IMAGE_DISK_TTL=10080
+      - CLEAR_CACHE_ON_STARTUP=${CLEAR_CACHE_ON_STARTUP:-true}
       
       # TMDB配置
       - TMDB_API_KEY=${TMDB_API_KEY}

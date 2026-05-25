@@ -82,6 +82,8 @@ func (mc *MemoryCache) Clear() {
 	if mc.cache != nil {
 		mc.cache.Purge()
 	}
+	mc.hits.Store(0)
+	mc.misses.Store(0)
 }
 
 // CacheStats 缓存统计信息
@@ -473,13 +475,26 @@ func NewMemoryCache(cfg *config.CacheConfig) (*MemoryCache, error) {
 
 // Get 获取内存缓存
 func (mc *MemoryCache) Get(key string) (*CacheItem, bool) {
-	item, ok := mc.cache.Get(key)
-	if ok {
-		mc.hits.Add(1)
-	} else {
+	if mc.cache == nil {
 		mc.misses.Add(1)
+		return nil, false
 	}
-	return item, ok
+
+	item, ok := mc.cache.Get(key)
+	if !ok || item == nil {
+		mc.misses.Add(1)
+		return nil, false
+	}
+
+	if !item.ExpireAt.IsZero() && time.Now().After(item.ExpireAt) {
+		mc.cache.Remove(key)
+		mc.misses.Add(1)
+		return nil, false
+	}
+
+	item.LastAccessed = time.Now()
+	mc.hits.Add(1)
+	return item, true
 }
 
 // Set 设置内存缓存
@@ -791,24 +806,38 @@ func (dc *DiskCache) GetStats() *CacheStats {
 
 // Clear 清空磁盘缓存
 func (dc *DiskCache) Clear() error {
-	// 锁内只收集文件路径并清空 index，不调任何会再次加锁的方法（避免死锁）
+	// 锁内只清空索引，不调任何会再次加锁的方法（避免死锁）
 	dc.indexMutex.Lock()
-	filePaths := make([]string, 0, len(dc.index))
-	for key, meta := range dc.index {
-		filePaths = append(filePaths, meta.FilePath)
-		filePaths = append(filePaths, filepath.Join(dc.cacheDir, key+".img"))
-	}
 	dc.index = make(map[string]*CacheMeta)
 	dc.indexMutex.Unlock()
 
-	// 锁外删除文件
-	for _, p := range filePaths {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			logger.Error("删除缓存文件失败: %v", err)
+	entries, err := os.ReadDir(dc.cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logger.Info("缓存目录不存在，视为已清空: %s", dc.cacheDir)
+			return nil
+		}
+		return fmt.Errorf("读取缓存目录失败: %w", err)
+	}
+
+	removedFiles := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if name == dc.config.CacheIndexFile || strings.HasSuffix(name, dc.config.CacheFileExt) || strings.HasSuffix(name, ".img") {
+			filePath := filepath.Join(dc.cacheDir, name)
+			if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+				logger.Error("删除缓存文件失败: %v", err)
+			} else {
+				removedFiles++
+			}
 		}
 	}
 
-	logger.Info("磁盘缓存已清空")
+	logger.Info("磁盘缓存已清空，删除了 %d 个文件", removedFiles)
 	return nil
 }
 

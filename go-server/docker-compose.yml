@@ -24,6 +24,7 @@ services:
       - MEMORY_CACHE_SIZE=${MEMORY_CACHE_SIZE:-1000}
       - MEMORY_CACHE_TTL=${MEMORY_CACHE_TTL:-1h}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CLEAR_CACHE_ON_STARTUP=${CLEAR_CACHE_ON_STARTUP:-true}
       - CLEAR_HEALTH_DATA=${CLEAR_HEALTH_DATA:-false}
     volumes:
       - ./cache:./cache

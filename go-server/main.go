@@ -67,19 +67,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 启动时默认自动清理缓存，只有显式配置为 false 才跳过。
+	clearCacheOnStartup := true
+	if value := strings.TrimSpace(strings.ToLower(os.Getenv("CLEAR_CACHE_ON_STARTUP"))); value != "" {
+		clearCacheOnStartup = value != "false"
+	}
+	if clearCacheOnStartup {
+		logger.Info("检测到 CLEAR_CACHE_ON_STARTUP=true，启动前清理本机缓存")
+		clearResult, status := clearLocalCache("all", cacheManager)
+		if status != http.StatusOK {
+			logger.Error("启动前清理缓存失败: %v", clearResult)
+			os.Exit(1)
+		}
+		logger.Info("启动前缓存清理完成: %v", clearResult)
+	}
+
 	// 初始化健康管理器
 	healthManager := health.NewHealthManager(cfg)
-	
+
 	// 检查是否清除健康数据
 	if os.Getenv("CLEAR_HEALTH_DATA") == "true" {
 		logger.Info("检测到CLEAR_HEALTH_DATA=true，清除健康数据")
 		healthManager.ClearHealthData()
-		
+
 		// 清除健康数据后，将环境变量重置为false，避免下次重启时再次清除
 		logger.Info("健康数据已清除，环境变量已重置为false")
 		os.Setenv("CLEAR_HEALTH_DATA", "false")
 	}
-	
+
 	healthManager.StartHealthCheck()
 
 	// 初始化代理管理器
@@ -156,8 +171,6 @@ func shouldSkipRequest(path string) bool {
 			return true
 		}
 	}
-
-
 
 	return false
 }
@@ -252,8 +265,8 @@ func validateCacheClearRequest(c *gin.Context) bool {
 		confirm := c.Query("confirm")
 		if confirm != "yes" {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error":     "Confirmation required",
-				"message":   "Clearing all caches requires confirmation. Add ?confirm=yes",
+				"error":      "Confirmation required",
+				"message":    "Clearing all caches requires confirmation. Add ?confirm=yes",
 				"cache_type": cacheType,
 				"timestamp":  time.Now().Format(time.RFC3339),
 			})
@@ -272,6 +285,8 @@ func clearLocalCache(cacheType string, cacheManager *cache.CacheManager) (gin.H,
 		return gin.H{"message": "内存缓存已清除", "type": "memory"}, http.StatusOK
 
 	case "l2":
+		// L2 清理同时清空 L1，避免立即被旧的内存缓存回填。
+		cacheManager.GetMemoryCache().Clear()
 		backendName := "磁盘"
 		if cacheManager.GetConfig().UseRedis {
 			backendName = "Redis"
@@ -279,16 +294,17 @@ func clearLocalCache(cacheType string, cacheManager *cache.CacheManager) (gin.H,
 		if err := cacheManager.ClearL2Cache(); err != nil {
 			return gin.H{"error": fmt.Sprintf("清除%s缓存失败", backendName), "message": err.Error()}, http.StatusInternalServerError
 		}
-		return gin.H{"message": fmt.Sprintf("%s缓存已清除", backendName), "type": "l2", "backend": backendName}, http.StatusOK
+		return gin.H{"message": fmt.Sprintf("内存缓存和%s缓存已清除", backendName), "type": "l2", "backend": backendName, "memory_cleared": true}, http.StatusOK
 
 	case "disk":
+		cacheManager.GetMemoryCache().Clear()
 		if cacheManager.GetConfig().UseRedis {
 			return gin.H{"error": "当前使用Redis缓存，请使用 type=l2"}, http.StatusBadRequest
 		}
 		if err := cacheManager.ClearL2Cache(); err != nil {
 			return gin.H{"error": "清除磁盘缓存失败", "message": err.Error()}, http.StatusInternalServerError
 		}
-		return gin.H{"message": "磁盘缓存已清除", "type": "disk"}, http.StatusOK
+		return gin.H{"message": "内存缓存和磁盘缓存已清除", "type": "disk", "memory_cleared": true}, http.StatusOK
 
 	default:
 		cacheManager.GetMemoryCache().Clear()
@@ -392,7 +408,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 			// 获取所有服务器的统计信息并返回
 			allStats := healthManager.GetAllServersStatistics()
-			
+
 			// 将connection_rate转换为百分比
 			for _, stats := range allStats {
 				if connectionRate, exists := stats["connection_rate"]; exists {
@@ -401,7 +417,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					}
 				}
 			}
-			
+
 			c.JSON(http.StatusOK, gin.H{
 				"message": "统计信息已输出到控制台",
 				"servers": allStats,
@@ -436,7 +452,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 			// 获取所有服务器的统计信息并返回
 			allStats := healthManager.GetAllServersStatistics()
-			
+
 			// 将connection_rate转换为百分比
 			for _, stats := range allStats {
 				if connectionRate, exists := stats["connection_rate"]; exists {
@@ -445,7 +461,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					}
 				}
 			}
-			
+
 			c.JSON(http.StatusOK, gin.H{
 				"message": "统计信息已输出到控制台",
 				"servers": allStats,
@@ -480,7 +496,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			// 获取所有服务器的统计信息
 			allStats := healthManager.GetAllServersStatistics()
 			logger.Info("获取到所有服务器统计，数量: %d", len(allStats))
-			
+
 			// 将connection_rate转换为百分比
 			for _, stats := range allStats {
 				if connectionRate, exists := stats["connection_rate"]; exists {
@@ -509,10 +525,10 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					statsSlice = append(statsSlice, stats)
 				}
 				logger.Info("转换完成，切片长度: %d", len(statsSlice))
-				
+
 				// 临时调试：显示原始数据
 				if len(statsSlice) == 0 {
-					html = `<html><body><h1>调试信息</h1><p>没有服务器数据</p><pre>` + 
+					html = `<html><body><h1>调试信息</h1><p>没有服务器数据</p><pre>` +
 						fmt.Sprintf("%+v", allStats) + `</pre></body></html>`
 				} else {
 					html = generateBeautifiedStatsHTML(statsSlice, false)
@@ -535,7 +551,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		// 获取缓存信息
 		memoryStats := cacheManager.GetMemoryCache().GetStats()
 		l2Stats := cacheManager.GetL2CacheStats()
-		
+
 		var l2CacheInfo gin.H
 		if cacheManager.GetConfig().UseRedis {
 			l2CacheInfo = gin.H{
@@ -592,7 +608,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		// 获取缓存信息
 		memoryStats := cacheManager.GetMemoryCache().GetStats()
 		l2Stats := cacheManager.GetL2CacheStats()
-		
+
 		var l2CacheInfo gin.H
 		if cacheManager.GetConfig().UseRedis {
 			l2CacheInfo = gin.H{
@@ -709,11 +725,11 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"keys":     keys,
-			"total":    len(keys),
-			"limit":    limit,
-			"offset":   offset,
-			"backend":  cacheType,
+			"keys":    keys,
+			"total":   len(keys),
+			"limit":   limit,
+			"offset":  offset,
+			"backend": cacheType,
 			"endpoints": gin.H{
 				"cache_keys":   "/mapi/cache/keys",
 				"cache_search": "/mapi/cache/search?q=<query>",
@@ -887,10 +903,10 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			upstreamList = append(upstreamList, gin.H{
 				"url":           url,
 				"is_tmdb_proxy": info.IsTMDBProxy,
-				"version":      info.Version,
-				"last_checked": info.LastChecked.Format(time.RFC3339),
-				"check_count":  info.CheckCount,
-				"source":       "auto_detected", // 标记为自动检测
+				"version":       info.Version,
+				"last_checked":  info.LastChecked.Format(time.RFC3339),
+				"check_count":   info.CheckCount,
+				"source":        "auto_detected", // 标记为自动检测
 			})
 
 			autoDetectedCount++
@@ -905,7 +921,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				// 手动配置的服务器，尝试检测是否为TMDB代理
 				isTMDBProxy := false
 				version := ""
-				
+
 				// 如果启用了嵌套代理检测，可以尝试快速检测
 				if cfg.EnableNestedProxyDetection {
 					// 这里可以添加一个快速检测逻辑，但为了不阻塞响应，暂时标记为未知
@@ -916,9 +932,9 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 					"url":           url,
 					"is_tmdb_proxy": isTMDBProxy,
 					"version":       version,
-					"last_checked": time.Now().Format(time.RFC3339),
-					"check_count":  0,
-					"source":       "configured", // 标记为手动配置
+					"last_checked":  time.Now().Format(time.RFC3339),
+					"check_count":   0,
+					"source":        "configured", // 标记为手动配置
 				})
 
 				configuredCount++
@@ -943,7 +959,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"timestamp":              time.Now().Format(time.RFC3339),
 			"note":                   "此端点显示自动检测到的上游代理服务器（通过响应头X-TMDB-Proxy识别）和手动配置的服务器列表。自动检测需要上游服务器返回X-TMDB-Proxy响应头（需要上游服务器也更新到此版本）。",
 			"config_note":            "手动配置上游服务器：export UPSTREAM_PROXY_SERVERS=http://server1:6635,http://server2:6635",
-			"detection_note":          "自动检测需要上游服务器返回X-TMDB-Proxy响应头。如果上游服务器还没有更新到此版本，将无法自动检测，但可以通过UPSTREAM_PROXY_SERVERS环境变量手动配置。",
+			"detection_note":         "自动检测需要上游服务器返回X-TMDB-Proxy响应头。如果上游服务器还没有更新到此版本，将无法自动检测，但可以通过UPSTREAM_PROXY_SERVERS环境变量手动配置。",
 			"endpoints": gin.H{
 				"upstream_status":    "/api/upstream",
 				"upstream_aggregate": "/mapi/upstream/aggregate",
@@ -1008,11 +1024,11 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 		for url, info := range upstreamInfo {
 			upstreamList = append(upstreamList, gin.H{
-				"url":          url,
+				"url":           url,
 				"is_tmdb_proxy": info.IsTMDBProxy,
-				"version":      info.Version,
-				"last_checked": info.LastChecked.Format(time.RFC3339),
-				"check_count":  info.CheckCount,
+				"version":       info.Version,
+				"last_checked":  info.LastChecked.Format(time.RFC3339),
+				"check_count":   info.CheckCount,
 			})
 
 			totalProxies++
@@ -1022,11 +1038,11 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"enabled":              cfg.EnableNestedProxyDetection,
+			"enabled":                cfg.EnableNestedProxyDetection,
 			"total_upstream_servers": totalProxies,
-			"tmdb_proxy_servers":   tmdbProxies,
-			"upstream_servers":     upstreamList,
-			"timestamp":            time.Now().Format(time.RFC3339),
+			"tmdb_proxy_servers":     tmdbProxies,
+			"upstream_servers":       upstreamList,
+			"timestamp":              time.Now().Format(time.RFC3339),
 			"endpoints": gin.H{
 				"upstream_status": "/mapi/upstream",
 				"cache_clear":     "/mapi/cache/clear",
@@ -1041,14 +1057,14 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 
 		// 获取自动检测到的上游服务器
 		upstreamInfo := proxyManager.GetUpstreamProxyInfo()
-		
+
 		// 获取手动配置的上游服务器列表
 		configuredServers := cfg.UpstreamProxyServers
-		
+
 		// 合并自动检测和手动配置的服务器（去重）
 		serverMap := make(map[string]bool)
 		upstreamServers := make([]string, 0)
-		
+
 		// 添加自动检测到的TMDB代理服务器
 		for url, info := range upstreamInfo {
 			if info.IsTMDBProxy && !serverMap[url] {
@@ -1056,7 +1072,7 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				serverMap[url] = true
 			}
 		}
-		
+
 		// 添加手动配置的服务器（如果不在自动检测列表中）
 		for _, url := range configuredServers {
 			if !serverMap[url] {
@@ -1064,16 +1080,16 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 				serverMap[url] = true
 			}
 		}
-		
+
 		if len(upstreamServers) == 0 {
 			c.JSON(http.StatusOK, gin.H{
-				"message": "未找到上游服务器（自动检测和手动配置都为空）",
-				"servers": []gin.H{},
-				"total":   0,
+				"message":       "未找到上游服务器（自动检测和手动配置都为空）",
+				"servers":       []gin.H{},
+				"total":         0,
 				"auto_detected": len(upstreamInfo),
-				"configured": len(configuredServers),
-				"timestamp": time.Now().Format(time.RFC3339),
-				"note": "提示：系统会自动检测上游TMDB代理服务器，或通过UPSTREAM_PROXY_SERVERS环境变量手动配置",
+				"configured":    len(configuredServers),
+				"timestamp":     time.Now().Format(time.RFC3339),
+				"note":          "提示：系统会自动检测上游TMDB代理服务器，或通过UPSTREAM_PROXY_SERVERS环境变量手动配置",
 			})
 			return
 		}
@@ -1173,10 +1189,10 @@ func setupRoutes(router *gin.Engine, proxyManager *proxy.ProxyManager, cacheMana
 			"total":     len(serverList),
 			"timestamp": time.Now().Format(time.RFC3339),
 			"endpoints": gin.H{
-				"aggregate":         "/mapi/upstream/aggregate",
-				"upstream":          "/mapi/upstream",
-				"cache_clear":       "/mapi/cache/clear",
-				"upstream_clear":    "/mapi/upstream/clear-cache",
+				"aggregate":      "/mapi/upstream/aggregate",
+				"upstream":       "/mapi/upstream",
+				"cache_clear":    "/mapi/cache/clear",
+				"upstream_clear": "/mapi/upstream/clear-cache",
 			},
 		})
 	})
@@ -1347,24 +1363,24 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		if response.IsImage {
 			switch data := response.Data.(type) {
 			case []byte:
-				c.Data(http.StatusOK, response.ContentType, data)
+				c.Data(response.StatusCode, response.ContentType, data)
 			case string:
-				c.Data(http.StatusOK, response.ContentType, []byte(data))
+				c.Data(response.StatusCode, response.ContentType, []byte(data))
 			default:
 				logger.Error("图片响应数据类型错误: %T", response.Data)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "图片数据类型错误"})
 				return
 			}
 		} else if strings.Contains(response.ContentType, "application/json") {
-			c.JSON(http.StatusOK, response.Data)
+			c.JSON(response.StatusCode, response.Data)
 		} else {
 			switch data := response.Data.(type) {
 			case string:
-				c.Data(http.StatusOK, response.ContentType, []byte(data))
+				c.Data(response.StatusCode, response.ContentType, []byte(data))
 			case []byte:
-				c.Data(http.StatusOK, response.ContentType, data)
+				c.Data(response.StatusCode, response.ContentType, data)
 			default:
-				c.JSON(http.StatusOK, response.Data)
+				c.JSON(response.StatusCode, response.Data)
 			}
 		}
 		logger.Success("响应已发送（无缓存）: %s (%dms)", fullURL, response.ResponseTime)
@@ -1396,16 +1412,16 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			// 图片数据需要类型断言
 			switch data := response.Data.(type) {
 			case []byte:
-				c.Data(http.StatusOK, response.ContentType, data)
+				c.Data(response.StatusCode, response.ContentType, data)
 			case string:
-				c.Data(http.StatusOK, response.ContentType, []byte(data))
+				c.Data(response.StatusCode, response.ContentType, []byte(data))
 			default:
 				logger.Error("健康检查响应数据类型错误: %T", response.Data)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "健康检查响应数据类型错误"})
 				return
 			}
 		} else {
-			c.JSON(http.StatusOK, response.Data)
+			c.JSON(response.StatusCode, response.Data)
 		}
 		return
 	}
@@ -1543,12 +1559,12 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 		switch data := response.Data.(type) {
 		case []byte:
 			logger.Info("发送[]byte类型图片数据，大小: %d字节", len(data))
-			c.Data(http.StatusOK, response.ContentType, data)
+			c.Data(response.StatusCode, response.ContentType, data)
 			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(data), response.ResponseTime)
 		case string:
 			logger.Info("发送string类型图片数据，大小: %d字节", len(data))
 			imageData := []byte(data)
-			c.Data(http.StatusOK, response.ContentType, imageData)
+			c.Data(response.StatusCode, response.ContentType, imageData)
 			logger.Success("响应已发送: %s (图片, %d字节, %dms)", fullURL, len(imageData), response.ResponseTime)
 		default:
 			logger.Error("图片响应数据类型错误: %T", response.Data)
@@ -1556,24 +1572,24 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			return
 		}
 	} else if strings.Contains(response.ContentType, "application/json") {
-		c.JSON(http.StatusOK, response.Data)
+		c.JSON(response.StatusCode, response.Data)
 		logger.Success("响应已发送: %s (JSON, %dms)", fullURL, response.ResponseTime)
 	} else {
 		// 非JSON响应，根据数据类型处理
 		switch data := response.Data.(type) {
 		case string:
-			c.Data(http.StatusOK, response.ContentType, []byte(data))
+			c.Data(response.StatusCode, response.ContentType, []byte(data))
 		case []byte:
-			c.Data(http.StatusOK, response.ContentType, data)
+			c.Data(response.StatusCode, response.ContentType, data)
 		default:
 			// 尝试转换为JSON
-			c.JSON(http.StatusOK, response.Data)
+			c.JSON(response.StatusCode, response.Data)
 		}
 		logger.Success("响应已发送: %s (非JSON, %dms)", fullURL, response.ResponseTime)
 	}
 
 	// 保存缓存
-	if cacheManager.GetConfig().CacheEnabled {
+	if cacheManager.GetConfig().CacheEnabled && response.StatusCode >= 200 && response.StatusCode < 300 {
 		// 确定是否为图片类型
 		isImage := strings.HasPrefix(response.ContentType, "image/")
 
@@ -1604,6 +1620,8 @@ func handleProxyRequest(c *gin.Context, proxyManager *proxy.ProxyManager, cacheM
 			}
 			logger.CacheInfo("%s缓存写入: %s (IsImage: %t)", cacheType, fullURL, isImage)
 		}
+	} else if cacheManager.GetConfig().CacheEnabled {
+		logger.Info("跳过缓存非成功响应: %s (status=%d)", fullURL, response.StatusCode)
 	}
 }
 
@@ -1613,7 +1631,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	totalServers := len(servers)
 	healthyCount := 0
 	unhealthyCount := 0
-	
+
 	for _, server := range servers {
 		if status, ok := server["status"].(string); ok {
 			if status == "healthy" {
@@ -1623,7 +1641,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 			}
 		}
 	}
-	
+
 	overallHealthRate := 0.0
 	if totalServers > 0 {
 		overallHealthRate = float64(healthyCount) / float64(totalServers) * 100
@@ -1632,10 +1650,10 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 	// 分离健康和不健康的服务器
 	var healthyServers []map[string]interface{}
 	var unhealthyServers []map[string]interface{}
-	
+
 	// 调试信息：打印所有服务器的状态
 	logger.Info("开始分类服务器，总数: %d", len(servers))
-	
+
 	for _, server := range servers {
 		if status, ok := server["status"].(string); ok {
 			logger.Info("服务器状态: %s", status)
@@ -1648,7 +1666,7 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 			logger.Warn("服务器状态字段类型错误或缺失")
 		}
 	}
-	
+
 	logger.Info("分类完成 - 健康服务器: %d, 不健康服务器: %d", len(healthyServers), len(unhealthyServers))
 
 	// 生成HTML页面
@@ -1969,9 +1987,9 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
         <div class="servers-section">
             <h2 class="section-title">✅ 健康服务器 (` + fmt.Sprintf("%d", len(healthyServers)) + `个)</h2>
             <div class="server-grid">`
-		
+
 		html += generateServerCards(healthyServers)
-		
+
 		html += `
             </div>
         </div>`
@@ -1983,9 +2001,9 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
         <div class="servers-section">
             <h2 class="section-title">❌ 不健康服务器 (` + fmt.Sprintf("%d", len(unhealthyServers)) + `个)</h2>
             <div class="server-grid">`
-		
+
 		html += generateServerCards(unhealthyServers)
-		
+
 		html += `
             </div>
         </div>`
@@ -2024,12 +2042,12 @@ func generateBeautifiedStatsHTML(servers []map[string]interface{}, singleServer 
 // generateServerCards 生成服务器卡片HTML
 func generateServerCards(servers []map[string]interface{}) string {
 	var html string
-	
+
 	for _, server := range servers {
 		// 安全地获取所有字段，提供默认值
 		url := getStringValue(server, "url", "未知")
 		status := getStringValue(server, "status", "unknown")
-		
+
 		// 获取数值字段，提供默认值
 		connectionRate := getFloatValue(server, "connection_rate", 0.0)
 		confidence := getFloatValue(server, "confidence", 0.0)
@@ -2054,7 +2072,7 @@ func generateServerCards(servers []map[string]interface{}) string {
 		// 美化参数显示
 		connectionRatePercent := fmt.Sprintf("%.2f%%", connectionRate*100)
 		confidencePercent := fmt.Sprintf("%.0f%%", confidence*100)
-		
+
 		// 美化优先级显示
 		priorityText := "低优先级"
 		priorityColor := "warning"
@@ -2065,7 +2083,7 @@ func generateServerCards(servers []map[string]interface{}) string {
 			priorityText = "高优先级"
 			priorityColor = "success"
 		}
-		
+
 		// 美化就绪状态显示
 		readyText := "未就绪"
 		readyColor := "danger"
@@ -2073,7 +2091,7 @@ func generateServerCards(servers []map[string]interface{}) string {
 			readyText = "已就绪"
 			readyColor = "success"
 		}
-		
+
 		// 美化连接率显示
 		connectionRateClass := "danger"
 		if connectionRate >= 0.8 {
@@ -2081,7 +2099,7 @@ func generateServerCards(servers []map[string]interface{}) string {
 		} else if connectionRate >= 0.5 {
 			connectionRateClass = "warning"
 		}
-		
+
 		// 美化置信度显示
 		confidenceClass := "danger"
 		if confidence >= 0.8 {
@@ -2156,7 +2174,7 @@ func generateServerCards(servers []map[string]interface{}) string {
                     </div>
                 </div>`
 	}
-	
+
 	return html
 }
 

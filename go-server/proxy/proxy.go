@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type ProxyResponse struct {
 	ContentType  string      `json:"contentType"`
 	ResponseTime int64       `json:"responseTime"`
 	IsImage      bool        `json:"isImage"`
+	StatusCode   int         `json:"statusCode"`
 }
 
 // ProxyManager 代理管理器
@@ -40,11 +42,11 @@ type ProxyManager struct {
 
 // UpstreamProxyInfo 上游代理信息
 type UpstreamProxyInfo struct {
-	URL           string    // 上游服务器URL
-	IsTMDBProxy   bool      // 是否为TMDB代理
-	Version       string    // 代理版本
-	LastChecked   time.Time // 最后检查时间
-	CheckCount    int       // 检查次数
+	URL         string    // 上游服务器URL
+	IsTMDBProxy bool      // 是否为TMDB代理
+	Version     string    // 代理版本
+	LastChecked time.Time // 最后检查时间
+	CheckCount  int       // 检查次数
 }
 
 // NewProxyManager 创建代理管理器
@@ -122,6 +124,62 @@ func (pm *ProxyManager) HandleRequest(path string, headers http.Header) (*ProxyR
 
 	// 处理响应
 	return pm.processResponse(response, server.URL)
+}
+
+// buildUpstreamRequest 创建上游请求，并在 tmdb-api 模式下自动补全 TMDB API Key。
+func (pm *ProxyManager) buildUpstreamRequest(rawURL string, headers http.Header) (*http.Request, string, error) {
+	finalURL := rawURL
+
+	if pm.config.UpstreamType == "tmdb-api" && pm.config.TMDBAPIKey != "" {
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, rawURL, fmt.Errorf("解析上游URL失败: %w", err)
+		}
+
+		queryValues := parsedURL.Query()
+		hasAPIKey := queryValues.Get("api_key") != ""
+		hasAuthorization := headers.Get("Authorization") != ""
+
+		if !hasAPIKey && !hasAuthorization {
+			queryValues.Set("api_key", pm.config.TMDBAPIKey)
+			parsedURL.RawQuery = queryValues.Encode()
+			finalURL = parsedURL.String()
+			logger.Info("已为 tmdb-api 请求自动补充 api_key: %s", parsedURL.Path)
+		}
+	}
+
+	req, err := http.NewRequest("GET", finalURL, nil)
+	if err != nil {
+		return nil, finalURL, err
+	}
+
+	// 转发重要的请求头
+	if auth := headers.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	if contentType := headers.Get("Content-Type"); contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if accept := headers.Get("Accept"); accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	if userAgent := headers.Get("User-Agent"); userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+
+	// 设置默认请求头
+	if req.Header.Get("Accept") == "" {
+		if pm.config.UpstreamType == "tmdb-image" {
+			req.Header.Set("Accept", "*/*")
+		} else {
+			req.Header.Set("Accept", "application/json")
+		}
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0")
+	}
+
+	return req, finalURL, nil
 }
 
 // selectUpstreamServer 选择上游服务器
@@ -320,48 +378,17 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 	timeout := pm.config.RequestTimeout
 	logger.Info("使用配置的超时时间: %v", timeout)
 
-	// 所有请求都使用GET方法
-	method := "GET"
-
-	req, err := http.NewRequest(method, url, nil)
+	req, finalURL, err := pm.buildUpstreamRequest(url, headers)
 	if err != nil {
 		logger.Error("创建HTTP请求失败: %v", err)
 		return nil, err
-	}
-
-	// 转发重要的请求头
-	if auth := headers.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	if contentType := headers.Get("Content-Type"); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if accept := headers.Get("Accept"); accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-	if userAgent := headers.Get("User-Agent"); userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
-	}
-
-	// 设置默认请求头（如果没有的话）
-	if req.Header.Get("Accept") == "" {
-		if pm.config.UpstreamType == "tmdb-image" {
-			// 图片请求使用更通用的接受类型，与JavaScript版本保持一致
-			req.Header.Set("Accept", "*/*")
-		} else {
-			// API请求使用JSON接受类型
-			req.Header.Set("Accept", "application/json")
-		}
-	}
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0")
 	}
 
 	// 调试：显示请求头
 	logger.Info("发送请求头 - Accept: %s, User-Agent: %s, 超时时间: %v", req.Header.Get("Accept"), req.Header.Get("User-Agent"), timeout)
 
 	// 添加调试信息
-	logger.Info("开始发送请求: %s", url)
+	logger.Info("开始发送请求: %s", finalURL)
 	logger.Info("HTTP客户端配置 - Transport: %T, 超时: %v", pm.client.Transport, timeout)
 
 	// 添加请求开始时间记录
@@ -382,11 +409,11 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 		// 使用错误检测函数提供更详细的错误分类
 		if isConnectionError(err) {
-			logger.Error("连接错误: %s - %v", url, err)
+			logger.Error("连接错误: %s - %v", finalURL, err)
 		} else if isRetryableError(err) {
-			logger.Warn("可重试错误: %s - %v", url, err)
+			logger.Warn("可重试错误: %s - %v", finalURL, err)
 		} else {
-			logger.Error("不可重试错误: %s - %v", url, err)
+			logger.Error("不可重试错误: %s - %v", finalURL, err)
 		}
 
 		return nil, err
@@ -396,10 +423,77 @@ func (pm *ProxyManager) makeRequest(url string, headers http.Header) (*http.Resp
 
 	// 检查响应状态码
 	if resp.StatusCode >= 400 {
-		logger.Warn("上游服务器返回错误状态码: %d, URL: %s", resp.StatusCode, url)
+		logger.Warn("上游服务器返回错误状态码: %d, URL: %s", resp.StatusCode, finalURL)
 	}
 
 	return resp, nil
+}
+
+func extractTMDBErrorStatus(data interface{}) (int, string, bool) {
+	responseMap, ok := data.(map[string]interface{})
+	if !ok {
+		return 0, "", false
+	}
+
+	messageValue, hasMessage := responseMap["status_message"]
+	if !hasMessage {
+		return 0, "", false
+	}
+
+	message, ok := messageValue.(string)
+	if !ok || strings.TrimSpace(message) == "" {
+		return 0, "", false
+	}
+
+	statusValue, hasStatus := responseMap["status_code"]
+	if !hasStatus {
+		return 0, "", false
+	}
+
+	statusCode := 0
+	switch value := statusValue.(type) {
+	case float64:
+		statusCode = int(value)
+	case int:
+		statusCode = value
+	default:
+		return 0, "", false
+	}
+
+	if successValue, exists := responseMap["success"]; exists {
+		if success, ok := successValue.(bool); ok && success {
+			return 0, "", false
+		}
+	}
+
+	return statusCode, message, true
+}
+
+func mapTMDBStatusToHTTP(statusCode int) int {
+	switch statusCode {
+	case 3, 7, 10, 14, 16, 17, 30, 31, 32, 33, 35, 36, 39:
+		return http.StatusUnauthorized
+	case 6, 34, 37:
+		return http.StatusNotFound
+	case 8, 45:
+		return http.StatusForbidden
+	case 9, 46:
+		return http.StatusServiceUnavailable
+	case 18, 22, 26, 27, 28, 29, 47:
+		return http.StatusBadRequest
+	case 4, 42:
+		return http.StatusMethodNotAllowed
+	case 5, 20, 41:
+		return http.StatusUnprocessableEntity
+	case 24:
+		return http.StatusGatewayTimeout
+	case 25:
+		return http.StatusTooManyRequests
+	case 38, 43:
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 // isConnectionError 检测是否是连接错误，基于proxy_app.go的经验
@@ -457,6 +551,7 @@ func (pm *ProxyManager) processResponse(resp *http.Response, serverURL string) (
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
+	statusCode := resp.StatusCode
 
 	// 检测上游服务器是否为TMDB代理
 	pm.detectUpstreamProxy(resp, serverURL)
@@ -487,6 +582,11 @@ func (pm *ProxyManager) processResponse(resp *http.Response, serverURL string) (
 				return nil, fmt.Errorf("解析JSON失败: %w", err)
 			}
 			responseData = jsonData
+
+			if tmdbStatus, tmdbMessage, ok := extractTMDBErrorStatus(jsonData); ok && statusCode >= 200 && statusCode < 300 {
+				statusCode = mapTMDBStatusToHTTP(tmdbStatus)
+				logger.Warn("检测到 TMDB 错误响应体，修正状态码: tmdb_status=%d http_status=%d message=%s", tmdbStatus, statusCode, tmdbMessage)
+			}
 		} else {
 			// 如果不是JSON类型，直接返回原始数据
 			responseData = string(body)
@@ -556,6 +656,7 @@ func (pm *ProxyManager) processResponse(resp *http.Response, serverURL string) (
 		ContentType:  contentType,
 		ResponseTime: 0, // 响应时间在调用方计算
 		IsImage:      isImage,
+		StatusCode:   statusCode,
 	}, nil
 }
 
@@ -709,24 +810,9 @@ func (pm *ProxyManager) ValidateResponse(data interface{}, contentType string) b
 
 // makeRequestWithTimeoutRetry 带超时重试的请求
 func (pm *ProxyManager) makeRequestWithTimeoutRetry(url string, headers http.Header, primaryServer *health.Server) (*http.Response, error) {
-	// 创建请求
-	req, err := http.NewRequest("GET", url, nil)
+	req, finalURL, err := pm.buildUpstreamRequest(url, headers)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
-	}
-
-	// 转发重要的请求头
-	if auth := headers.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	if contentType := headers.Get("Content-Type"); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if accept := headers.Get("Accept"); accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-	if userAgent := headers.Get("User-Agent"); userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
 	}
 
 	// 发送请求
@@ -736,14 +822,14 @@ func (pm *ProxyManager) makeRequestWithTimeoutRetry(url string, headers http.Hea
 
 	if err != nil {
 		// 请求失败，尝试切换到其他健康上游
-		logger.Warn("请求失败，尝试切换到其他健康上游: %s", url)
+		logger.Warn("请求失败，尝试切换到其他健康上游: %s", finalURL)
 		return pm.retryWithOtherHealthyServer(url, headers, primaryServer)
 	}
 
 	// 请求成功，更新服务器性能指标
 	pm.updateServerPerformance(primaryServer.URL, responseTime)
 
-	logger.Info("请求成功: %s (响应时间: %v)", url, responseTime)
+	logger.Info("请求成功: %s (响应时间: %v)", finalURL, responseTime)
 	return resp, nil
 }
 
@@ -782,22 +868,10 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 		retryURL := selected.URL + path
 		logger.Info("重试 %d/%d: %s (服务器: %s)", attempt, maxRetries, retryURL, selected.URL)
 
-		req, err := http.NewRequest("GET", retryURL, nil)
+		req, finalRetryURL, err := pm.buildUpstreamRequest(retryURL, headers)
 		if err != nil {
 			excluded[selected.URL] = true
 			continue
-		}
-		if auth := headers.Get("Authorization"); auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		if contentType := headers.Get("Content-Type"); contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		if accept := headers.Get("Accept"); accept != "" {
-			req.Header.Set("Accept", accept)
-		}
-		if userAgent := headers.Get("User-Agent"); userAgent != "" {
-			req.Header.Set("User-Agent", userAgent)
 		}
 
 		startTime := time.Now()
@@ -805,13 +879,13 @@ func (pm *ProxyManager) retryWithOtherHealthyServer(originalURL string, headers 
 		responseTime := time.Since(startTime)
 
 		if err != nil {
-			logger.Warn("重试 %d/%d 失败: %s - %v", attempt, maxRetries, retryURL, err)
+			logger.Warn("重试 %d/%d 失败: %s - %v", attempt, maxRetries, finalRetryURL, err)
 			excluded[selected.URL] = true
 			continue
 		}
 
 		pm.updateServerPerformance(selected.URL, responseTime)
-		logger.Success("重试 %d/%d 成功: %s (响应时间: %v)", attempt, maxRetries, retryURL, responseTime)
+		logger.Success("重试 %d/%d 成功: %s (响应时间: %v)", attempt, maxRetries, finalRetryURL, responseTime)
 		return resp, nil
 	}
 
@@ -926,7 +1000,7 @@ func (pm *ProxyManager) GetUpstreamProxyInfo() map[string]*UpstreamProxyInfo {
 	for k, v := range pm.upstreamProxies {
 		// 过滤掉TMDB官方API地址
 		if !pm.isTMDBOfficialAPI(k) {
-		result[k] = v
+			result[k] = v
 		}
 	}
 	return result
@@ -989,39 +1063,52 @@ func (pm *ProxyManager) PerformUpstreamCacheClear(cacheType string) []UpstreamCl
 
 // clearUpstreamCache 清理上游代理的缓存
 func (pm *ProxyManager) clearUpstreamCache(serverURL string, cacheType string) error {
-	// 使用公开端点，无需 API Key 即可联动清理
-	clearURL := fmt.Sprintf("%s/api/cache/clear?type=%s", serverURL, cacheType)
+	baseURL := strings.TrimSuffix(serverURL, "/")
+	query := fmt.Sprintf("type=%s", cacheType)
 	if cacheType == "all" || cacheType == "" {
-		clearURL += "&confirm=yes"
+		query += "&confirm=yes"
 	}
 
-	logger.Info("调用上游代理缓存清理API: %s", clearURL)
-
-	req, err := http.NewRequest("POST", clearURL, nil)
-	if err != nil {
-		return fmt.Errorf("创建上游缓存清理请求失败: %v", err)
+	candidates := []string{
+		baseURL + "/api/cache/clear?" + query,
+		baseURL + "/mapi/cache/clear?" + query,
 	}
 
-	req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (cache-clear-linkage)")
-	req.Header.Set("X-Cache-Clear-Linkage", "true")
+	var attemptErrors []string
+	for _, clearURL := range candidates {
+		logger.Info("调用上游代理缓存清理API: %s", clearURL)
 
-	// 若本实例配置了 API Key，尝试传递给上游（上游可能也需要）
-	if apiKey := os.Getenv("API_KEY"); apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
+		req, err := http.NewRequest("POST", clearURL, nil)
+		if err != nil {
+			attemptErrors = append(attemptErrors, fmt.Sprintf("%s -> 创建请求失败: %v", clearURL, err))
+			continue
+		}
+
+		req.Header.Set("User-Agent", "tmdb-go-proxy/1.0 (cache-clear-linkage)")
+		req.Header.Set("X-Cache-Clear-Linkage", "true")
+
+		if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+		}
+
+		resp, err := pm.client.Do(req)
+		if err != nil {
+			attemptErrors = append(attemptErrors, fmt.Sprintf("%s -> 请求失败: %v", clearURL, err))
+			continue
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			logger.Info("上游代理 %s 缓存清理完成", serverURL)
+			return nil
+		}
+
+		attemptErrors = append(attemptErrors, fmt.Sprintf("%s -> 状态码: %d", clearURL, resp.StatusCode))
 	}
 
-	resp, err := pm.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("发送上游缓存清理请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("上游缓存清理请求失败，状态码: %d", resp.StatusCode)
-	}
-
-	logger.Info("上游代理 %s 缓存清理完成", serverURL)
-	return nil
+	return fmt.Errorf("上游缓存清理失败: %s", strings.Join(attemptErrors, "; "))
 }
 
 // StartUpstreamProxyProbing 启动主动探测上游代理，启动时立即执行一次，之后每隔 interval 执行一次

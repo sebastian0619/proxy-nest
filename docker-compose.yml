@@ -13,6 +13,7 @@ services:
       - DISK_CACHE_CLEANUP_INTERVAL=${DISK_CACHE_CLEANUP_INTERVAL_API}
       - MEMORY_CACHE_CLEANUP_INTERVAL=${MEMORY_CACHE_CLEANUP_INTERVAL_API}
       - CACHE_TTL=${CACHE_TTL_API}
+      - CLEAR_CACHE_ON_STARTUP=${CLEAR_CACHE_ON_STARTUP_API:-true}
       # - HTTP_PROXY=${HTTP_PROXY_API}  # 可选代理
     volumes:
       - ./cache:/app/cache
@@ -38,6 +39,7 @@ services:
       - CACHE_TTL=${CACHE_TTL_IMAGE}
       - HTTP_PROXY=${HTTP_PROXY_IMAGE}
       - TMDB_IMAGE_TEST_URL=${TMDB_IMAGE_TEST_URL}
+      - CLEAR_CACHE_ON_STARTUP=${CLEAR_CACHE_ON_STARTUP_IMAGE:-true}
     volumes:
       - ./image:/app/cache
     restart: always
